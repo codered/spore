@@ -3,11 +3,16 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/store"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 func seedMessages(t *testing.T, st *store.Store, sid string, n int) {
@@ -131,5 +136,39 @@ func TestMaybeCompactIsIdempotentAtTheBoundary(t *testing.T) {
 	// Second compact should be a no-op (script has no more turns)
 	if err := a.MaybeCompact(ctx, sid); err != nil {
 		t.Fatalf("second MaybeCompact should be no-op but got: %v", err)
+	}
+}
+
+func TestMaybeCompactErrorEndsLLMSpan(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		tp.Shutdown(context.Background())
+		otel.SetTracerProvider(noop.NewTracerProvider())
+	})
+
+	ctx := context.Background()
+	// Script with one turn that errors mid-stream
+	script := provider.NewScript(provider.ScriptTurn{Err: errors.New("compaction failed")})
+	a, st := harness(t, script, nil)
+	a.Cfg.Context.MaxTokens = 2000
+	a.Cfg.Context.CompactAt = 0.5
+	a.Cfg.Context.KeepRecent = 2
+
+	sid, _ := st.CreateSession(ctx, "t")
+	seedMessages(t, st, sid, 12)
+
+	// Call MaybeCompact with a script that will error
+	_ = a.MaybeCompact(ctx, sid)
+
+	var llmSpans int
+	for _, s := range sr.Ended() {
+		if s.Name() == "llm" {
+			llmSpans++
+		}
+	}
+	if llmSpans != 1 {
+		t.Errorf("expected exactly 1 ended llm span after a compaction provider error, got %d", llmSpans)
 	}
 }
