@@ -37,9 +37,19 @@ type Event struct {
 
 // ToolRunner is the seam Plan 2 fills. The loop knows only that tools have
 // specs, can declare themselves read-only, and return a tool_result block.
+//
+// Run MUST be safe for concurrent use: the loop dispatches a batch of calls
+// in parallel whenever every call in that batch reports ReadOnly. Batches
+// containing any mutating call run sequentially, in order.
 type ToolRunner interface {
+	// Specs returns the schema for all available tools.
 	Specs() []provider.ToolSpec
+	// ReadOnly reports whether a tool call is read-only. Tools that report true
+	// opt into concurrent dispatch when multiple calls arrive in a single batch;
+	// those reporting false force sequential order.
 	ReadOnly(name string) bool
+	// Run executes a tool call and returns a tool_result block. It MUST be safe
+	// for concurrent calls from the loop's dispatcher.
 	Run(ctx context.Context, call provider.Block) provider.Block
 }
 
