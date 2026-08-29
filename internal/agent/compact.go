@@ -8,6 +8,7 @@ import (
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/router"
 	"github.com/codered/spore/internal/store"
+	sporetrace "github.com/codered/spore/internal/trace"
 )
 
 const compactionPrompt = `Summarise the conversation below for your own future reference.
@@ -79,6 +80,7 @@ func (a *Agent) MaybeCompact(ctx context.Context, sessionID string) error {
 	if err != nil {
 		return err
 	}
+	_, span := sporetrace.StartLLM(ctx, router.SiteCompaction, ref)
 	ch, err := p.Stream(ctx, provider.Request{
 		Model:     model,
 		System:    compactionPrompt,
@@ -109,7 +111,7 @@ func (a *Agent) MaybeCompact(ctx context.Context, sessionID string) error {
 	if strings.TrimSpace(summary) == "" {
 		return fmt.Errorf("compaction produced an empty summary")
 	}
-	_ = price.Cost(usage) // recorded on the span in Task 10
+	sporetrace.EndLLM(span, transcript.String(), summary, usage, price.Cost(usage))
 
 	return a.Store.SetSummary(ctx, sessionID, summary, cut)
 }

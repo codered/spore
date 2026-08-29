@@ -9,6 +9,7 @@ import (
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/router"
 	"github.com/codered/spore/internal/store"
+	sporetrace "github.com/codered/spore/internal/trace"
 )
 
 // maxIterations bounds one turn's provider round trips so a model that keeps
@@ -114,7 +115,10 @@ func (a *Agent) Run(ctx context.Context, sessionID, input string) (<-chan Event,
 	out := make(chan Event, 64)
 	go func() {
 		defer close(out)
+		ctx, turn := sporetrace.StartTurn(ctx, sessionID, "core")
+		defer turn.End()
 		if err := a.loop(ctx, sessionID, out); err != nil {
+			turn.RecordError(err)
 			out <- Event{Type: EvError, Err: err}
 		}
 	}()
@@ -142,8 +146,11 @@ func (a *Agent) loop(ctx context.Context, sessionID string, out chan<- Event) er
 		}
 		req.Model = model
 
-		ch, err := p.Stream(ctx, req)
+		llmCtx, llmSpan := sporetrace.StartLLM(ctx, router.SiteChat, ref)
+		ch, err := p.Stream(llmCtx, req)
 		if err != nil {
+			llmSpan.RecordError(err)
+			llmSpan.End()
 			return fmt.Errorf("provider %s: %w", ref, err)
 		}
 
@@ -173,6 +180,7 @@ func (a *Agent) loop(ctx context.Context, sessionID string, out chan<- Event) er
 		}
 		blocks = append(blocks, calls...)
 		cost := price.Cost(usage)
+		sporetrace.EndLLM(llmSpan, req.System, text, usage, cost)
 		if err := a.appendMessage(ctx, sessionID, provider.RoleAssistant, blocks, ref, router.SiteChat, usage, cost); err != nil {
 			return err
 		}
@@ -207,12 +215,18 @@ func (a *Agent) runTools(ctx context.Context, calls []provider.Block, out chan<-
 		}
 	}
 
+	run := func(call provider.Block) provider.Block {
+		_, span := sporetrace.StartTool(ctx, call.Name, call.Input)
+		defer span.End()
+		return a.Tools.Run(ctx, call)
+	}
+
 	results := make([]provider.Block, len(calls))
 	if allReadOnly && len(calls) > 1 {
 		done := make(chan struct{}, len(calls))
 		for i := range calls {
 			go func(i int) {
-				results[i] = a.Tools.Run(ctx, calls[i])
+				results[i] = run(calls[i])
 				done <- struct{}{}
 			}(i)
 		}
@@ -221,7 +235,7 @@ func (a *Agent) runTools(ctx context.Context, calls []provider.Block, out chan<-
 		}
 	} else {
 		for i := range calls {
-			results[i] = a.Tools.Run(ctx, calls[i])
+			results[i] = run(calls[i])
 		}
 	}
 
