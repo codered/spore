@@ -265,3 +265,126 @@ func TestToWireSendsToolResultAsToolMessage(t *testing.T) {
 		t.Errorf("tool message content = %v, want 'tool result output'", toolMsg["content"])
 	}
 }
+
+func TestToWireMarksFailedToolResults(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/tool_call.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var capturedBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&capturedBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write(fixture)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "sk-test", srv.Client())
+	ch, err := c.Stream(context.Background(), provider.Request{
+		Model: "test-model",
+		Messages: []provider.Message{
+			{
+				Role: provider.RoleAssistant,
+				Blocks: []provider.Block{
+					{
+						Type:  provider.BlockToolUse,
+						ID:    "error_call_id",
+						Name:  "test_function",
+						Input: json.RawMessage(`{"arg":"value"}`),
+					},
+				},
+			},
+			{
+				Role: provider.RoleUser,
+				Blocks: []provider.Block{
+					{
+						Type:    provider.BlockToolResult,
+						ID:      "error_call_id",
+						Content: "tool execution failed",
+						IsError: true,
+					},
+				},
+			},
+			{
+				Role: provider.RoleAssistant,
+				Blocks: []provider.Block{
+					{
+						Type:  provider.BlockToolUse,
+						ID:    "success_call_id",
+						Name:  "test_function",
+						Input: json.RawMessage(`{"arg":"value"}`),
+					},
+				},
+			},
+			{
+				Role: provider.RoleUser,
+				Blocks: []provider.Block{
+					{
+						Type:    provider.BlockToolResult,
+						ID:      "success_call_id",
+						Content: "success output",
+						IsError: false,
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	// Drain the channel
+	for range ch {
+	}
+
+	msgs, ok := capturedBody["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		t.Fatal("no messages in request body")
+	}
+
+	// Find tool messages
+	var errorToolMsg map[string]any
+	var successToolMsg map[string]any
+	for _, m := range msgs {
+		msg, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, ok := msg["role"].(string)
+		if !ok || role != "tool" {
+			continue
+		}
+		toolCallID, _ := msg["tool_call_id"].(string)
+		if toolCallID == "error_call_id" {
+			errorToolMsg = msg
+		}
+		if toolCallID == "success_call_id" {
+			successToolMsg = msg
+		}
+	}
+
+	if errorToolMsg == nil {
+		t.Fatal("no error tool message found")
+	}
+	if successToolMsg == nil {
+		t.Fatal("no success tool message found")
+	}
+
+	// Verify error tool result is prefixed with "Error: "
+	errorContent, _ := errorToolMsg["content"].(string)
+	if !strings.HasPrefix(errorContent, "Error: ") {
+		t.Errorf("error tool message content = %q, want prefix 'Error: '", errorContent)
+	}
+	if errorContent != "Error: tool execution failed" {
+		t.Errorf("error tool message content = %q, want 'Error: tool execution failed'", errorContent)
+	}
+
+	// Verify successful tool result is NOT prefixed
+	successContent, _ := successToolMsg["content"].(string)
+	if strings.HasPrefix(successContent, "Error: ") {
+		t.Errorf("success tool message content should not have Error prefix, got %q", successContent)
+	}
+	if successContent != "success output" {
+		t.Errorf("success tool message content = %q, want 'success output'", successContent)
+	}
+}

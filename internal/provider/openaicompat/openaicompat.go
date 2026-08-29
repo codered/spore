@@ -52,8 +52,12 @@ func toWire(system string, msgs []provider.Message) []map[string]any {
 					"function": map[string]any{"name": b.Name, "arguments": string(b.Input)},
 				})
 			case provider.BlockToolResult:
+				content := b.Content
+				if b.IsError {
+					content = "Error: " + content
+				}
 				out = append(out, map[string]any{
-					"role": "tool", "tool_call_id": b.ID, "content": b.Content,
+					"role": "tool", "tool_call_id": b.ID, "content": content,
 				})
 			}
 		}
