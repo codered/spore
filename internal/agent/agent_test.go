@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -12,6 +13,10 @@ import (
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/router"
 	"github.com/codered/spore/internal/store"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 // fakeTools answers every call with a fixed result and records what it saw.
@@ -268,5 +273,43 @@ func TestRunDispatchesReadOnlyBatchConcurrently(t *testing.T) {
 	// Results must be ordered by call index (c1 then c2), not completion order
 	if blocks[0].ID != "c1" || blocks[1].ID != "c2" {
 		t.Errorf("tool results out of order: [0].ID=%q, [1].ID=%q (want c1, c2)", blocks[0].ID, blocks[1].ID)
+	}
+}
+
+func TestMidStreamProviderErrorEndsLLMSpan(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		tp.Shutdown(context.Background())
+		otel.SetTracerProvider(noop.NewTracerProvider())
+	})
+
+	script := provider.NewScript(provider.ScriptTurn{Err: errors.New("upstream exploded")})
+	a, st := harness(t, script, nil)
+	sid, _ := st.CreateSession(context.Background(), "t")
+
+	ch, err := a.Run(context.Background(), sid, "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawError bool
+	for ev := range ch {
+		if ev.Type == EvError {
+			sawError = true
+		}
+	}
+	if !sawError {
+		t.Fatal("expected an error event from the turn")
+	}
+
+	var llmSpans int
+	for _, s := range sr.Ended() {
+		if s.Name() == "llm" {
+			llmSpans++
+		}
+	}
+	if llmSpans != 1 {
+		t.Errorf("expected exactly 1 ended llm span after a mid-stream provider error, got %d", llmSpans)
 	}
 }
