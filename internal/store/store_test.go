@@ -105,3 +105,47 @@ func TestSummaryAbsentIsNotAnError(t *testing.T) {
 		t.Errorf("want zero values, got (%q, %d)", text, through)
 	}
 }
+
+func TestListSessionsOrdering(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	// Create two sessions
+	id1, err := s.CreateSession(ctx, "first")
+	if err != nil {
+		t.Fatalf("CreateSession 1: %v", err)
+	}
+	id2, err := s.CreateSession(ctx, "second")
+	if err != nil {
+		t.Fatalf("CreateSession 2: %v", err)
+	}
+
+	// Manually set timestamps to test ordering with fixed-width format
+	// id1 gets an exact second, id2 gets +500ms (later)
+	exactSecond := "2026-01-01T10:00:00.000000000Z"
+	withMillis := "2026-01-01T10:00:00.500000000Z"
+
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET updated_at = ? WHERE id = ?`, exactSecond, id1); err != nil {
+		t.Fatalf("update session 1 timestamp: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET updated_at = ? WHERE id = ?`, withMillis, id2); err != nil {
+		t.Fatalf("update session 2 timestamp: %v", err)
+	}
+
+	// ListSessions orders by updated_at DESC, so id2 (with later timestamp) should be first
+	sessions, err := s.ListSessions(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("got %d sessions, want 2", len(sessions))
+	}
+	if sessions[0].ID != id2 {
+		t.Errorf("first session should be id2 (later timestamp), got %s", sessions[0].ID)
+	}
+	if sessions[1].ID != id1 {
+		t.Errorf("second session should be id1 (earlier timestamp), got %s", sessions[1].ID)
+	}
+}
