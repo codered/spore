@@ -171,6 +171,8 @@ func (a *Agent) loop(ctx context.Context, sessionID string, out chan<- Event) er
 					usage = *ev.Usage
 				}
 			case provider.EventError:
+				llmSpan.RecordError(ev.Err)
+				llmSpan.End()
 				return ev.Err
 			}
 		}
