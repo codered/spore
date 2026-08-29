@@ -51,12 +51,25 @@ func TestAssembleKeepsOnlyRecentMessages(t *testing.T) {
 	}
 }
 
-func TestAssembleIsPure(t *testing.T) {
-	snap := Snapshot{System: "s", Messages: []provider.Message{userMsg("a"), userMsg("b")}}
-	before := len(snap.Messages)
-	Assemble(snap, config.ContextConfig{MaxTokens: 1000, CompactAt: 0.75, KeepRecent: 1})
-	if len(snap.Messages) != before {
-		t.Errorf("Assemble mutated its input snapshot")
+func TestAssembleDoesNotAliasSnapshotMessages(t *testing.T) {
+	snap := Snapshot{
+		System:   "s",
+		Messages: []provider.Message{userMsg("a"), userMsg("b")},
+	}
+	req := Assemble(snap, config.ContextConfig{MaxTokens: 1000, CompactAt: 0.75, KeepRecent: 10})
+
+	if len(req.Messages) != len(snap.Messages) {
+		t.Fatalf("Messages = %d, want %d", len(req.Messages), len(snap.Messages))
+	}
+	// The request must own its slice: mutating the snapshot afterwards must
+	// not change a request already handed to a provider.
+	if &req.Messages[0] == &snap.Messages[0] {
+		t.Fatal("Assemble aliased the snapshot's backing array; the request must own its messages")
+	}
+	snap.Messages[0] = userMsg("MUTATED")
+	if req.Messages[0].Blocks[0].Text != "a" {
+		t.Errorf("mutating the snapshot changed the assembled request: got %q, want %q",
+			req.Messages[0].Blocks[0].Text, "a")
 	}
 }
 
