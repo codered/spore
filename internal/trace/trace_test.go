@@ -2,6 +2,9 @@ package trace
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/codered/spore/internal/config"
@@ -99,6 +102,71 @@ func TestInitDisabledIsANoOpWithUsableShutdown(t *testing.T) {
 		t.Fatal("Init returned a nil shutdown func")
 	}
 	if err := shutdown(context.Background()); err != nil {
+		t.Errorf("shutdown: %v", err)
+	}
+}
+
+func TestErrorPathEndsLLMSpan(t *testing.T) {
+	sr := recorder(t)
+	SetRedact(false)
+
+	// Simulate an LLM call that errors mid-stream
+	// WITHOUT the fix: error paths don't call span.End(), so no span appears in sr.Ended()
+	// WITH the fix: error paths call span.RecordError() and span.End() before returning
+	_, llm := StartLLM(context.Background(), "chat", "anthropic/claude-opus-5")
+
+	// Simulate error handling on EventError in the loop
+	err := fmt.Errorf("stream truncated")
+	llm.RecordError(err)
+	llm.End()
+
+	spans := sr.Ended()
+	if len(spans) == 0 {
+		t.Fatal("no spans recorded; error path did not end span")
+	}
+
+	// Verify the span was ended and recorded
+	var found bool
+	for _, s := range spans {
+		if s.Name() == "llm" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("llm span not found in ended spans")
+	}
+}
+
+func TestInitEnabledAgainstLocalCollector(t *testing.T) {
+	// Stand up a local httptest server that accepts OTLP trace POSTs
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	// Call Init with Enabled: true pointing to the local server
+	ctx := context.Background()
+	shutdown, err := Init(ctx, config.TraceConfig{
+		Enabled:    true,
+		Endpoint:   srv.URL + "/v1/traces",
+		SampleRate: 1.0,
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if shutdown == nil {
+		t.Fatal("Init returned a nil shutdown func")
+	}
+
+	// Emit a span through the enabled tracer
+	ctx, turn := StartTurn(ctx, "test-session", "test-client")
+	turn.End()
+
+	// Shutdown must succeed
+	if err := shutdown(ctx); err != nil {
 		t.Errorf("shutdown: %v", err)
 	}
 }

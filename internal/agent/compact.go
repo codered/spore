@@ -91,6 +91,8 @@ func (a *Agent) MaybeCompact(ctx context.Context, sessionID string) error {
 		}},
 	})
 	if err != nil {
+		span.RecordError(err)
+		span.End()
 		return fmt.Errorf("compaction provider %s: %w", ref, err)
 	}
 
@@ -105,11 +107,16 @@ func (a *Agent) MaybeCompact(ctx context.Context, sessionID string) error {
 				usage = *ev.Usage
 			}
 		case provider.EventError:
+			span.RecordError(ev.Err)
+			span.End()
 			return ev.Err
 		}
 	}
 	if strings.TrimSpace(summary) == "" {
-		return fmt.Errorf("compaction produced an empty summary")
+		err := fmt.Errorf("compaction produced an empty summary")
+		span.RecordError(err)
+		span.End()
+		return err
 	}
 	sporetrace.EndLLM(span, transcript.String(), summary, usage, price.Cost(usage))
 
