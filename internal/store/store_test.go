@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func open(t *testing.T) *Store {
@@ -106,6 +107,42 @@ func TestSummaryAbsentIsNotAnError(t *testing.T) {
 	}
 }
 
+func TestTimeFormatSortsChronologically(t *testing.T) {
+	base := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC) // exactly on the second
+	later := base.Add(500 * time.Millisecond)
+
+	a := base.Format(timeFormat)
+	b := later.Format(timeFormat)
+
+	if len(a) != len(b) {
+		t.Fatalf("timeFormat is variable width: %q (%d) vs %q (%d)", a, len(a), b, len(b))
+	}
+	if !(a < b) {
+		t.Errorf("later timestamp must sort after earlier one: %q should be < %q", a, b)
+	}
+	if _, err := time.Parse(time.RFC3339, b); err != nil {
+		t.Errorf("stored timestamps must still parse as RFC3339: %v", err)
+	}
+}
+
+func TestCreateSessionWritesFixedWidthTimestamp(t *testing.T) {
+	s := open(t)
+	id, err := s.CreateSession(context.Background(), "fixed width")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw string
+	if err := s.db.QueryRow(`SELECT created_at FROM sessions WHERE id = ?`, id).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != len(time.Now().UTC().Format(timeFormat)) {
+		t.Errorf("stored timestamp %q is not fixed width", raw)
+	}
+	if _, err := time.Parse(time.RFC3339, raw); err != nil {
+		t.Errorf("stored timestamp %q does not parse as RFC3339: %v", raw, err)
+	}
+}
+
 func TestListSessionsOrdering(t *testing.T) {
 	ctx := context.Background()
 	s := open(t)
@@ -120,10 +157,11 @@ func TestListSessionsOrdering(t *testing.T) {
 		t.Fatalf("CreateSession 2: %v", err)
 	}
 
-	// Manually set timestamps to test ordering with fixed-width format
-	// id1 gets an exact second, id2 gets +500ms (later)
-	exactSecond := "2026-01-01T10:00:00.000000000Z"
-	withMillis := "2026-01-01T10:00:00.500000000Z"
+	// Format real time.Time values through timeFormat for the update
+	base := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	later := base.Add(500 * time.Millisecond)
+	exactSecond := base.Format(timeFormat)
+	withMillis := later.Format(timeFormat)
 
 	if _, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET updated_at = ? WHERE id = ?`, exactSecond, id1); err != nil {
