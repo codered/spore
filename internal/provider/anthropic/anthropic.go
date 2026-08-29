@@ -133,6 +133,7 @@ func (c *Client) parse(rc io.ReadCloser, ch chan<- provider.Event) {
 	}
 	tools := map[int]*pending{}
 	var usage provider.Usage
+	var sawStop bool
 
 	sc := bufio.NewScanner(rc)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -160,6 +161,10 @@ func (c *Client) parse(rc io.ReadCloser, ch chan<- provider.Event) {
 				InputTokens  int `json:"input_tokens"`
 				OutputTokens int `json:"output_tokens"`
 			} `json:"usage"`
+			Error struct {
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			} `json:"error"`
 		}
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
 			ch <- provider.Event{Type: provider.EventError, Err: fmt.Errorf("decode sse: %w", err)}
@@ -197,13 +202,19 @@ func (c *Client) parse(rc io.ReadCloser, ch chan<- provider.Event) {
 			if ev.Usage.OutputTokens > 0 {
 				usage.OutputTokens = ev.Usage.OutputTokens
 			}
+		case "message_stop":
+			sawStop = true
 		case "error":
-			ch <- provider.Event{Type: provider.EventError, Err: fmt.Errorf("anthropic stream error")}
+			ch <- provider.Event{Type: provider.EventError, Err: fmt.Errorf("anthropic stream error: %s: %s", ev.Error.Type, ev.Error.Message)}
 			return
 		}
 	}
 	if err := sc.Err(); err != nil {
 		ch <- provider.Event{Type: provider.EventError, Err: fmt.Errorf("read stream: %w", err)}
+		return
+	}
+	if !sawStop {
+		ch <- provider.Event{Type: provider.EventError, Err: fmt.Errorf("stream ended without message_stop (truncated response)")}
 		return
 	}
 	u := usage
