@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/codered/spore/internal/config"
@@ -200,5 +201,72 @@ func TestRunStopsAtMaxIterations(t *testing.T) {
 	}
 	if !sawError {
 		t.Error("a runaway tool loop must end in an error event, not silence")
+	}
+}
+
+type concurrentTools struct {
+	mu    sync.Mutex
+	calls []provider.Block
+}
+
+func (c *concurrentTools) Specs() []provider.ToolSpec {
+	return []provider.ToolSpec{{Name: "fs.read", Description: "read a file", Schema: json.RawMessage(`{"type":"object"}`)}}
+}
+func (c *concurrentTools) ReadOnly(string) bool { return true }
+func (c *concurrentTools) Run(_ context.Context, call provider.Block) provider.Block {
+	c.mu.Lock()
+	c.calls = append(c.calls, call)
+	c.mu.Unlock()
+	return provider.Block{Type: provider.BlockToolResult, ID: call.ID, Content: "result for " + call.ID}
+}
+
+func TestRunDispatchesReadOnlyBatchConcurrently(t *testing.T) {
+	ctx := context.Background()
+	script := provider.NewScript(
+		provider.ScriptTurn{
+			ToolCalls: []provider.Block{
+				{Type: provider.BlockToolUse, ID: "c1", Name: "fs.read", Input: json.RawMessage(`{"path":"a"}`)},
+				{Type: provider.BlockToolUse, ID: "c2", Name: "fs.read", Input: json.RawMessage(`{"path":"b"}`)},
+			},
+			Usage: provider.Usage{InputTokens: 10, OutputTokens: 5},
+		},
+		provider.ScriptTurn{Text: "file contents", Usage: provider.Usage{InputTokens: 20, OutputTokens: 6}},
+	)
+	tools := &concurrentTools{}
+	a, st := harness(t, script, tools)
+	sid, _ := st.CreateSession(ctx, "t")
+
+	ch, err := a.Run(ctx, sid, "read two files")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_ = collect(t, ch)
+
+	// Both tool calls should have been run
+	if len(tools.calls) != 2 {
+		t.Fatalf("tool invoked %d times, want 2", len(tools.calls))
+	}
+
+	// Persisted messages: user, assistant(2 tool_uses), tool_result(2), assistant(text)
+	msgs, _ := st.Messages(ctx, sid)
+	if len(msgs) != 4 {
+		t.Fatalf("persisted %d messages, want 4: %+v", len(msgs), msgs)
+	}
+
+	// Tool result message should contain both results
+	if msgs[2].Role != "tool" {
+		t.Errorf("row 3 role = %q, want tool", msgs[2].Role)
+	}
+	var blocks []provider.Block
+	if err := json.Unmarshal(msgs[2].BlocksJSON, &blocks); err != nil {
+		t.Fatalf("decode tool results: %v", err)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("tool result message has %d blocks, want 2", len(blocks))
+	}
+
+	// Results must be ordered by call index (c1 then c2), not completion order
+	if blocks[0].ID != "c1" || blocks[1].ID != "c2" {
+		t.Errorf("tool results out of order: [0].ID=%q, [1].ID=%q (want c1, c2)", blocks[0].ID, blocks[1].ID)
 	}
 }
