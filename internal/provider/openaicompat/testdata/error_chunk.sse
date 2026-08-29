@@ -1,0 +1,5 @@
+data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"Starting response"}}]}
+
+data: {"error":{"message":"Rate limit exceeded","type":"rate_limit_error"}}
+
+data: [DONE]

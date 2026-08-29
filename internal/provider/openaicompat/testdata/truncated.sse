@@ -1,0 +1,3 @@
+data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"This is some content"}}]}
+
+data: {"choices":[{"index":0,"delta":{"content":" but the stream ends abruptly"}}]}
