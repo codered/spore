@@ -49,8 +49,9 @@ func SnapshotTokens(snap Snapshot) int {
 
 // Assemble builds the request in the spec's fixed order: system prompt,
 // memory facts, compaction summary, then the live message tail. Facts and the
-// summary ride in the system block so they stay pinned regardless of tail
-// trimming.
+// summary ride in the system block so they stay pinned regardless of message
+// count. The assembled request includes every live message; compaction is
+// responsible for keeping the live tail within the token budget.
 func Assemble(snap Snapshot, cfg config.ContextConfig) provider.Request {
 	var sys strings.Builder
 	sys.WriteString(snap.System)
@@ -68,13 +69,9 @@ func Assemble(snap Snapshot, cfg config.ContextConfig) provider.Request {
 		sys.WriteString("\n")
 	}
 
-	tail := snap.Messages
-	if cfg.KeepRecent > 0 && len(tail) > cfg.KeepRecent {
-		tail = tail[len(tail)-cfg.KeepRecent:]
-	}
 	// Copy so callers cannot alias the snapshot's backing array.
-	msgs := make([]provider.Message, len(tail))
-	copy(msgs, tail)
+	msgs := make([]provider.Message, len(snap.Messages))
+	copy(msgs, snap.Messages)
 
 	return provider.Request{
 		System:    sys.String(),

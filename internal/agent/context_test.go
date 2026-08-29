@@ -37,17 +37,17 @@ func TestAssembleOrdersSystemFactsSummaryThenTail(t *testing.T) {
 	}
 }
 
-func TestAssembleKeepsOnlyRecentMessages(t *testing.T) {
+func TestAssembleIncludesEveryLiveMessage(t *testing.T) {
 	var msgs []provider.Message
 	for _, s := range []string{"m1", "m2", "m3", "m4", "m5"} {
 		msgs = append(msgs, userMsg(s))
 	}
 	req := Assemble(Snapshot{System: "s", Messages: msgs}, config.ContextConfig{MaxTokens: 1000, CompactAt: 0.75, KeepRecent: 2})
-	if len(req.Messages) != 2 {
-		t.Fatalf("Messages = %d, want 2", len(req.Messages))
+	if len(req.Messages) != 5 {
+		t.Fatalf("Messages = %d, want 5; trimming is compaction's job, not assembly's", len(req.Messages))
 	}
-	if req.Messages[0].Blocks[0].Text != "m4" || req.Messages[1].Blocks[0].Text != "m5" {
-		t.Errorf("kept the wrong tail: %+v", req.Messages)
+	if req.Messages[0].Blocks[0].Text != "m1" || req.Messages[4].Blocks[0].Text != "m5" {
+		t.Errorf("message order wrong or not all messages present: %+v", req.Messages)
 	}
 }
 
@@ -70,6 +70,30 @@ func TestAssembleDoesNotAliasSnapshotMessages(t *testing.T) {
 	if req.Messages[0].Blocks[0].Text != "a" {
 		t.Errorf("mutating the snapshot changed the assembled request: got %q, want %q",
 			req.Messages[0].Blocks[0].Text, "a")
+	}
+}
+
+func TestAssembleDoesNotDropHistoryWhenUnderBudget(t *testing.T) {
+	// Build a snapshot with 20 short messages and an empty summary
+	// (simulating no compaction yet). With the default KeepRecent of 12,
+	// the old buggy code would drop the first 8 messages even though
+	// compaction hasn't run. This test catches that regression.
+	var msgs []provider.Message
+	for i := 0; i < 20; i++ {
+		msgs = append(msgs, userMsg("FIRST"))
+	}
+	// Use default config, which has KeepRecent: 12
+	cfg := config.Default().Context
+	snap := Snapshot{System: "s", Summary: "", Messages: msgs}
+	req := Assemble(snap, cfg)
+
+	if len(req.Messages) != 20 {
+		t.Fatalf("Messages = %d, want 20 (all messages should be present when under budget)",
+			len(req.Messages))
+	}
+	if req.Messages[0].Blocks[0].Text != "FIRST" {
+		t.Errorf("first message was dropped: got %q, want FIRST",
+			req.Messages[0].Blocks[0].Text)
 	}
 }
 
