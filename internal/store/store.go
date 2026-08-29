@@ -37,7 +37,9 @@ type Message struct {
 	CreatedAt  time.Time
 }
 
-const timeFormat = time.RFC3339Nano
+// Fixed-width so the text column sorts chronologically; still parses as
+// plain time.RFC3339.
+const timeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
 func Open(path string) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "" {
@@ -63,7 +65,9 @@ func (s *Store) Close() error { return s.db.Close() }
 
 func newID() string {
 	var b [12]byte
-	rand.Read(b[:])
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("crypto/rand unavailable: " + err.Error())
+	}
 	return hex.EncodeToString(b[:])
 }
 
