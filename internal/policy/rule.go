@@ -304,6 +304,3 @@ func (a argMatches) match(c Call, _ Env) bool {
 	return false
 }
 
-// Temporary: replaced by internal/policy/path.go in Task 2.
-func Resolve(workspace, p string) (string, error) { return p, nil }
-func Inside(workspace, p string) bool             { return strings.HasPrefix(p, workspace) }
