@@ -81,6 +81,44 @@ func TestLearnRulePreservesTextAfterTheBlock(t *testing.T) {
 	}
 }
 
+func TestLearnRuleRefusesWhenMarkersAreDuplicated(t *testing.T) {
+	body := "default_model = \"a/b\"\n\n" +
+		ManagedBegin + "\n[policy.learned]\nallow = [\"fs_read\"]\n" + ManagedEnd + "\n\n" +
+		ManagedBegin + "\n[policy.learned]\nallow = [\"stale\"]\n" + ManagedEnd + "\n"
+	p := write(t, body)
+	before, _ := os.ReadFile(p)
+	err := LearnRule(p, "allow", "fs_write")
+	if err == nil {
+		t.Fatal("LearnRule wrote into a file carrying two managed blocks")
+	}
+	if !strings.Contains(err.Error(), "by hand") {
+		t.Errorf("error %q must tell the user what to do about it", err)
+	}
+	after, _ := os.ReadFile(p)
+	if string(before) != string(after) {
+		t.Error("the file was modified despite the refusal")
+	}
+}
+
+func TestLearnRuleNeverLeavesAnUnloadableConfig(t *testing.T) {
+	// The marker text inside the user's own comment makes splitManaged miss
+	// the real block. Whatever the function decides to do, the file it leaves
+	// behind must still load — a config that will not parse locks the user
+	// out of their own agent.
+	p := write(t, "default_model = \"a/b\"\n# note: "+ManagedBegin+" in my own comment\n[trace]\nenabled = true\n")
+	_ = LearnRule(p, "allow", "fs_read")
+	if _, err := Load(p); err != nil {
+		t.Fatalf("config no longer loads after the first LearnRule: %v", err)
+	}
+	// The second call now sees two markers and must refuse, not guess.
+	if err := LearnRule(p, "allow", "fs_write"); err == nil {
+		t.Error("LearnRule guessed at a file with an orphaned marker")
+	}
+	if _, err := Load(p); err != nil {
+		t.Fatalf("config no longer loads after the refused LearnRule: %v", err)
+	}
+}
+
 func TestLearnRuleRejectsAnUnparseableRule(t *testing.T) {
 	p := write(t, "default_model = \"a/b\"\n")
 	// A rule that cannot be quoted safely must be refused rather than

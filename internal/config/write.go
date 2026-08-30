@@ -41,6 +41,14 @@ func LearnRule(path, decision, rule string) error {
 	}
 	body := string(raw)
 
+	// More than one marker means the file has a stale or half-deleted block,
+	// or the marker text inside the user's own prose. splitManaged would pair
+	// the wrong two, so refuse with something the user can act on rather than
+	// rewriting around it.
+	if n := strings.Count(body, ManagedBegin); n > 1 {
+		return fmt.Errorf("%s contains %d spore-managed policy markers; remove all but one block by hand before spore can learn new rules", path, n)
+	}
+
 	before, existing, after, found := splitManaged(body)
 	learned := LearnedPolicy{}
 	if found {
@@ -75,8 +83,18 @@ func LearnRule(path, decision, rule string) error {
 		out = strings.TrimRight(body, "\n") + "\n\n" + block
 	}
 
+	// Never replace the user's config with something that will not load. This
+	// turns any future bug in this function into a refusal instead of an agent
+	// that cannot start — the user's own file is the thing at stake.
+	var probe Config
+	if _, err := toml.Decode(out, &probe); err != nil {
+		return fmt.Errorf("refusing to write %s: the result would not parse as TOML (%w)", path, err)
+	}
+
 	// Write through a temp file in the same directory so an interrupted
-	// write cannot leave a half-rewritten config behind.
+	// write cannot leave a half-rewritten config behind. The result is 0600:
+	// a config may name a literal API key, so the first learned rule tightens
+	// a world- or group-readable file rather than preserving its mode.
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".config-*.toml")
 	if err != nil {
