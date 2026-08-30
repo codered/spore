@@ -9,10 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/codered/spore/internal/tool"
@@ -95,18 +93,19 @@ func (t *execTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", a.Command)
-	cmd.Dir = t.ws
-	// Put the child in its own process group and kill the group, so a command
-	// that spawns children does not leave them running after a timeout.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		// Returning os.ErrProcessDone tells exec not to substitute the
-		// context's error, so Wait surfaces the real ProcessState and the
-		// caller below can see the process was signalled.
-		return os.ErrProcessDone
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
+
+	// bash on every platform: the command strings the model writes, and the
+	// rules internal/policy matches them against, are bash. On Windows that
+	// means shell_exec needs a bash on PATH (Git Bash, WSL, MSYS2).
+	cmd := exec.Command("bash", "-c", a.Command)
+	cmd.Dir = t.ws
+	// Group the child with its descendants so the whole tree can be killed
+	// together; a command that spawns children must not leave them running
+	// after a timeout.
+	setProcessGroup(cmd)
 
 	// One writer for both streams: os/exec special-cases identical Stdout and
 	// Stderr writers and routes them through a single goroutine, so this needs
@@ -114,7 +113,34 @@ func (t *execTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 	w := &capWriter{limit: t.maxOutput}
 	cmd.Stdout = w
 	cmd.Stderr = w
-	err := cmd.Run()
+
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("starting command: %w", err)
+	}
+
+	// The deadline gets its own kill path rather than exec.CommandContext's.
+	// os/exec settles its cancel watch the moment the shell exits and never
+	// calls Cancel after that, so a shell that exits before the deadline
+	// leaves its children alive and the call blocked indefinitely on the
+	// output pipe they inherited. This fires whenever ctx ends, however the
+	// shell finished.
+	//
+	// Killing by group id is safe against pid reuse: the kernel keeps a pid
+	// reserved for as long as it is still in use as a process group id, so it
+	// cannot be recycled while any member of the group is alive. Once the
+	// group is empty the kill is a no-op.
+	pid := cmd.Process.Pid
+	waited := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			killProcessTree(pid)
+		case <-waited:
+		}
+	}()
+
+	err := cmd.Wait()
+	close(waited)
 
 	// Whether the deadline killed the command is a fact about the process, not
 	// about the context. ctx can expire without exec ever cancelling anything:
@@ -123,12 +149,7 @@ func (t *execTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 	// past the deadline waiting for output pipes a surviving grandchild holds
 	// open. Keying the report off ctx.Err() there would relabel an ordinary
 	// exit as a kill and throw the exit status away.
-	killed := false
-	if ps := cmd.ProcessState; ps != nil {
-		if ws, ok := ps.Sys().(syscall.WaitStatus); ok {
-			killed = ws.Signaled()
-		}
-	}
+	killed := wasKilled(cmd.ProcessState)
 
 	out := w.buf.String()
 	if w.dropped > 0 {
