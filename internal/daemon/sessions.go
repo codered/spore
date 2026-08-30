@@ -147,10 +147,14 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 // the hub. The caller must already hold the session's turn slot; startTurn
 // releases it when the turn ends.
 func (s *Server) startTurn(sessionID, text, client string) error {
+	var turn sporetrace.Span
 	// Recover before any operations so panics in policy.WithSession or
 	// sporetrace.StartTurn are also caught.
 	defer func() {
 		if r := recover(); r != nil {
+			if turn != nil {
+				turn.End()
+			}
 			s.hub.End(sessionID)
 			slog.Error("panic in startTurn setup", "session", sessionID, "panic", r)
 			panic(r)
@@ -158,7 +162,7 @@ func (s *Server) startTurn(sessionID, text, client string) error {
 	}()
 
 	ctx := policy.WithSession(s.base, sessionID, policy.ProfileLocal)
-	ctx, turn := sporetrace.StartTurn(ctx, sessionID, client)
+	ctx, turn = sporetrace.StartTurn(ctx, sessionID, client)
 
 	ch, err := s.agent.Run(ctx, sessionID, text)
 	if err != nil {
@@ -175,8 +179,8 @@ func (s *Server) startTurn(sessionID, text, client string) error {
 			if r := recover(); r != nil {
 				slog.Error("panic in turn pump", "session", sessionID, "panic", r)
 				s.hub.Publish(sessionID, WireEvent{
-					Type: WireError,
-					Text: "turn crashed: " + fmt.Sprint(r),
+					Type:  WireError,
+					Error: "turn crashed: " + fmt.Sprint(r),
 				})
 			}
 		}()
