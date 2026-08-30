@@ -3680,15 +3680,61 @@ func (s *Store) PendingCalls(ctx context.Context, sessionID string) ([]PendingCa
 }
 
 // ResolvePendingCall closes a suspension with the decision that ended it:
-// allow, deny, or timeout.
+// allow, deny, timeout or error. The state guard makes it idempotent — a
+// second call for an already-answered suspension changes nothing.
 func (s *Store) ResolvePendingCall(ctx context.Context, id int64, decision string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE pending_calls SET state = ?, decided_at = ? WHERE id = ?`,
+		`UPDATE pending_calls SET state = ?, decided_at = ? WHERE id = ? AND state = 'pending'`,
 		decision, time.Now().UTC().Format(timeFormat), id)
 	if err != nil {
 		return fmt.Errorf("resolve pending call %d: %w", id, err)
 	}
 	return nil
+}
+
+// ClaimPendingCall resolves a suspension AND writes its audit row in one
+// transaction, returning the call it claimed. The bool reports whether this
+// caller won: a second client answering the same suspension concurrently
+// finds it no longer pending and gets false, so two clients can never record
+// contradictory answers, and a partial failure can never leave a resolved
+// row with no audit entry behind it.
+func (s *Store) ClaimPendingCall(ctx context.Context, id int64, sessionID, decision, scope string) (PendingCall, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PendingCall{}, false, err
+	}
+	defer tx.Rollback()
+
+	var p PendingCall
+	var args, created string
+	err = tx.QueryRowContext(ctx,
+		`SELECT id, session_id, tool_use_id, tool, args, profile, rule, created_at
+		 FROM pending_calls WHERE id = ? AND session_id = ? AND state = 'pending'`,
+		id, sessionID).Scan(&p.ID, &p.SessionID, &p.ToolUseID, &p.Tool, &args, &p.Profile, &p.Rule, &created)
+	if err == sql.ErrNoRows {
+		return PendingCall{}, false, nil
+	}
+	if err != nil {
+		return PendingCall{}, false, fmt.Errorf("claim pending call %d: %w", id, err)
+	}
+	p.ArgsJSON = []byte(args)
+	p.CreatedAt, _ = time.Parse(timeFormat, created)
+
+	now := time.Now().UTC().Format(timeFormat)
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE pending_calls SET state = ?, decided_at = ? WHERE id = ? AND state = 'pending'`,
+		decision, now, id); err != nil {
+		return PendingCall{}, false, fmt.Errorf("claim pending call %d: %w", id, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO approvals (session_id, tool, args, decision, scope, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		sessionID, p.Tool, args, decision, scope, now); err != nil {
+		return PendingCall{}, false, fmt.Errorf("claim pending call %d: %w", id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return PendingCall{}, false, err
+	}
+	return p, true, nil
 }
 
 // RecordApproval appends to the audit log. Only scope "session" is consulted
@@ -4430,6 +4476,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/codered/spore/internal/config"
@@ -4530,6 +4577,52 @@ func TestSuspensionSurvivesARestart(t *testing.T) {
 	}
 }
 
+func TestResolveAdmitsExactlyOneConcurrentAnswer(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sid, _ := st.CreateSession(ctx, "race")
+	id, err := st.AddPendingCall(ctx, store.PendingCall{
+		SessionID: sid, ToolUseID: "c1", Tool: "fs_write",
+		ArgsJSON: json.RawMessage(`{"path":"/ws/a.go"}`), Profile: "local", Rule: "fs_write",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{Ask: []string{"fs_write"}}), nil, st, nil)
+
+	// Several clients answer the same suspension at once, half allowing and
+	// half denying. Exactly one may win: two recorded answers would leave the
+	// audit log self-contradictory about what the human actually said.
+	const n = 8
+	var wg sync.WaitGroup
+	won := make([]bool, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			won[i] = g.Resolve(ctx, sid, id, Answer{Allow: i%2 == 0, Scope: ScopeSession}) == nil
+		}(i)
+	}
+	wg.Wait()
+
+	winners := 0
+	for _, w := range won {
+		if w {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Errorf("%d of %d concurrent Resolve calls succeeded, want exactly 1", winners, n)
+	}
+	if pending, _ := g.Pending(ctx, sid); len(pending) != 0 {
+		t.Errorf("%d pending calls left after the race", len(pending))
+	}
+}
+
 func TestResolveRejectsAForeignPendingCall(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
@@ -4571,32 +4664,28 @@ func (g *Guard) Pending(ctx context.Context, sessionID string) ([]store.PendingC
 // a second client, or a process that restarted while the request was open.
 // The session is checked so one session cannot answer another's approvals.
 func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, ans Answer) error {
-	pending, err := g.store.PendingCalls(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-	var found *store.PendingCall
-	for i := range pending {
-		if pending[i].ID == pendingID {
-			found = &pending[i]
-			break
-		}
-	}
-	if found == nil {
-		return fmt.Errorf("no pending call %d in session %s (already answered, or another session's)", pendingID, sessionID)
-	}
 	decision := DecisionDeny
 	if ans.Allow {
 		decision = DecisionAllow
 	}
-	if err := g.store.ResolvePendingCall(ctx, pendingID, string(decision)); err != nil {
+	// One transaction claims the suspension and writes its audit row together.
+	// Two clients answering at once cannot both record an answer, and a
+	// failure part-way cannot leave a resolved row with no audit entry.
+	claimed, won, err := g.store.ClaimPendingCall(ctx, pendingID, sessionID, string(decision), string(ans.Scope))
+	if err != nil {
 		return err
 	}
-	if err := g.store.RecordApproval(ctx, sessionID, found.Tool, found.ArgsJSON, string(decision), string(ans.Scope)); err != nil {
-		return err
+	if !won {
+		return fmt.Errorf("no pending call %d in session %s (already answered, or another session's)", pendingID, sessionID)
 	}
 	if ans.Scope == ScopePattern && g.learn != nil {
-		return g.learn(decision, PatternFor(Call{Tool: found.Tool, Args: found.ArgsJSON}))
+		if err := g.learn(decision, PatternFor(Call{Tool: claimed.Tool, Args: claimed.ArgsJSON})); err != nil {
+			// Same invariant as Run: failing to persist a learned rule must not
+			// undo an answer already recorded, or the caller retries and is
+			// told the call was "already answered". The user is asked again
+			// next time instead.
+			sporetrace.RecordPolicy(ctx, string(decision), "learned rule not persisted: "+err.Error())
+		}
 	}
 	return nil
 }
