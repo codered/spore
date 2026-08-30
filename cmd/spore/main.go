@@ -19,6 +19,8 @@ usage:
   spore chat [session-id]      interactive session (resumes when given an id)
   spore session list           list recent sessions
   spore session show <id>      print a session transcript
+  spore policy check <tool> [json-args]
+                               print the decision a tool call would get
 
 flags:
   -config <path>   config file (default ~/.spore/config.toml)
@@ -79,6 +81,22 @@ func run(args []string) error {
 		return cmdChat(ctx, cfg, st, id)
 	case "session":
 		return cmdSession(ctx, st, args[1:])
+	case "policy":
+		// spore policy check <tool> [json-args] [-profile local|remote]
+		if len(args) < 3 || args[1] != "check" {
+			return fmt.Errorf("usage: spore policy check <tool> [json-args] [-profile local|remote]")
+		}
+		profile, jsonArgs := "local", "{}"
+		rest := args[3:]
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == "-profile" && i+1 < len(rest) {
+				profile = rest[i+1]
+				i++
+				continue
+			}
+			jsonArgs = rest[i]
+		}
+		return cmdPolicyCheck(cfg, profile, args[2], jsonArgs)
 	default:
 		fmt.Print(usage)
 		return fmt.Errorf("unknown command %q", args[0])

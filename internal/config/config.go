@@ -13,6 +13,9 @@ import (
 )
 
 type Config struct {
+	// Path is the file this config was loaded from. It carries no TOML tag:
+	// it is set by Load, never read from the file.
+	Path         string `toml:"-"`
 	DefaultModel string `toml:"default_model"`
 	SystemPrompt string `toml:"system_prompt"`
 	DataDir      string `toml:"data_dir"`
@@ -237,6 +240,7 @@ func Load(path string) (*Config, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	cfg.Path = path
 	return cfg, nil
 }
 

@@ -6,6 +6,7 @@ import (
 
 	"github.com/codered/spore/internal/agent"
 	"github.com/codered/spore/internal/config"
+	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/store"
 )
 
@@ -43,6 +44,7 @@ func cmdOnce(ctx context.Context, cfg *config.Config, st *store.Store, prompt st
 	if err != nil {
 		return err
 	}
+	ctx = policy.WithSession(ctx, sid, policy.ProfileLocal)
 	ch, err := a.Run(ctx, sid, prompt)
 	if err != nil {
 		return err
