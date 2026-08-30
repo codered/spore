@@ -141,6 +141,40 @@ func TestFetchReportsHTTPErrors(t *testing.T) {
 	}
 }
 
+func TestStripTagsKeepsLiteralAngleBrackets(t *testing.T) {
+	// Brave wraps matched terms in <strong>, but a snippet is arbitrary text
+	// from a web page: "x < y" must survive intact rather than losing its tail.
+	cases := map[string]string{
+		"The Go <strong>language</strong>": "The Go language",
+		"Node: x < y comparisons":          "Node: x < y comparisons",
+		"a < b and c > d":                  "a < b and c > d",
+		"unterminated <tag":                "unterminated <tag",
+		"AT&amp;T":                         "AT&T",
+		"<em>only</em>":                    "only",
+	}
+	for in, want := range cases {
+		if got := stripTags(in); got != want {
+			t.Errorf("stripTags(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestFetchRefusesARedirectAwayFromHTTP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// A server that answers a plain fetch with a redirect into the local
+		// filesystem. The scheme check on the first URL cannot see this.
+		w.Header().Set("Location", "file:///etc/passwd")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer srv.Close()
+	tl := NewFetchTool(srv.Client(), "spore-test", 1<<20)
+	args, _ := json.Marshal(map[string]string{"url": srv.URL})
+	out, err := tl.Call(context.Background(), args)
+	if err == nil {
+		t.Fatalf("web_fetch followed a redirect out of http(s) and returned %.80q", out)
+	}
+}
+
 func TestNewOmitsSearchWithoutAKey(t *testing.T) {
 	names := func(cfg config.WebConfig) []string {
 		var out []string

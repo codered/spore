@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	stdhtml "html"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/codered/spore/internal/tool"
@@ -19,9 +21,26 @@ type fetchTool struct {
 	maxBytes  int
 }
 
+// checkRedirect re-validates the scheme on every hop. Go's transport already
+// refuses a non-http(s) scheme, so a 302 to file:///etc/passwd fails today —
+// but that is incidental protection from the stdlib, not this tool's own
+// decision. Stating it here keeps the guarantee if that ever changes.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+		return fmt.Errorf("refusing redirect to %q: only http and https are allowed", req.URL.Scheme)
+	}
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	return nil
+}
+
 func NewFetchTool(hc *http.Client, userAgent string, maxBytes int) tool.Tool {
 	if hc == nil {
 		hc = http.DefaultClient
+	}
+	if hc.CheckRedirect == nil {
+		hc.CheckRedirect = checkRedirect
 	}
 	if userAgent == "" {
 		userAgent = "spore/0.1"
@@ -167,19 +186,14 @@ func collapseBlankLines(s string) string {
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
-// stripTags removes the markup Brave uses to highlight matched terms.
+// tagRE matches an actual HTML tag. A "<" that is not followed by a letter or
+// "/" is literal text, and an unterminated tag has no closing ">" to match.
+var tagRE = regexp.MustCompile(`</?[a-zA-Z][^>]*>`)
+
+// stripTags removes the markup Brave uses to highlight matched terms, and
+// resolves entities so the model reads "AT&T" rather than "AT&amp;T". A naive
+// depth counter would swallow everything between a literal "<" and the next
+// ">" — a snippet like "x < y comparisons" would silently lose its tail.
 func stripTags(s string) string {
-	var b strings.Builder
-	depth := 0
-	for _, r := range s {
-		switch {
-		case r == '<':
-			depth++
-		case r == '>' && depth > 0:
-			depth--
-		case depth == 0:
-			b.WriteRune(r)
-		}
-	}
-	return strings.TrimSpace(b.String())
+	return strings.TrimSpace(stdhtml.UnescapeString(tagRE.ReplaceAllString(s, "")))
 }
