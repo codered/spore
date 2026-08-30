@@ -103,6 +103,10 @@ func (t readTool) Call(_ context.Context, args json.RawMessage) (string, error) 
 	if len(raw) > t.maxBytes {
 		raw = raw[:t.maxBytes]
 	}
+	// A genuinely empty file (no content at all).
+	if len(raw) == 0 {
+		return "(empty file)", nil
+	}
 	lines := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
 	start := 0
 	if a.Offset > 0 {
@@ -120,7 +124,9 @@ func (t readTool) Call(_ context.Context, args json.RawMessage) (string, error) 
 		fmt.Fprintf(&b, "%6d\t%s\n", i+1, lines[i])
 	}
 	if b.Len() == 0 {
-		return "(empty file)", nil
+		// An offset past the end must not look like an empty file: the model
+		// needs to tell "there is nothing here" from "you asked past the end".
+		return fmt.Sprintf("(no lines in range: the file has %d lines)", len(lines)), nil
 	}
 	return b.String(), nil
 }
@@ -383,6 +389,9 @@ func (t grepTool) Call(_ context.Context, args json.RawMessage) (string, error) 
 		return "", err
 	}
 	var hits []string
+	// Files the scanner could not finish (a line past its buffer limit). Left
+	// unreported, such a file is indistinguishable from one with no matches.
+	var unscannable []string
 	err = walkFiles(root, func(p string) error {
 		r := t.rel(p)
 		if filter != nil && !filter.MatchString(r) && !filter.MatchString(filepath.Base(p)) {
@@ -403,17 +412,25 @@ func (t grepTool) Call(_ context.Context, args json.RawMessage) (string, error) 
 				hits = append(hits, fmt.Sprintf("%s:%d: %s", r, line, strings.TrimSpace(sc.Text())))
 			}
 		}
+		if err := sc.Err(); err != nil {
+			unscannable = append(unscannable, fmt.Sprintf("%s (%v)", r, err))
+		}
 		return nil
 	})
 	if err != nil {
 		return "", err
 	}
+	note := ""
+	if len(unscannable) > 0 {
+		note = fmt.Sprintf("\n\n[%d file(s) could not be fully scanned, so matches in them may be missing: %s]",
+			len(unscannable), strings.Join(unscannable, "; "))
+	}
 	if len(hits) == 0 {
-		return noMatches, nil
+		return noMatches + note, nil
 	}
 	out := strings.Join(hits, "\n")
 	if len(hits) >= maxGrepHits {
 		out += fmt.Sprintf("\n\n[stopped after %d matches; narrow the pattern or the path]", maxGrepHits)
 	}
-	return out, nil
+	return out + note, nil
 }

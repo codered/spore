@@ -131,6 +131,35 @@ func TestEmptyResultsSaySoExplicitly(t *testing.T) {
 	}
 }
 
+func TestGrepReportsFilesItCouldNotScan(t *testing.T) {
+	m, ws := tools(t)
+	// One line longer than the scanner's 1MB buffer. Unreported, this file
+	// would be indistinguishable from a file that simply had no matches.
+	if err := os.WriteFile(filepath.Join(ws, "huge.txt"), []byte(strings.Repeat("x", 2<<20)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := run(t, m["fs_grep"], map[string]string{"pattern": "zzz"})
+	if !strings.Contains(got, "could not be fully scanned") {
+		t.Errorf("fs_grep = %q, want the unscannable file reported rather than silently skipped", got)
+	}
+}
+
+func TestReadDistinguishesAnEmptyFileFromAnEmptyWindow(t *testing.T) {
+	m, _ := tools(t)
+	run(t, m["fs_write"], map[string]string{"path": "empty.txt", "content": ""})
+	if got := run(t, m["fs_read"], map[string]string{"path": "empty.txt"}); !strings.Contains(got, "empty file") {
+		t.Errorf("fs_read on an empty file = %q, want it named as empty", got)
+	}
+	run(t, m["fs_write"], map[string]string{"path": "three.txt", "content": "a\nb\nc\n"})
+	got := run(t, m["fs_read"], map[string]any{"path": "three.txt", "offset": 99})
+	if strings.Contains(got, "empty file") {
+		t.Errorf("fs_read past EOF = %q, want it distinguished from an empty file", got)
+	}
+	if !strings.Contains(got, "3") {
+		t.Errorf("fs_read past EOF = %q, want the real line count reported", got)
+	}
+}
+
 func TestReadOnlyFlags(t *testing.T) {
 	m, _ := tools(t)
 	for name, want := range map[string]bool{
