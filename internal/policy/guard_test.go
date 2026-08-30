@@ -282,6 +282,21 @@ func TestMissingSessionContextDenies(t *testing.T) {
 	}
 }
 
+func TestMissingSessionDeniesEvenAnAllowedTool(t *testing.T) {
+	ap := &scriptedApprover{}
+	g, inner, _, _ := guardFixture(t, config.PolicyConfig{Allow: []string{"fs_read"}}, ap)
+	// fs_read is allowed outright by policy, so this call never reaches the
+	// ask branch. With no session on the context it must still be refused: an
+	// unattributable call cannot be audited, and must not reach a tool.
+	got := g.Run(context.Background(), toolCall("fs_read", "c1", `{"path":"/ws/a"}`))
+	if !got.IsError {
+		t.Fatal("an allowed tool ran with no session on the context")
+	}
+	if len(inner.calls) != 0 {
+		t.Error("the tool executed without a session")
+	}
+}
+
 func TestGuardDelegatesSpecsAndReadOnly(t *testing.T) {
 	ap := &scriptedApprover{}
 	g, _, _, _ := guardFixture(t, config.PolicyConfig{}, ap)
