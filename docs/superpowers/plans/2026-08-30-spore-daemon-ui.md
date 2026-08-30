@@ -5155,13 +5155,29 @@ func newFullServer(t *testing.T, turns ...provider.ScriptTurn) (*Server, *httpte
 	}
 	t.Cleanup(func() { st.Close() })
 
-	cfg := config.Default()
-	cfg.DefaultModel = "script/fake"
+	// Build the config through config.Load rather than config.Default. The
+	// baseline deny list — the rules no approval can talk past — is appended
+	// by Load, NOT by Default, so a hand-built config has no baseline and
+	// "fs_read" in the allow list would match by tool name and let a read of
+	// /etc/passwd straight through. This test exists to prove the real
+	// policy path holds, so it has to load config the way production does.
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(`
+default_model = "script/fake"
+
+[policy]
+workspace = "`+workspace+`"
+default = "deny"
+allow = ["fs_read", "fs_list"]
+ask = ["fs_write"]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
 	cfg.DataDir = t.TempDir()
-	cfg.Policy.Workspace = workspace
-	cfg.Policy.Allow = []string{"fs_read", "fs_list"}
-	cfg.Policy.Ask = []string{"fs_write"}
-	cfg.Policy.Default = "deny"
 
 	preg := provider.NewRegistry()
 	preg.Register("script", provider.NewScript(turns...), provider.ProviderPrice{In: 1, Out: 2})
