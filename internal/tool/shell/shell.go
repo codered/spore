@@ -102,8 +102,9 @@ func (t *execTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		// Returning os.ErrProcessDone tells exec the kill is the expected
-		// outcome, so Run reports the deadline rather than the signal.
+		// Returning os.ErrProcessDone tells exec not to substitute the
+		// context's error, so Wait surfaces the real ProcessState and the
+		// caller below can see the process was signalled.
 		return os.ErrProcessDone
 	}
 
@@ -115,15 +116,30 @@ func (t *execTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 	cmd.Stderr = w
 	err := cmd.Run()
 
+	// Whether the deadline killed the command is a fact about the process, not
+	// about the context. ctx can expire without exec ever cancelling anything:
+	// if the process exits before the deadline, os/exec settles the cancel
+	// watch on the spot and never calls Cancel, yet Run can still block well
+	// past the deadline waiting for output pipes a surviving grandchild holds
+	// open. Keying the report off ctx.Err() there would relabel an ordinary
+	// exit as a kill and throw the exit status away.
+	killed := false
+	if ps := cmd.ProcessState; ps != nil {
+		if ws, ok := ps.Sys().(syscall.WaitStatus); ok {
+			killed = ws.Signaled()
+		}
+	}
+
 	out := w.buf.String()
 	if w.dropped > 0 {
 		out += fmt.Sprintf("\n[%d further bytes of output were dropped at the %d-byte budget]", w.dropped, t.maxOutput)
 	}
 	switch {
-	// err != nil is part of the timeout test on purpose: a command that
-	// completes successfully at the instant the deadline expires was not
-	// killed, and must not be reported as though it were.
-	case err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded):
+	// A timeout is only reported when the deadline expired *and* the process
+	// was actually signalled. A command that reached its own exit at the
+	// instant the deadline passed was not killed, and must not be reported as
+	// though it were.
+	case err != nil && killed && errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return out + fmt.Sprintf("\n[timed out after %s and was killed]", timeout), nil
 	case err != nil:
 		// A non-zero exit is information for the model, not a tool failure.

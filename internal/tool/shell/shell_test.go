@@ -117,10 +117,11 @@ func TestOutputIsCappedInMemory(t *testing.T) {
 }
 
 func TestFastCommandIsNeverReportedAsTimedOut(t *testing.T) {
-	// A command that exits cleanly must never be labelled a timeout, however
-	// the deadline and the process exit interleave.
+	// The timeout is generous on purpose: the premise of this test is that the
+	// command really did finish, which a deadline shorter than bash's own
+	// startup would not establish.
 	for i := 0; i < 50; i++ {
-		tl := New(t.TempDir(), time.Millisecond, 1<<20)
+		tl := New(t.TempDir(), 2*time.Second, 1<<20)
 		out, err := call(t, tl, map[string]string{"command": "true"})
 		if err != nil {
 			t.Fatal(err)
@@ -128,6 +129,24 @@ func TestFastCommandIsNeverReportedAsTimedOut(t *testing.T) {
 		if strings.Contains(out, "timed out") {
 			t.Fatalf("a command that exited cleanly was reported as timed out: %q", out)
 		}
+	}
+}
+
+func TestExitAtTheDeadlineIsReportedAsAnExitNotAKill(t *testing.T) {
+	// bash exits 7 straight away, but a backgrounded grandchild holds the
+	// output pipe open past the deadline, so the deadline expires while the
+	// call is still waiting. The process exited on its own and was never
+	// signalled: reporting a kill would hide the exit status from the model.
+	tl := New(t.TempDir(), 20*time.Millisecond, 1<<20)
+	out, err := call(t, tl, map[string]string{"command": "sleep 1 & exit 7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "timed out") {
+		t.Errorf("out = %q, want the exit status: the command exited on its own and was never killed", out)
+	}
+	if !strings.Contains(out, "exit status 7") {
+		t.Errorf("out = %q, want it to report exit status 7", out)
 	}
 }
 
