@@ -4162,7 +4162,11 @@ type Runner interface {
 type Scope string
 
 const (
-	ScopeOnce    Scope = "once"
+	ScopeOnce Scope = "once"
+	// ScopeSession remembers the answer for the whole TOOL for the rest of the
+	// session, not for these arguments. Approving shell_exec once for "ls"
+	// approves it for every later command too. Baseline deny still applies, but
+	// an approver must say this plainly when it offers the option.
 	ScopeSession Scope = "session"
 	ScopePattern Scope = "pattern"
 )
@@ -4207,10 +4211,15 @@ func WithSession(ctx context.Context, sessionID string, p Profile) context.Conte
 	return context.WithValue(ctx, sessionKey{}, sessionInfo{id: sessionID, profile: p})
 }
 
-// SessionFrom returns the session and profile on the context. The zero
-// profile is local.
+// SessionFrom returns the session and profile on the context. When nothing is
+// attached it reports the LEAST trusted profile, not the most: a caller that
+// forgot WithSession must fail toward the strictest ruleset, never toward the
+// one that allows the most.
 func SessionFrom(ctx context.Context) (string, Profile) {
-	info, _ := ctx.Value(sessionKey{}).(sessionInfo)
+	info, ok := ctx.Value(sessionKey{}).(sessionInfo)
+	if !ok {
+		return "", ProfileRemote
+	}
 	if info.profile == "" {
 		info.profile = ProfileLocal
 	}
@@ -4248,9 +4257,17 @@ func denied(id, format string, args ...any) provider.Block {
 // delegates. It never returns an error: a refusal is a tool error the model
 // can read and route around.
 func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
-	c := Call{Tool: call.Name, Args: call.Input}
 	sessionID, profile := SessionFrom(ctx)
+	// Checked BEFORE evaluation, not on the ask branch: a call with no session
+	// cannot be audited, attributed, or routed to a human, so it must not run
+	// at all — not even a tool policy would allow outright. Leaving this until
+	// the ask branch would let an allowed call through unattributed.
+	if sessionID == "" {
+		sporetrace.RecordPolicy(ctx, "deny", "policy.no-session")
+		return denied(call.ID, "refusing %s: no session on the context, so the call cannot be audited", call.Name)
+	}
 
+	c := Call{Tool: call.Name, Args: call.Input}
 	res := g.engine.Evaluate(profile, c)
 	sporetrace.RecordPolicy(ctx, string(res.Decision), res.Rule)
 
@@ -4264,9 +4281,6 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 	}
 
 	// From here the decision is ask.
-	if sessionID == "" {
-		return denied(call.ID, "cannot request approval: no session on the context")
-	}
 	if remembered, ok, err := g.store.SessionDecision(ctx, sessionID, call.Name); err == nil && ok {
 		if remembered == string(DecisionAllow) {
 			sporetrace.RecordPolicy(ctx, "allow", "approved earlier this session")
@@ -4293,6 +4307,13 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 		return denied(call.ID, "could not record the approval request: %v", err)
 	}
 
+	// Bookkeeping writes use a context detached from the caller's. When a turn
+	// is abandoned mid-approval the caller's ctx is already dead, and writing
+	// through it fails instantly — stranding the suspension row we just wrote
+	// and losing the audit entry. Values are preserved, cancellation is not.
+	book, cancelBook := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancelBook()
+
 	// An approval nobody answers denies, so a turn started from a phone
 	// cannot sit half-executed forever.
 	askCtx, cancel := context.WithTimeout(ctx, g.engine.ApprovalTimeout())
@@ -4308,12 +4329,12 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 	})
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
-		_ = g.store.ResolvePendingCall(ctx, pendingID, "timeout")
-		_ = g.store.RecordApproval(ctx, sessionID, call.Name, call.Input, "deny", "timeout")
+		_ = g.store.ResolvePendingCall(book, pendingID, "timeout")
+		_ = g.store.RecordApproval(book, sessionID, call.Name, call.Input, "deny", "timeout")
 		sporetrace.RecordPolicy(ctx, "deny", "approval timed out")
 		return denied(call.ID, "approval for %s timed out after %s and was denied", call.Name, g.engine.ApprovalTimeout())
 	case err != nil:
-		_ = g.store.ResolvePendingCall(ctx, pendingID, "error")
+		_ = g.store.ResolvePendingCall(book, pendingID, "error")
 		sporetrace.RecordPolicy(ctx, "deny", "approver unavailable")
 		return denied(call.ID, "could not ask for approval: %v", err)
 	}
@@ -4322,8 +4343,8 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 	if answer.Allow {
 		decision = DecisionAllow
 	}
-	_ = g.store.ResolvePendingCall(ctx, pendingID, string(decision))
-	_ = g.store.RecordApproval(ctx, sessionID, call.Name, call.Input, string(decision), string(answer.Scope))
+	_ = g.store.ResolvePendingCall(book, pendingID, string(decision))
+	_ = g.store.RecordApproval(book, sessionID, call.Name, call.Input, string(decision), string(answer.Scope))
 
 	if answer.Scope == ScopePattern && g.learn != nil {
 		if err := g.learn(decision, pattern); err != nil {
