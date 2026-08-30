@@ -10,27 +10,42 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/codered/spore/internal/provider"
 )
 
-const apiVersion = "2023-06-01"
+const (
+	apiVersion      = "2023-06-01"
+	workspaceHeader = "anthropic-workspace-id"
+)
 
 type Client struct {
-	baseURL string
-	apiKey  string
-	hc      *http.Client
+	baseURL     string
+	apiKey      string
+	workspaceID string
+	hc          *http.Client
+
+	// mu guards learnedWS, the default workspace the API reported for this
+	// key. It is only consulted when workspaceID is empty.
+	mu        sync.RWMutex
+	learnedWS string
 }
 
-func New(baseURL, apiKey string, hc *http.Client) *Client {
+// New builds a client. workspaceID may be empty, in which case requests carry
+// no anthropic-workspace-id header and the API acts in the key's default
+// workspace. Identity-linked keys that span several workspaces reject that;
+// the client then falls back to the default workspace the API names in the
+// response and retries once.
+func New(baseURL, apiKey, workspaceID string, hc *http.Client) *Client {
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
 	if hc == nil {
 		hc = &http.Client{Timeout: 10 * time.Minute}
 	}
-	return &Client{baseURL: strings.TrimSuffix(baseURL, "/"), apiKey: apiKey, hc: hc}
+	return &Client{baseURL: strings.TrimSuffix(baseURL, "/"), apiKey: apiKey, workspaceID: workspaceID, hc: hc}
 }
 
 func (c *Client) Name() string { return "anthropic" }
@@ -97,6 +112,76 @@ func (c *Client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 		return nil, err
 	}
 
+	resp, err := c.post(ctx, buf)
+	if err != nil {
+		return nil, err
+	}
+
+	ch := make(chan provider.Event, 32)
+	go c.parse(resp.Body, ch)
+	return ch, nil
+}
+
+// workspace reports the workspace to name on a request: the configured id,
+// otherwise the default one the API disclosed on an earlier response.
+func (c *Client) workspace() string {
+	if c.workspaceID != "" {
+		return c.workspaceID
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.learnedWS
+}
+
+// post sends one request, retrying once against the default workspace when
+// the API demands an anthropic-workspace-id it also names in the response.
+func (c *Client) post(ctx context.Context, buf []byte) (*http.Response, error) {
+	resp, err := c.send(ctx, buf, c.workspace())
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusOK {
+		if c.workspaceID == "" {
+			c.remember(resp.Header.Get(workspaceHeader))
+		}
+		return resp, nil
+	}
+
+	defer resp.Body.Close()
+	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	body := strings.TrimSpace(string(msg))
+
+	// The key spans several workspaces, so the header is mandatory. The
+	// response names the default one; adopt it and try again.
+	if fallback := resp.Header.Get(workspaceHeader); fallback != "" && c.workspace() == "" && strings.Contains(body, workspaceHeader) {
+		c.remember(fallback)
+		retry, err := c.send(ctx, buf, fallback)
+		if err != nil {
+			return nil, err
+		}
+		if retry.StatusCode == http.StatusOK {
+			return retry, nil
+		}
+		defer retry.Body.Close()
+		msg, _ = io.ReadAll(io.LimitReader(retry.Body, 4096))
+		return nil, fmt.Errorf("anthropic %s: %s", retry.Status, strings.TrimSpace(string(msg)))
+	}
+	if c.workspace() == "" && strings.Contains(body, workspaceHeader) {
+		return nil, fmt.Errorf("anthropic %s: %s (set workspace_id on the provider or $ANTHROPIC_WORKSPACE_ID)", resp.Status, body)
+	}
+	return nil, fmt.Errorf("anthropic %s: %s", resp.Status, body)
+}
+
+func (c *Client) remember(id string) {
+	if id == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.learnedWS = id
+}
+
+func (c *Client) send(ctx context.Context, buf []byte, workspaceID string) (*http.Response, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/messages", bytes.NewReader(buf))
 	if err != nil {
 		return nil, err
@@ -104,20 +189,14 @@ func (c *Client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 	httpReq.Header.Set("content-type", "application/json")
 	httpReq.Header.Set("x-api-key", c.apiKey)
 	httpReq.Header.Set("anthropic-version", apiVersion)
-
+	if workspaceID != "" {
+		httpReq.Header.Set(workspaceHeader, workspaceID)
+	}
 	resp, err := c.hc.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic request: %w", err)
 	}
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("anthropic %s: %s", resp.Status, strings.TrimSpace(string(msg)))
-	}
-
-	ch := make(chan provider.Event, 32)
-	go c.parse(resp.Body, ch)
-	return ch, nil
+	return resp, nil
 }
 
 // parse turns the SSE stream into events. Tool-call JSON arrives in
