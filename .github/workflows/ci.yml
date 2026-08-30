@@ -24,7 +24,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Windows is absent on purpose: internal/policy resolves paths on Unix
+        # assumptions that do not hold there (filepath.IsAbs rejects "/etc/x"
+        # without a drive letter), so workspace confinement is not trustworthy
+        # on Windows yet. Add it back with the fix, not before.
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -52,7 +56,8 @@ jobs:
           - { runner: ubuntu-24.04-arm, goos: linux,   goarch: arm64 }
           - { runner: macos-13,         goos: darwin,  goarch: amd64 }
           - { runner: macos-latest,     goos: darwin,  goarch: arm64 }
-          - { runner: windows-latest,   goos: windows, goarch: amd64 }
+          # No windows/amd64 until policy path handling is portable; see the
+          # note on the test matrix above.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

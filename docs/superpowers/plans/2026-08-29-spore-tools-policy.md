@@ -5531,4 +5531,12 @@ Named here so they are not mistaken for gaps:
 - **The `schedule` tool** — Plan 3, with the scheduler and background jobs.
 - **SSE approval events and multi-client answering** — Plan 3. `Guard.Pending` and `Guard.Resolve` are the API that plan consumes; the `Approver` interface is what the daemon implements.
 - **The `remote` trust profile in anger** — the engine supports profiles now and is tested for them, but nothing sets `ProfileRemote` until the Telegram bridge in Plan 4.
+- **Windows support** — the shell tool is portable (`proc_windows.go`), but
+  `internal/policy` resolves paths on Unix assumptions: `filepath.IsAbs`
+  rejects `/etc/passwd` without a drive letter, so `Resolve` joins it onto the
+  workspace and `Inside` calls it confined, and `PatternFor` mixes separators
+  into its globs. `TestInsideRejectsTraversal` and
+  `TestPatternForNarrowsToTheDirectory` fail on Windows today. CI builds Linux
+  and macOS only until this is fixed; confinement is the boundary this plan
+  exists to build, so a Windows binary must not ship ahead of it.
 - **`spore doctor`** — spec §8 lists it under the CLI; it validates providers, MCP servers and sidecars, most of which do not exist until Plans 4 and 5.
