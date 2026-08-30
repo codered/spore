@@ -218,9 +218,11 @@ func (a *Agent) runTools(ctx context.Context, calls []provider.Block, out chan<-
 	}
 
 	run := func(call provider.Block) provider.Block {
-		_, span := sporetrace.StartTool(ctx, call.Name, call.Input)
+		toolCtx, span := sporetrace.StartTool(ctx, call.Name, call.Input)
 		defer span.End()
-		return a.Tools.Run(ctx, call)
+		res := a.Tools.Run(toolCtx, call)
+		sporetrace.RecordToolResult(span, res.Content, res.IsError, res.Truncated)
+		return res
 	}
 
 	results := make([]provider.Block, len(calls))
