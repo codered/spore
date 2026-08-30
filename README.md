@@ -24,6 +24,7 @@ spore reads `~/.spore/config.toml` and keeps everything else in
 `${VAR}` and never stored in the file.
 
     default_model = "anthropic/claude-opus-5"
+    show_cost     = false   # true appends " · $0.0038" to each turn footer
 
     [providers.anthropic]
     kind      = "anthropic"
