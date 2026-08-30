@@ -123,10 +123,10 @@ func compileToolGlob(g string) (*regexp.Regexp, error) {
 	return regexp.Compile(b.String())
 }
 
-// compilePathGlob understands "**" (any number of segments), "*" (within one
-// segment) and "?". A leading "**/" also matches a bare filename, so
-// "**/.env" matches ".env".
-func compilePathGlob(g string) (*regexp.Regexp, error) {
+// GlobSource turns a path glob into an anchored regexp source. It is exported
+// so the filesystem tools search with exactly the semantics policy matches
+// with: "**" spans directories, "*" stays within one segment.
+func GlobSource(g string) string {
 	var b strings.Builder
 	b.WriteString(`\A`)
 	for i := 0; i < len(g); i++ {
@@ -150,8 +150,10 @@ func compilePathGlob(g string) (*regexp.Regexp, error) {
 		}
 	}
 	b.WriteString(`\z`)
-	return regexp.Compile(b.String())
+	return b.String()
 }
+
+func compilePathGlob(g string) (*regexp.Regexp, error) { return regexp.Compile(GlobSource(g)) }
 
 func splitList(s string) []string {
 	var out []string
