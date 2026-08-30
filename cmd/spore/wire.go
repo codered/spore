@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/codered/spore/internal/agent"
 	"github.com/codered/spore/internal/config"
@@ -20,7 +21,11 @@ func buildAgent(cfg *config.Config, st *store.Store) (*agent.Agent, error) {
 		price := provider.ProviderPrice{In: pc.PriceIn, Out: pc.PriceOut}
 		switch pc.Kind {
 		case "anthropic":
-			reg.Register(name, anthropic.New(pc.BaseURL, pc.APIKey, nil), price)
+			ws := pc.WorkspaceID
+			if ws == "" {
+				ws = os.Getenv("ANTHROPIC_WORKSPACE_ID")
+			}
+			reg.Register(name, anthropic.New(pc.BaseURL, pc.APIKey, ws, nil), price)
 		case "openai", "openai-compatible":
 			if pc.BaseURL == "" {
 				return nil, fmt.Errorf("provider %q: base_url is required for kind %q", name, pc.Kind)

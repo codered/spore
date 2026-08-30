@@ -39,6 +39,13 @@ spore reads `~/.spore/config.toml` and keeps everything else in
     when  = "compaction|title|classify"
     model = "ollama/qwen3:8b"
 
+Anthropic requests carry no workspace by default, so the API acts in the
+key's default workspace. An identity-linked key spanning several workspaces
+rejects that; spore then adopts the default workspace the API names in the
+response and retries. To pin one explicitly, set `workspace_id` on the
+provider (or export `ANTHROPIC_WORKSPACE_ID`) to the `wrkspc_...` value from
+the Console workspace URL.
+
 Routing rules match a **call site** — `chat`, `compaction`, `title`, or
 `classify` — so mechanical work runs on a cheap local model while
 conversation runs on the good one.

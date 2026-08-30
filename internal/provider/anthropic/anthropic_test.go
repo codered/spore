@@ -25,13 +25,16 @@ func TestStreamParsesTextToolCallAndUsage(t *testing.T) {
 		if got := r.Header.Get("anthropic-version"); got == "" {
 			t.Error("anthropic-version header missing")
 		}
+		if got := r.Header.Get("anthropic-workspace-id"); got != "wrkspc_test" {
+			t.Errorf("anthropic-workspace-id = %q", got)
+		}
 		json.NewDecoder(r.Body).Decode(&gotBody)
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Write(fixture)
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", srv.Client())
+	c := New(srv.URL, "sk-test", "wrkspc_test", srv.Client())
 	ch, err := c.Stream(context.Background(), provider.Request{
 		Model:     "claude-opus-5",
 		System:    "you are spore",
@@ -86,7 +89,7 @@ func TestStreamSurfacesHTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", srv.Client())
+	c := New(srv.URL, "sk-test", "wrkspc_test", srv.Client())
 	_, err := c.Stream(context.Background(), provider.Request{Model: "nope", MaxTokens: 16})
 	if err == nil {
 		t.Fatal("Stream succeeded on a 400; want error")
@@ -104,7 +107,7 @@ func TestStreamTruncatedWithoutMessageStopIsAnError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", srv.Client())
+	c := New(srv.URL, "sk-test", "wrkspc_test", srv.Client())
 	ch, err := c.Stream(context.Background(), provider.Request{Model: "claude-opus-5", MaxTokens: 1024})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -136,7 +139,7 @@ func TestStreamSurfacesUpstreamErrorEvent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", srv.Client())
+	c := New(srv.URL, "sk-test", "wrkspc_test", srv.Client())
 	ch, err := c.Stream(context.Background(), provider.Request{Model: "claude-opus-5", MaxTokens: 1024})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -202,7 +205,7 @@ func TestToWireSendsToolResultAsUserRole(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", srv.Client())
+	c := New(srv.URL, "sk-test", "wrkspc_test", srv.Client())
 	ch, err := c.Stream(context.Background(), provider.Request{
 		Model:     "claude-opus-5",
 		MaxTokens: 1024,
@@ -225,5 +228,91 @@ func TestToWireSendsToolResultAsUserRole(t *testing.T) {
 		if ev.Type == provider.EventError {
 			t.Fatalf("unexpected error: %v", ev.Err)
 		}
+	}
+}
+
+// With no workspace configured the header is omitted, which makes the API act
+// in the key's default workspace; the id it reports back is reused after that.
+func TestStreamOmitsWorkspaceHeaderThenAdoptsTheDefault(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/tool_use.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get("anthropic-workspace-id"))
+		w.Header().Set("anthropic-workspace-id", "wrkspc_default")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write(fixture)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "sk-test", "", srv.Client())
+	for i := 0; i < 2; i++ {
+		ch, err := c.Stream(context.Background(), provider.Request{Model: "claude-opus-5", MaxTokens: 16})
+		if err != nil {
+			t.Fatalf("Stream %d: %v", i, err)
+		}
+		for range ch {
+		}
+	}
+
+	want := []string{"", "wrkspc_default"}
+	if len(seen) != 2 || seen[0] != want[0] || seen[1] != want[1] {
+		t.Errorf("workspace headers = %q, want %q", seen, want)
+	}
+}
+
+// An identity-linked key spanning several workspaces rejects a header-less
+// request but names the default workspace; the client retries with it.
+func TestStreamRetriesWithDefaultWorkspaceOn400(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/tool_use.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws := r.Header.Get("anthropic-workspace-id")
+		seen = append(seen, ws)
+		w.Header().Set("anthropic-workspace-id", "wrkspc_default")
+		if ws == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"error":{"message":"anthropic-workspace-id is required when authenticating with an identity-linked API key"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write(fixture)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "sk-test", "", srv.Client())
+	ch, err := c.Stream(context.Background(), provider.Request{Model: "claude-opus-5", MaxTokens: 16})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+
+	want := []string{"", "wrkspc_default"}
+	if len(seen) != 2 || seen[0] != want[0] || seen[1] != want[1] {
+		t.Errorf("workspace headers = %q, want %q", seen, want)
+	}
+}
+
+// Without a workspace to fall back on the error tells the user what to set.
+func TestStreamWorkspaceErrorIsActionable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":{"message":"anthropic-workspace-id is required"}}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "sk-test", "", srv.Client())
+	_, err := c.Stream(context.Background(), provider.Request{Model: "claude-opus-5", MaxTokens: 16})
+	if err == nil {
+		t.Fatal("Stream succeeded on a 400; want error")
+	}
+	if !strings.Contains(err.Error(), "workspace_id") {
+		t.Errorf("error = %q, want it to name workspace_id", err)
 	}
 }
