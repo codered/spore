@@ -4159,7 +4159,9 @@ Run:
 
 ```bash
 go list -tags sqlite_fts5 -deps ./internal/policy | grep -E 'codered/spore/internal/(agent|daemon)' && echo "FAIL: policy must not import the agent" || echo "OK"
-go list -tags sqlite_fts5 -deps ./internal/agent | grep -E 'codered/spore/internal/(policy|tool)|net/http' && echo "FAIL: the core imported a transport or policy" || echo "OK"
+# .Imports, not -deps: net/http arrives transitively via internal/trace's OTLP
+# exporter and is not the core reaching for a transport.
+go list -tags sqlite_fts5 -f '{{join .Imports "\n"}}' ./internal/agent | grep -E 'codered/spore/internal/(policy|tool)|net/http' && echo "FAIL: the core imported a transport or policy" || echo "OK"
 ```
 
 Expected: both print `OK`.
@@ -5123,7 +5125,7 @@ git commit -m "feat(cli): wire tools and policy into the agent with a terminal a
 Run before declaring the plan complete.
 
 - [ ] `make vet && make test && make build` all clean.
-- [ ] `go list -tags sqlite_fts5 -deps ./internal/agent | grep -E 'internal/(policy|tool|daemon)|net/http'` prints nothing — the core is still transport-free and policy-free.
+- [ ] `go list -tags sqlite_fts5 -f '{{join .Imports "\n"}}' ./internal/agent | grep -E 'internal/(policy|tool|daemon)|net/http'` prints nothing — the core is still transport-free and policy-free. Use `.Imports` (direct imports), NOT `-deps`: `net/http` reaches the core transitively through `internal/trace`'s OTLP-over-HTTP exporter, which is inherent to tracing and predates this plan. The constraint is about what the core *reaches for*, not what its dependencies happen to link.
 - [ ] `go list -tags sqlite_fts5 -deps ./internal/policy | grep 'internal/agent'` prints nothing.
 - [ ] The adversarial path suite passes on a machine where `/tmp` is a symlink as well as one where it is not.
 - [ ] `spore policy check` reports `deny` for: a path outside the workspace, `**/.env`, `~/.ssh/id_rsa`, and `sudo` in a shell command — under both the `local` and `remote` profiles.
