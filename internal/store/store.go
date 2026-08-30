@@ -54,6 +54,10 @@ func Open(path string) (*Store, error) {
 	// One writer keeps WAL contention out of the picture; the daemon is a
 	// single process and writes are short.
 	db.SetMaxOpenConns(1)
+	if err := migrateJobs(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if _, err := db.Exec(schemaSQL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
