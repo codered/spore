@@ -2177,6 +2177,10 @@ func (t readTool) Call(_ context.Context, args json.RawMessage) (string, error) 
 	if len(raw) > t.maxBytes {
 		raw = raw[:t.maxBytes]
 	}
+	// A genuinely empty file (no content at all).
+	if len(raw) == 0 {
+		return "(empty file)", nil
+	}
 	lines := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
 	start := 0
 	if a.Offset > 0 {
@@ -2196,9 +2200,6 @@ func (t readTool) Call(_ context.Context, args json.RawMessage) (string, error) 
 	if b.Len() == 0 {
 		// An offset past the end must not look like an empty file: the model
 		// needs to tell "there is nothing here" from "you asked past the end".
-		if len(lines) == 1 && lines[0] == "" {
-			return "(empty file)", nil
-		}
 		return fmt.Sprintf("(no lines in range: the file has %d lines)", len(lines)), nil
 	}
 	return b.String(), nil
