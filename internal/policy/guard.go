@@ -242,3 +242,45 @@ func PatternFor(c Call) string {
 	}
 	return fmt.Sprintf("%s(path matches %s/**)", c.Tool, strings.TrimSuffix(dir, "/"))
 }
+
+// Pending lists the session's unanswered approval requests. A client that
+// attaches to a session — after a restart, or as a second client — calls this
+// to find out what is waiting on a human.
+func (g *Guard) Pending(ctx context.Context, sessionID string) ([]store.PendingCall, error) {
+	return g.store.PendingCalls(ctx, sessionID)
+}
+
+// Resolve answers a pending approval by id. It is the out-of-band path used
+// when the answer arrives from somewhere other than the Approver that asked —
+// a second client, or a process that restarted while the request was open.
+// The session is checked so one session cannot answer another's approvals.
+func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, ans Answer) error {
+	pending, err := g.store.PendingCalls(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	var found *store.PendingCall
+	for i := range pending {
+		if pending[i].ID == pendingID {
+			found = &pending[i]
+			break
+		}
+	}
+	if found == nil {
+		return fmt.Errorf("no pending call %d in session %s (already answered, or another session's)", pendingID, sessionID)
+	}
+	decision := DecisionDeny
+	if ans.Allow {
+		decision = DecisionAllow
+	}
+	if err := g.store.ResolvePendingCall(ctx, pendingID, string(decision)); err != nil {
+		return err
+	}
+	if err := g.store.RecordApproval(ctx, sessionID, found.Tool, found.ArgsJSON, string(decision), string(ans.Scope)); err != nil {
+		return err
+	}
+	if ans.Scope == ScopePattern && g.learn != nil {
+		return g.learn(decision, PatternFor(Call{Tool: found.Tool, Args: found.ArgsJSON}))
+	}
+	return nil
+}
