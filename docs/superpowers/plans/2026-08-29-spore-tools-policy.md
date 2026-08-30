@@ -1968,6 +1968,35 @@ func TestEmptyResultsSaySoExplicitly(t *testing.T) {
 	}
 }
 
+func TestGrepReportsFilesItCouldNotScan(t *testing.T) {
+	m, ws := tools(t)
+	// One line longer than the scanner's 1MB buffer. Unreported, this file
+	// would be indistinguishable from a file that simply had no matches.
+	if err := os.WriteFile(filepath.Join(ws, "huge.txt"), []byte(strings.Repeat("x", 2<<20)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := run(t, m["fs_grep"], map[string]string{"pattern": "zzz"})
+	if !strings.Contains(got, "could not be fully scanned") {
+		t.Errorf("fs_grep = %q, want the unscannable file reported rather than silently skipped", got)
+	}
+}
+
+func TestReadDistinguishesAnEmptyFileFromAnEmptyWindow(t *testing.T) {
+	m, _ := tools(t)
+	run(t, m["fs_write"], map[string]string{"path": "empty.txt", "content": ""})
+	if got := run(t, m["fs_read"], map[string]string{"path": "empty.txt"}); !strings.Contains(got, "empty file") {
+		t.Errorf("fs_read on an empty file = %q, want it named as empty", got)
+	}
+	run(t, m["fs_write"], map[string]string{"path": "three.txt", "content": "a\nb\nc\n"})
+	got := run(t, m["fs_read"], map[string]any{"path": "three.txt", "offset": 99})
+	if strings.Contains(got, "empty file") {
+		t.Errorf("fs_read past EOF = %q, want it distinguished from an empty file", got)
+	}
+	if !strings.Contains(got, "3") {
+		t.Errorf("fs_read past EOF = %q, want the real line count reported", got)
+	}
+}
+
 func TestReadOnlyFlags(t *testing.T) {
 	m, _ := tools(t)
 	for name, want := range map[string]bool{
@@ -2165,7 +2194,12 @@ func (t readTool) Call(_ context.Context, args json.RawMessage) (string, error) 
 		fmt.Fprintf(&b, "%6d\t%s\n", i+1, lines[i])
 	}
 	if b.Len() == 0 {
-		return "(empty file)", nil
+		// An offset past the end must not look like an empty file: the model
+		// needs to tell "there is nothing here" from "you asked past the end".
+		if len(lines) == 1 && lines[0] == "" {
+			return "(empty file)", nil
+		}
+		return fmt.Sprintf("(no lines in range: the file has %d lines)", len(lines)), nil
 	}
 	return b.String(), nil
 }
@@ -2428,6 +2462,9 @@ func (t grepTool) Call(_ context.Context, args json.RawMessage) (string, error) 
 		return "", err
 	}
 	var hits []string
+	// Files the scanner could not finish (a line past its buffer limit). Left
+	// unreported, such a file is indistinguishable from one with no matches.
+	var unscannable []string
 	err = walkFiles(root, func(p string) error {
 		r := t.rel(p)
 		if filter != nil && !filter.MatchString(r) && !filter.MatchString(filepath.Base(p)) {
@@ -2448,19 +2485,27 @@ func (t grepTool) Call(_ context.Context, args json.RawMessage) (string, error) 
 				hits = append(hits, fmt.Sprintf("%s:%d: %s", r, line, strings.TrimSpace(sc.Text())))
 			}
 		}
+		if err := sc.Err(); err != nil {
+			unscannable = append(unscannable, fmt.Sprintf("%s (%v)", r, err))
+		}
 		return nil
 	})
 	if err != nil {
 		return "", err
 	}
+	note := ""
+	if len(unscannable) > 0 {
+		note = fmt.Sprintf("\n\n[%d file(s) could not be fully scanned, so matches in them may be missing: %s]",
+			len(unscannable), strings.Join(unscannable, "; "))
+	}
 	if len(hits) == 0 {
-		return noMatches, nil
+		return noMatches + note, nil
 	}
 	out := strings.Join(hits, "\n")
 	if len(hits) >= maxGrepHits {
 		out += fmt.Sprintf("\n\n[stopped after %d matches; narrow the pattern or the path]", maxGrepHits)
 	}
-	return out, nil
+	return out + note, nil
 }
 ```
 
