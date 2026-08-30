@@ -1458,6 +1458,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/codered/spore/internal/provider"
 )
@@ -1542,11 +1543,31 @@ func TestOutputIsTruncatedAndMarked(t *testing.T) {
 	if !got.Truncated {
 		t.Error("Truncated = false, want the result marked as clipped")
 	}
-	if len(got.Content) > 20+len(truncationNote) {
-		t.Errorf("content is %d bytes, want it capped near 20", len(got.Content))
+	if want := strings.Repeat("x", 20) + truncationNote; got.Content != want {
+		t.Errorf("Content = %q, want exactly the first 20 bytes plus the marker", got.Content)
 	}
 	if !strings.Contains(got.Content, "truncated") {
 		t.Error("the model must be able to see the output was clipped, not empty")
+	}
+}
+
+func TestTruncationDoesNotSplitARune(t *testing.T) {
+	r := NewRegistry(20)
+	// 19 ASCII bytes then a 3-byte rune: a byte-index cut at 20 would land
+	// inside the euro sign and hand the model half a character.
+	_ = r.Register(fake{name: "uni", readOnly: true, fn: func(context.Context, json.RawMessage) (string, error) {
+		return strings.Repeat("a", 19) + "\u20acuro", nil
+	}})
+	got := r.Run(context.Background(), call("uni", "c", `{}`))
+	if !got.Truncated {
+		t.Fatal("Truncated = false, want the result marked as clipped")
+	}
+	body := strings.TrimSuffix(got.Content, truncationNote)
+	if !utf8.ValidString(body) {
+		t.Errorf("truncated body is not valid UTF-8: %q", body)
+	}
+	if body != strings.Repeat("a", 19) {
+		t.Errorf("body = %q, want the cut pulled back to the rune boundary", body)
 	}
 }
 
@@ -1611,6 +1632,7 @@ import (
 	"regexp"
 	"sort"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/codered/spore/internal/provider"
 )
@@ -1734,7 +1756,14 @@ func (r *Registry) Run(ctx context.Context, call provider.Block) (out provider.B
 		return ErrResult(call.ID, fmt.Errorf("tool %s: %w", call.Name, err))
 	}
 	if len(content) > r.maxOutput {
-		return Result(call.ID, content[:r.maxOutput]+truncationNote, false, true)
+		// Pull the cut back to a rune boundary: maxOutput is a byte budget,
+		// and slicing mid-rune hands the model a half-encoded character that
+		// JSON marshalling silently turns into U+FFFD.
+		cut := r.maxOutput
+		for cut > 0 && !utf8.RuneStart(content[cut]) {
+			cut--
+		}
+		return Result(call.ID, content[:cut]+truncationNote, false, true)
 	}
 	return Result(call.ID, content, false, false)
 }
