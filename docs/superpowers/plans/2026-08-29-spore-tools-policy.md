@@ -4872,6 +4872,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/BurntSushi/toml"
 )
@@ -4884,10 +4885,20 @@ const (
 	ManagedEnd   = "# <<< spore-managed policy"
 )
 
+// learnMu serialises rewrites of the config file. LearnRule is a
+// read-modify-write, and the agent dispatches read-only tool calls
+// concurrently, so two "always this pattern" answers arriving at once would
+// otherwise interleave and silently drop one of the rules. This guards one
+// process; spore is a single daemon, so a file lock is not warranted.
+var learnMu sync.Mutex
+
 // LearnRule adds one rule to the managed block of a config file, creating the
 // block if it is absent. Existing learned rules are preserved and duplicates
-// are collapsed.
+// are collapsed. Safe for concurrent callers.
 func LearnRule(path, decision, rule string) error {
+	learnMu.Lock()
+	defer learnMu.Unlock()
+
 	switch decision {
 	case "allow", "ask", "deny":
 	default:
