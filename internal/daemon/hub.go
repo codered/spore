@@ -104,6 +104,14 @@ func (h *Hub) End(sessionID string) {
 	h.gc(sessionID, sh)
 }
 
+// Running reports whether a turn is in flight for the session.
+func (h *Hub) Running(sessionID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	sh, ok := h.sessions[sessionID]
+	return ok && sh.running
+}
+
 // gc drops the bookkeeping for a session with no subscribers and no turn, so
 // a long-lived daemon does not accumulate one entry per session ever opened.
 // Callers hold h.mu.
