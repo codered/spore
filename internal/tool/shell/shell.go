@@ -21,13 +21,43 @@ import (
 type execTool struct {
 	ws             string
 	defaultTimeout time.Duration
+	maxOutput      int
 }
 
-func New(workspace string, defaultTimeout time.Duration) tool.Tool {
+func New(workspace string, defaultTimeout time.Duration, maxOutput int) tool.Tool {
 	if defaultTimeout <= 0 {
 		defaultTimeout = 120 * time.Second
 	}
-	return &execTool{ws: workspace, defaultTimeout: defaultTimeout}
+	if maxOutput <= 0 {
+		maxOutput = 30_000
+	}
+	return &execTool{ws: workspace, defaultTimeout: defaultTimeout, maxOutput: maxOutput}
+}
+
+// capWriter accepts output up to a byte budget and counts the rest. The
+// registry truncates the returned string, but only once the whole thing is
+// already in memory: a chatty command left running for the full timeout could
+// allocate without bound before truncation ever happens. Write always reports
+// a full write, so an over-budget command is starved of output rather than
+// killed with ErrShortWrite.
+type capWriter struct {
+	buf     bytes.Buffer
+	limit   int
+	dropped int
+}
+
+func (w *capWriter) Write(p []byte) (int, error) {
+	room := w.limit - w.buf.Len()
+	switch {
+	case room <= 0:
+		w.dropped += len(p)
+	case len(p) > room:
+		w.buf.Write(p[:room])
+		w.dropped += len(p) - room
+	default:
+		w.buf.Write(p)
+	}
+	return len(p), nil
 }
 
 func (*execTool) Name() string { return "shell_exec" }
@@ -77,14 +107,23 @@ func (t *execTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 		return os.ErrProcessDone
 	}
 
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
+	// One writer for both streams: os/exec special-cases identical Stdout and
+	// Stderr writers and routes them through a single goroutine, so this needs
+	// no lock of its own.
+	w := &capWriter{limit: t.maxOutput}
+	cmd.Stdout = w
+	cmd.Stderr = w
 	err := cmd.Run()
 
-	out := buf.String()
+	out := w.buf.String()
+	if w.dropped > 0 {
+		out += fmt.Sprintf("\n[%d further bytes of output were dropped at the %d-byte budget]", w.dropped, t.maxOutput)
+	}
 	switch {
-	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+	// err != nil is part of the timeout test on purpose: a command that
+	// completes successfully at the instant the deadline expires was not
+	// killed, and must not be reported as though it were.
+	case err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return out + fmt.Sprintf("\n[timed out after %s and was killed]", timeout), nil
 	case err != nil:
 		// A non-zero exit is information for the model, not a tool failure.
