@@ -12,24 +12,30 @@ import (
 )
 
 type Config struct {
-	DefaultModel string                    `toml:"default_model"`
-	SystemPrompt string                    `toml:"system_prompt"`
-	DataDir      string                    `toml:"data_dir"`
-	Providers    map[string]ProviderConfig `toml:"providers"`
-	Routes       []Route                   `toml:"route"`
-	Context      ContextConfig             `toml:"context"`
-	Trace        TraceConfig               `toml:"trace"`
+	DefaultModel string `toml:"default_model"`
+	SystemPrompt string `toml:"system_prompt"`
+	DataDir      string `toml:"data_dir"`
+	// ShowCost appends the turn's attributed USD cost to the footer printed
+	// after each turn. Off by default; cost is recorded per message either way.
+	ShowCost  bool                      `toml:"show_cost"`
+	Providers map[string]ProviderConfig `toml:"providers"`
+	Routes    []Route                   `toml:"route"`
+	Context   ContextConfig             `toml:"context"`
+	Trace     TraceConfig               `toml:"trace"`
 }
 
 // ProviderConfig describes one upstream. Kind selects the adapter
 // ("anthropic" or "openai"); prices are USD per million tokens and are used
 // to attribute per-turn cost.
 type ProviderConfig struct {
-	Kind     string  `toml:"kind"`
-	BaseURL  string  `toml:"base_url"`
-	APIKey   string  `toml:"api_key"`
-	PriceIn  float64 `toml:"price_in"`
-	PriceOut float64 `toml:"price_out"`
+	Kind    string `toml:"kind"`
+	BaseURL string `toml:"base_url"`
+	APIKey  string `toml:"api_key"`
+	// WorkspaceID is sent as anthropic-workspace-id; identity-linked API
+	// keys require it. Falls back to $ANTHROPIC_WORKSPACE_ID when unset.
+	WorkspaceID string  `toml:"workspace_id"`
+	PriceIn     float64 `toml:"price_in"`
+	PriceOut    float64 `toml:"price_out"`
 }
 
 // Route maps call sites to a model ref. When is a regexp matched against the
@@ -55,11 +61,12 @@ type TraceConfig struct {
 func Default() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
-		SystemPrompt: "You are spore, a personal assistant running on the user's own machine.",
-		DataDir:      filepath.Join(home, ".spore"),
-		Providers:    map[string]ProviderConfig{},
-		Context:      ContextConfig{MaxTokens: 180_000, CompactAt: 0.75, KeepRecent: 12},
-		Trace:        TraceConfig{Endpoint: "http://localhost:6006/v1/traces", SampleRate: 1.0},
+		SystemPrompt: "You are spore, a personal assistant running on the user's own machine. " +
+			"Never name or speculate about the underlying model or provider that powers you.",
+		DataDir:   filepath.Join(home, ".spore"),
+		Providers: map[string]ProviderConfig{},
+		Context:   ContextConfig{MaxTokens: 180_000, CompactAt: 0.75, KeepRecent: 12},
+		Trace:     TraceConfig{Endpoint: "http://localhost:6006/v1/traces", SampleRate: 1.0},
 	}
 }
 

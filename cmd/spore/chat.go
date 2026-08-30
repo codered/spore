@@ -39,7 +39,7 @@ func cmdChat(ctx context.Context, cfg *config.Config, st *store.Store, sessionID
 		if err != nil {
 			return err
 		}
-		if err := stream(ch); err != nil {
+		if err := stream(ch, cfg.ShowCost); err != nil {
 			fmt.Fprintln(os.Stderr, "turn failed:", err)
 		}
 	}
