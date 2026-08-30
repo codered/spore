@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -128,5 +130,28 @@ func TestLearnRuleRejectsAnUnparseableRule(t *testing.T) {
 	}
 	if err := LearnRule(p, "sometimes", "fs_write"); err == nil {
 		t.Error("LearnRule accepted an unknown decision")
+	}
+}
+
+func TestLearnRuleIsSafeUnderConcurrentCallers(t *testing.T) {
+	p := write(t, "default_model = \"a/b\"\n")
+	const n = 12
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if err := LearnRule(p, "allow", fmt.Sprintf("fs_write_%02d", i)); err != nil {
+				t.Errorf("LearnRule %d: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("config unloadable after concurrent writes: %v", err)
+	}
+	if len(cfg.Policy.Learned.Allow) != n {
+		t.Errorf("learned %d rules, want %d — a concurrent write dropped one", len(cfg.Policy.Learned.Allow), n)
 	}
 }

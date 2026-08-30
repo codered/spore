@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/provider"
@@ -311,5 +313,93 @@ func TestMidStreamProviderErrorEndsLLMSpan(t *testing.T) {
 	}
 	if llmSpans != 1 {
 		t.Errorf("expected exactly 1 ended llm span after a mid-stream provider error, got %d", llmSpans)
+	}
+}
+
+// throttleTools records the high-water mark of concurrent Run calls.
+type throttleTools struct {
+	mu       sync.Mutex
+	inFlight int
+	peak     int
+}
+
+func (tt *throttleTools) Specs() []provider.ToolSpec {
+	return []provider.ToolSpec{{Name: "fs.read", Description: "read a file", Schema: json.RawMessage(`{"type":"object"}`)}}
+}
+func (tt *throttleTools) ReadOnly(string) bool { return true }
+func (tt *throttleTools) Run(_ context.Context, call provider.Block) provider.Block {
+	tt.mu.Lock()
+	tt.inFlight++
+	if tt.inFlight > tt.peak {
+		tt.peak = tt.inFlight
+	}
+	tt.mu.Unlock()
+
+	// Hold the slot long enough that every goroutine the dispatcher is
+	// willing to run at once has overlapped with this one.
+	time.Sleep(5 * time.Millisecond)
+
+	tt.mu.Lock()
+	tt.inFlight--
+	tt.mu.Unlock()
+	return provider.Block{Type: provider.BlockToolResult, ID: call.ID, Content: "ok"}
+}
+
+func TestReadOnlyBatchConcurrencyIsBounded(t *testing.T) {
+	ctx := context.Background()
+
+	// Three times the cap, so a batch that ignored the semaphore would show a
+	// peak far above it rather than merely brushing against it.
+	const calls = maxParallelTools * 3
+	batch := make([]provider.Block, calls)
+	for i := range batch {
+		batch[i] = provider.Block{
+			Type:  provider.BlockToolUse,
+			ID:    fmt.Sprintf("c%02d", i),
+			Name:  "fs.read",
+			Input: json.RawMessage(`{"path":"a"}`),
+		}
+	}
+	script := provider.NewScript(
+		provider.ScriptTurn{ToolCalls: batch, Usage: provider.Usage{InputTokens: 10, OutputTokens: 5}},
+		provider.ScriptTurn{Text: "done", Usage: provider.Usage{InputTokens: 20, OutputTokens: 6}},
+	)
+	tools := &throttleTools{}
+	a, st := harness(t, script, tools)
+	sid, _ := st.CreateSession(ctx, "t")
+
+	ch, err := a.Run(ctx, sid, "read many files")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	_ = collect(t, ch)
+
+	tools.mu.Lock()
+	peak, left := tools.peak, tools.inFlight
+	tools.mu.Unlock()
+
+	if peak > maxParallelTools {
+		t.Errorf("%d tools ran at once, want at most %d: the fan-out is unbounded", peak, maxParallelTools)
+	}
+	if peak < 2 {
+		t.Errorf("peak concurrency was %d: the batch serialised instead of running in parallel", peak)
+	}
+	if left != 0 {
+		t.Errorf("%d tool calls still in flight after the turn: the dispatcher did not wait for them", left)
+	}
+
+	// Every call must still be answered, in order, however they were throttled.
+	msgs, _ := st.Messages(ctx, sid)
+	var blocks []provider.Block
+	if err := json.Unmarshal(msgs[2].BlocksJSON, &blocks); err != nil {
+		t.Fatalf("decode tool results: %v", err)
+	}
+	if len(blocks) != calls {
+		t.Fatalf("got %d tool results, want %d", len(blocks), calls)
+	}
+	for i, b := range blocks {
+		if want := fmt.Sprintf("c%02d", i); b.ID != want {
+			t.Errorf("result %d has ID %q, want %q: throttling reordered the batch", i, b.ID, want)
+		}
 	}
 }
