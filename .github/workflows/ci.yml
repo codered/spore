@@ -1,0 +1,83 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+
+# A new push to a branch makes the run in flight for it pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The sqlite driver is cgo, so every job builds on its own native runner
+  # rather than cross-compiling, and CGO must stay on.
+  CGO_ENABLED: "1"
+  TAGS: sqlite_fts5
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: vet
+        run: go vet -tags "$TAGS" ./...
+        shell: bash
+      - name: test
+        # -race needs cgo, which is already on. The shell tool's tests drive
+        # real processes and deadlines, so they are slower than the rest.
+        run: go test -tags "$TAGS" -race -timeout 10m ./...
+        shell: bash
+
+  build:
+    name: build (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest,    goos: linux,   goarch: amd64 }
+          - { runner: ubuntu-24.04-arm, goos: linux,   goarch: arm64 }
+          - { runner: macos-13,         goos: darwin,  goarch: amd64 }
+          - { runner: macos-latest,     goos: darwin,  goarch: arm64 }
+          - { runner: windows-latest,   goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: build
+        shell: bash
+        run: |
+          out=spore-${{ matrix.goos }}-${{ matrix.goarch }}
+          [ "${{ matrix.goos }}" = windows ] && out="$out.exe"
+          go build -tags "$TAGS" -trimpath -ldflags="-s -w" -o "$out" ./cmd/spore
+          ls -l "$out"
+      - name: smoke
+        # A binary that cannot start is not a build: this catches a cgo link
+        # that will not load on the target. Run with no arguments — that prints
+        # usage and exits 0 without reading a config file, which a fresh runner
+        # does not have.
+        shell: bash
+        run: |
+          out=spore-${{ matrix.goos }}-${{ matrix.goarch }}
+          [ "${{ matrix.goos }}" = windows ] && out="$out.exe"
+          ./"$out" | grep -q "spore — a personal agent"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spore-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: spore-${{ matrix.goos }}-${{ matrix.goarch }}*
+          if-no-files-found: error
