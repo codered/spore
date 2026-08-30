@@ -297,6 +297,17 @@ func TestMissingSessionDeniesEvenAnAllowedTool(t *testing.T) {
 	}
 }
 
+func TestSessionWithoutAProfileGetsTheStrictestRuleset(t *testing.T) {
+	// A session attached without naming its trust level is a caller mistake,
+	// and must not be quietly treated as the most trusted one.
+	if _, p := SessionFrom(WithSession(context.Background(), "s1", "")); p != ProfileRemote {
+		t.Errorf("profile = %q, want %q for a session attached with no profile", p, ProfileRemote)
+	}
+	if _, p := SessionFrom(WithSession(context.Background(), "s1", ProfileLocal)); p != ProfileLocal {
+		t.Errorf("profile = %q, want an explicitly named profile to be honoured", p)
+	}
+}
+
 func TestGuardDelegatesSpecsAndReadOnly(t *testing.T) {
 	ap := &scriptedApprover{}
 	g, _, _, _ := guardFixture(t, config.PolicyConfig{}, ap)
