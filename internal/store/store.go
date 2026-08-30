@@ -234,15 +234,61 @@ func (s *Store) PendingCalls(ctx context.Context, sessionID string) ([]PendingCa
 }
 
 // ResolvePendingCall closes a suspension with the decision that ended it:
-// allow, deny, or timeout.
+// allow, deny, timeout or error. The state guard makes it idempotent — a
+// second call for an already-answered suspension changes nothing.
 func (s *Store) ResolvePendingCall(ctx context.Context, id int64, decision string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE pending_calls SET state = ?, decided_at = ? WHERE id = ?`,
+		`UPDATE pending_calls SET state = ?, decided_at = ? WHERE id = ? AND state = 'pending'`,
 		decision, time.Now().UTC().Format(timeFormat), id)
 	if err != nil {
 		return fmt.Errorf("resolve pending call %d: %w", id, err)
 	}
 	return nil
+}
+
+// ClaimPendingCall resolves a suspension AND writes its audit row in one
+// transaction, returning the call it claimed. The bool reports whether this
+// caller won: a second client answering the same suspension concurrently
+// finds it no longer pending and gets false, so two clients can never record
+// contradictory answers, and a partial failure can never leave a resolved
+// row with no audit entry behind it.
+func (s *Store) ClaimPendingCall(ctx context.Context, id int64, sessionID, decision, scope string) (PendingCall, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PendingCall{}, false, err
+	}
+	defer tx.Rollback()
+
+	var p PendingCall
+	var args, created string
+	err = tx.QueryRowContext(ctx,
+		`SELECT id, session_id, tool_use_id, tool, args, profile, rule, created_at
+		 FROM pending_calls WHERE id = ? AND session_id = ? AND state = 'pending'`,
+		id, sessionID).Scan(&p.ID, &p.SessionID, &p.ToolUseID, &p.Tool, &args, &p.Profile, &p.Rule, &created)
+	if err == sql.ErrNoRows {
+		return PendingCall{}, false, nil
+	}
+	if err != nil {
+		return PendingCall{}, false, fmt.Errorf("claim pending call %d: %w", id, err)
+	}
+	p.ArgsJSON = []byte(args)
+	p.CreatedAt, _ = time.Parse(timeFormat, created)
+
+	now := time.Now().UTC().Format(timeFormat)
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE pending_calls SET state = ?, decided_at = ? WHERE id = ? AND state = 'pending'`,
+		decision, now, id); err != nil {
+		return PendingCall{}, false, fmt.Errorf("claim pending call %d: %w", id, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO approvals (session_id, tool, args, decision, scope, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		sessionID, p.Tool, args, decision, scope, now); err != nil {
+		return PendingCall{}, false, fmt.Errorf("claim pending call %d: %w", id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return PendingCall{}, false, err
+	}
+	return p, true, nil
 }
 
 // RecordApproval appends to the audit log. Only scope "session" is consulted

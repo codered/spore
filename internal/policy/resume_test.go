@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/codered/spore/internal/config"
@@ -102,6 +103,52 @@ func TestSuspensionSurvivesARestart(t *testing.T) {
 	d, ok, err := st3.SessionDecision(ctx, sid, "fs_write")
 	if err != nil || !ok || d != "allow" {
 		t.Errorf("SessionDecision = (%q, %v, %v), want the answer remembered", d, ok, err)
+	}
+}
+
+func TestResolveAdmitsExactlyOneConcurrentAnswer(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sid, _ := st.CreateSession(ctx, "race")
+	id, err := st.AddPendingCall(ctx, store.PendingCall{
+		SessionID: sid, ToolUseID: "c1", Tool: "fs_write",
+		ArgsJSON: json.RawMessage(`{"path":"/ws/a.go"}`), Profile: "local", Rule: "fs_write",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{Ask: []string{"fs_write"}}), nil, st, nil)
+
+	// Several clients answer the same suspension at once, half allowing and
+	// half denying. Exactly one may win: two recorded answers would leave the
+	// audit log self-contradictory about what the human actually said.
+	const n = 8
+	var wg sync.WaitGroup
+	won := make([]bool, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			won[i] = g.Resolve(ctx, sid, id, Answer{Allow: i%2 == 0, Scope: ScopeSession}) == nil
+		}(i)
+	}
+	wg.Wait()
+
+	winners := 0
+	for _, w := range won {
+		if w {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Errorf("%d of %d concurrent Resolve calls succeeded, want exactly 1", winners, n)
+	}
+	if pending, _ := g.Pending(ctx, sid); len(pending) != 0 {
+		t.Errorf("%d pending calls left after the race", len(pending))
 	}
 }
 
