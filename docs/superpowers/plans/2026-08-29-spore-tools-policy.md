@@ -4804,6 +4804,44 @@ func TestLearnRulePreservesTextAfterTheBlock(t *testing.T) {
 	}
 }
 
+func TestLearnRuleRefusesWhenMarkersAreDuplicated(t *testing.T) {
+	body := "default_model = \"a/b\"\n\n" +
+		ManagedBegin + "\n[policy.learned]\nallow = [\"fs_read\"]\n" + ManagedEnd + "\n\n" +
+		ManagedBegin + "\n[policy.learned]\nallow = [\"stale\"]\n" + ManagedEnd + "\n"
+	p := write(t, body)
+	before, _ := os.ReadFile(p)
+	err := LearnRule(p, "allow", "fs_write")
+	if err == nil {
+		t.Fatal("LearnRule wrote into a file carrying two managed blocks")
+	}
+	if !strings.Contains(err.Error(), "by hand") {
+		t.Errorf("error %q must tell the user what to do about it", err)
+	}
+	after, _ := os.ReadFile(p)
+	if string(before) != string(after) {
+		t.Error("the file was modified despite the refusal")
+	}
+}
+
+func TestLearnRuleNeverLeavesAnUnloadableConfig(t *testing.T) {
+	// The marker text inside the user's own comment makes splitManaged miss
+	// the real block. Whatever the function decides to do, the file it leaves
+	// behind must still load — a config that will not parse locks the user
+	// out of their own agent.
+	p := write(t, "default_model = \"a/b\"\n# note: "+ManagedBegin+" in my own comment\n[trace]\nenabled = true\n")
+	_ = LearnRule(p, "allow", "fs_read")
+	if _, err := Load(p); err != nil {
+		t.Fatalf("config no longer loads after the first LearnRule: %v", err)
+	}
+	// The second call now sees two markers and must refuse, not guess.
+	if err := LearnRule(p, "allow", "fs_write"); err == nil {
+		t.Error("LearnRule guessed at a file with an orphaned marker")
+	}
+	if _, err := Load(p); err != nil {
+		t.Fatalf("config no longer loads after the refused LearnRule: %v", err)
+	}
+}
+
 func TestLearnRuleRejectsAnUnparseableRule(t *testing.T) {
 	p := write(t, "default_model = \"a/b\"\n")
 	// A rule that cannot be quoted safely must be refused rather than
@@ -4870,6 +4908,14 @@ func LearnRule(path, decision, rule string) error {
 	}
 	body := string(raw)
 
+	// More than one marker means the file has a stale or half-deleted block,
+	// or the marker text inside the user's own prose. splitManaged would pair
+	// the wrong two, so refuse with something the user can act on rather than
+	// rewriting around it.
+	if n := strings.Count(body, ManagedBegin); n > 1 {
+		return fmt.Errorf("%s contains %d spore-managed policy markers; remove all but one block by hand before spore can learn new rules", path, n)
+	}
+
 	before, existing, after, found := splitManaged(body)
 	learned := LearnedPolicy{}
 	if found {
@@ -4904,8 +4950,18 @@ func LearnRule(path, decision, rule string) error {
 		out = strings.TrimRight(body, "\n") + "\n\n" + block
 	}
 
+	// Never replace the user's config with something that will not load. This
+	// turns any future bug in this function into a refusal instead of an agent
+	// that cannot start — the user's own file is the thing at stake.
+	var probe Config
+	if _, err := toml.Decode(out, &probe); err != nil {
+		return fmt.Errorf("refusing to write %s: the result would not parse as TOML (%w)", path, err)
+	}
+
 	// Write through a temp file in the same directory so an interrupted
-	// write cannot leave a half-rewritten config behind.
+	// write cannot leave a half-rewritten config behind. The result is 0600:
+	// a config may name a literal API key, so the first learned rule tightens
+	// a world- or group-readable file rather than preserving its mode.
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".config-*.toml")
 	if err != nil {
