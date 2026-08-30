@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -73,18 +75,16 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 // findSession returns the session row, or writes a 404 and reports false.
 func (s *Server) findSession(w http.ResponseWriter, r *http.Request, id string) (store.Session, bool) {
-	sessions, err := s.store.ListSessions(r.Context(), 1000)
+	sess, found, err := s.store.Session(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "read sessions: %v", err)
+		writeError(w, http.StatusInternalServerError, "read session: %v", err)
 		return store.Session{}, false
 	}
-	for _, sess := range sessions {
-		if sess.ID == id {
-			return sess, true
-		}
+	if !found {
+		writeError(w, http.StatusNotFound, "no session %s", id)
+		return store.Session{}, false
 	}
-	writeError(w, http.StatusNotFound, "no session %s", id)
-	return store.Session{}, false
+	return sess, true
 }
 
 func (s *Server) handleShowSession(w http.ResponseWriter, r *http.Request) {
@@ -147,17 +147,18 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 // the hub. The caller must already hold the session's turn slot; startTurn
 // releases it when the turn ends.
 func (s *Server) startTurn(sessionID, text, client string) error {
-	ctx := policy.WithSession(s.base, sessionID, policy.ProfileLocal)
-	ctx, turn := sporetrace.StartTurn(ctx, sessionID, client)
-
-	// Defer End before calling agent.Run so that even if Run panics,
-	// we still release the session slot.
+	// Recover before any operations so panics in policy.WithSession or
+	// sporetrace.StartTurn are also caught.
 	defer func() {
 		if r := recover(); r != nil {
 			s.hub.End(sessionID)
+			slog.Error("panic in startTurn setup", "session", sessionID, "panic", r)
 			panic(r)
 		}
 	}()
+
+	ctx := policy.WithSession(s.base, sessionID, policy.ProfileLocal)
+	ctx, turn := sporetrace.StartTurn(ctx, sessionID, client)
 
 	ch, err := s.agent.Run(ctx, sessionID, text)
 	if err != nil {
@@ -167,6 +168,19 @@ func (s *Server) startTurn(sessionID, text, client string) error {
 	go func() {
 		defer s.hub.End(sessionID)
 		defer turn.End()
+
+		// Recover in the pump goroutine so a panic in event handling
+		// does not crash the daemon. Publish an error to the session.
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("panic in turn pump", "session", sessionID, "panic", r)
+				s.hub.Publish(sessionID, WireEvent{
+					Type: WireError,
+					Text: "turn crashed: " + fmt.Sprint(r),
+				})
+			}
+		}()
+
 		for ev := range ch {
 			if ev.Type == agent.EvError && ev.Err != nil {
 				turn.RecordError(ev.Err)

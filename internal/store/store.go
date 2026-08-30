@@ -108,6 +108,24 @@ func (s *Store) ListSessions(ctx context.Context, limit int) ([]Session, error) 
 	return out, rows.Err()
 }
 
+// Session returns a session by ID, or (Session{}, false, nil) if not found.
+func (s *Store) Session(ctx context.Context, id string) (Session, bool, error) {
+	var sess Session
+	var created, updated string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, title, created_at, updated_at FROM sessions WHERE id = ?`, id).
+		Scan(&sess.ID, &sess.Title, &created, &updated)
+	if err == sql.ErrNoRows {
+		return Session{}, false, nil
+	}
+	if err != nil {
+		return Session{}, false, fmt.Errorf("read session: %w", err)
+	}
+	sess.CreatedAt, _ = time.Parse(timeFormat, created)
+	sess.UpdatedAt, _ = time.Parse(timeFormat, updated)
+	return sess, true, nil
+}
+
 // AppendMessage assigns the next seq for the session and writes the row.
 func (s *Store) AppendMessage(ctx context.Context, m Message) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
