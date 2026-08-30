@@ -1,5 +1,5 @@
 .superpowers/
-spore
+/spore
 *.db
 *.db-wal
 *.db-shm
