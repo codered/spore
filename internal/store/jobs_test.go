@@ -77,11 +77,70 @@ func TestJobCRUDAndDueSelection(t *testing.T) {
 		}
 	}
 
-	if err := s.SetJobEnabled(ctx, due, false); err != nil {
+	// Disabling a job must remove it from DueJobs. The "later" job (due at
+	// base+1h) is our test: disable it, then query at a time past its next_run
+	// and assert it's gone. The only reason it's absent is the disabling.
+	if err := s.SetJobEnabled(ctx, later, false); err != nil {
 		t.Fatalf("SetJobEnabled: %v", err)
 	}
-	if got, err := s.DueJobs(ctx, base.Add(30*time.Minute)); err != nil || len(got) != 0 {
-		t.Fatalf("a disabled job came back due: %+v (err %v)", got, err)
+	// At base+2h, the later job's next_run (base+1h) is in the past,
+	// but it's disabled so DueJobs must exclude it.
+	if got, err := s.DueJobs(ctx, base.Add(2*time.Hour)); err != nil || len(got) != 0 {
+		t.Fatalf("disabled job came back due: %+v (err %v)", got, err)
+	}
+	// Verify the disable actually happened via ListJobs
+	jobs, _ = s.ListJobs(ctx)
+	for _, j := range jobs {
+		if j.ID != later {
+			continue
+		}
+		if j.Enabled {
+			t.Errorf("later job still enabled after SetJobEnabled(false)")
+		}
+	}
+}
+
+// MarkJobRun with a zero next time retires a one-shot job: disables it and
+// records the run. It must not be picked up again by DueJobs.
+func TestMarkJobRunRetires(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	base := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+
+	// Create a one-time job
+	id, err := s.CreateJob(ctx, Job{
+		Kind: "once", Spec: "2026-12-25T09:00:00Z", Prompt: "one-time task",
+		Enabled: true, NextRun: base,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	// Retire it (zero next time disables the job)
+	if err := s.MarkJobRun(ctx, id, base, time.Time{}, "sess-xyz"); err != nil {
+		t.Fatalf("MarkJobRun retire: %v", err)
+	}
+
+	// Verify via ListJobs that it's disabled and the run was recorded
+	jobs, _ := s.ListJobs(ctx)
+	for _, j := range jobs {
+		if j.ID != id {
+			continue
+		}
+		if j.Enabled {
+			t.Errorf("retired job still enabled")
+		}
+		if j.LastSessionID != "sess-xyz" {
+			t.Errorf("last_session_id = %q, want sess-xyz", j.LastSessionID)
+		}
+		if j.LastRun.IsZero() {
+			t.Errorf("last_run not recorded on retire")
+		}
+	}
+
+	// Verify via DueJobs that it never comes back, even if queried way in the future
+	if got, err := s.DueJobs(ctx, base.Add(365*24*time.Hour)); err != nil || len(got) != 0 {
+		t.Fatalf("retired job came back due: %+v (err %v)", got, err)
 	}
 }
 
@@ -109,11 +168,42 @@ func TestOpenMigratesThePlan2JobsStub(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen over the stub: %v", err)
 	}
-	defer s2.Close()
-	if _, err := s2.CreateJob(context.Background(), Job{
+	jobID, err := s2.CreateJob(context.Background(), Job{
 		Kind: "cron", Spec: "0 9 * * *", Prompt: "after migration",
 		Enabled: true, NextRun: time.Now().UTC(),
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("CreateJob after migration: %v", err)
 	}
+	s2.Close()
+
+	// Verify idempotence: re-opening the database must not destroy existing jobs.
+	// The migration guard runs on every Open, so this is critical: a faulty guard
+	// would delete the user's jobs on daemon restart.
+	s3, err := Open(path)
+	if err != nil {
+		t.Fatalf("second reopen: %v", err)
+	}
+	jobs3, err := s3.ListJobs(context.Background())
+	if err != nil {
+		t.Fatalf("ListJobs after second reopen: %v", err)
+	}
+	if len(jobs3) != 1 || jobs3[0].ID != jobID {
+		t.Fatalf("job lost after second Open: got %d jobs, want 1", len(jobs3))
+	}
+	s3.Close()
+
+	// Third open to be thorough
+	s4, err := Open(path)
+	if err != nil {
+		t.Fatalf("third reopen: %v", err)
+	}
+	jobs4, err := s4.ListJobs(context.Background())
+	if err != nil {
+		t.Fatalf("ListJobs after third reopen: %v", err)
+	}
+	if len(jobs4) != 1 || jobs4[0].ID != jobID {
+		t.Fatalf("job lost after third Open: got %d jobs, want 1", len(jobs4))
+	}
+	s4.Close()
 }
