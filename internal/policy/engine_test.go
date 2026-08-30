@@ -91,6 +91,35 @@ func TestLearnedDenyIsAbsoluteToo(t *testing.T) {
 	}
 }
 
+func TestLearnedAllowDoesNotCrossIntoAnotherProfile(t *testing.T) {
+	e := engine(t, config.PolicyConfig{
+		Learned:  config.LearnedPolicy{Allow: []string{"fs_write"}},
+		Profiles: map[string]config.ProfilePolicy{"remote": {Default: "ask"}},
+	})
+	args := json.RawMessage(`{"path":"/ws/a"}`)
+	if got := e.Evaluate(ProfileLocal, Call{Tool: "fs_write", Args: args}); got.Decision != DecisionAllow {
+		t.Errorf("local = %q, want allow — the learned rule applies to the base ruleset", got.Decision)
+	}
+	// An approval answered at the terminal must not silently extend the
+	// permission to a bridge running under a different trust profile.
+	if got := e.Evaluate(ProfileRemote, Call{Tool: "fs_write", Args: args}); got.Decision != DecisionAsk {
+		t.Errorf("remote = %q, want ask — a rule learned in one trust context must not carry to another", got.Decision)
+	}
+}
+
+func TestLearnedDenyCrossesEveryProfile(t *testing.T) {
+	e := engine(t, config.PolicyConfig{
+		Learned:  config.LearnedPolicy{Deny: []string{"fs_write"}},
+		Profiles: map[string]config.ProfilePolicy{"remote": {Default: "allow", Allow: []string{"fs_write"}}},
+	})
+	args := json.RawMessage(`{"path":"/ws/a"}`)
+	for _, p := range []Profile{ProfileLocal, ProfileRemote} {
+		if got := e.Evaluate(p, Call{Tool: "fs_write", Args: args}); got.Decision != DecisionDeny {
+			t.Errorf("profile %q = %q, want deny — learned deny is global", p, got.Decision)
+		}
+	}
+}
+
 func TestProfileOverridesAllowButNotDeny(t *testing.T) {
 	e := engine(t, config.PolicyConfig{
 		Allow: []string{"fs_write"},
