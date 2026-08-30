@@ -1,0 +1,105 @@
+name: ci
+
+on:
+  # Branch pushes are covered by pull_request; listing them here too would run
+  # every PR commit twice.
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+
+# A new push to a branch makes the run in flight for it pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The sqlite driver is cgo, so every job builds on its own native runner
+  # rather than cross-compiling, and CGO must stay on.
+  CGO_ENABLED: "1"
+  TAGS: sqlite_fts5
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is absent on purpose: internal/policy resolves paths on Unix
+        # assumptions that do not hold there (filepath.IsAbs rejects "/etc/x"
+        # without a drive letter), so workspace confinement is not trustworthy
+        # on Windows yet. Add it back with the fix, not before.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: vet
+        run: go vet -tags "$TAGS" ./...
+        shell: bash
+      - name: test
+        # -race needs cgo, which is already on. The shell tool's tests drive
+        # real processes and deadlines, so they are slower than the rest.
+        run: go test -tags "$TAGS" -race -timeout 10m ./...
+        shell: bash
+
+  build:
+    name: build (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest,    goos: linux,   goarch: amd64 }
+          - { runner: ubuntu-24.04-arm, goos: linux,   goarch: arm64 }
+          # macos-13 (the last Intel image) has been retired, so amd64 is
+          # cross-compiled from the arm64 runner. Apple's clang targets both,
+          # which is what keeps cgo working across the switch.
+          - { runner: macos-latest,     goos: darwin,  goarch: amd64, cross: true }
+          - { runner: macos-latest,     goos: darwin,  goarch: arm64 }
+          # No windows/amd64 until policy path handling is portable; see the
+          # note on the test matrix above.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: build
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          out=spore-${{ matrix.goos }}-${{ matrix.goarch }}
+          if [ "${{ matrix.cross }}" = true ]; then
+            # cgo does not follow GOARCH on its own; the C toolchain has to be
+            # aimed at the target too, or the link fails on mismatched objects.
+            export CGO_CFLAGS="-arch x86_64" CGO_LDFLAGS="-arch x86_64"
+          fi
+          go build -tags "$TAGS" -trimpath -ldflags="-s -w" -o "$out" ./cmd/spore
+          file "$out" || true
+          ls -l "$out"
+      - name: smoke
+        # A binary that cannot start is not a build: this catches a cgo link
+        # that will not load on the target. Run with no arguments — that prints
+        # usage and exits 0 without reading a config file, which a fresh runner
+        # does not have. Skipped for the cross-built binary, which the runner
+        # cannot execute.
+        if: ${{ !matrix.cross }}
+        shell: bash
+        run: |
+          ./spore-${{ matrix.goos }}-${{ matrix.goarch }} | grep -q "spore — a personal agent"
+      # Every target is built and smoke-tested on a pull request, so breakage
+      # specific to one of them cannot reach master. Only master and release
+      # tags keep the binaries.
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push'
+        with:
+          name: spore-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: spore-${{ matrix.goos }}-${{ matrix.goarch }}*
+          if-no-files-found: error

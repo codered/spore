@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func open(t *testing.T) *Store {
+func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(filepath.Join(t.TempDir(), "spore.db"))
 	if err != nil {
@@ -19,7 +19,7 @@ func open(t *testing.T) *Store {
 
 func TestAppendAndReadMessagesInOrder(t *testing.T) {
 	ctx := context.Background()
-	s := open(t)
+	s := openTestStore(t)
 
 	id, err := s.CreateSession(ctx, "first session")
 	if err != nil {
@@ -59,7 +59,7 @@ func TestAppendAndReadMessagesInOrder(t *testing.T) {
 
 func TestSummaryRoundTripAndSessionListing(t *testing.T) {
 	ctx := context.Background()
-	s := open(t)
+	s := openTestStore(t)
 
 	id, err := s.CreateSession(ctx, "summarised")
 	if err != nil {
@@ -96,7 +96,7 @@ func TestSummaryRoundTripAndSessionListing(t *testing.T) {
 
 func TestSummaryAbsentIsNotAnError(t *testing.T) {
 	ctx := context.Background()
-	s := open(t)
+	s := openTestStore(t)
 	id, _ := s.CreateSession(ctx, "empty")
 	text, through, err := s.Summary(ctx, id)
 	if err != nil {
@@ -126,7 +126,7 @@ func TestTimeFormatSortsChronologically(t *testing.T) {
 }
 
 func TestCreateSessionWritesFixedWidthTimestamp(t *testing.T) {
-	s := open(t)
+	s := openTestStore(t)
 	id, err := s.CreateSession(context.Background(), "fixed width")
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +145,7 @@ func TestCreateSessionWritesFixedWidthTimestamp(t *testing.T) {
 
 func TestListSessionsOrdering(t *testing.T) {
 	ctx := context.Background()
-	s := open(t)
+	s := openTestStore(t)
 
 	// Create two sessions
 	id1, err := s.CreateSession(ctx, "first")
@@ -185,5 +185,108 @@ func TestListSessionsOrdering(t *testing.T) {
 	}
 	if sessions[1].ID != id1 {
 		t.Errorf("second session should be id1 (earlier timestamp), got %s", sessions[1].ID)
+	}
+}
+
+func TestPendingCallLifecycle(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	sid, err := s.CreateSession(ctx, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.AddPendingCall(ctx, PendingCall{
+		SessionID: sid, ToolUseID: "call-1", Tool: "shell_exec",
+		Profile: "local", Rule: "shell_exec", ArgsJSON: []byte(`{"command":"ls"}`),
+	})
+	if err != nil {
+		t.Fatalf("AddPendingCall: %v", err)
+	}
+	pending, err := s.PendingCalls(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].ID != id || pending[0].ToolUseID != "call-1" {
+		t.Fatalf("PendingCalls = %+v", pending)
+	}
+	if string(pending[0].ArgsJSON) != `{"command":"ls"}` {
+		t.Errorf("args = %s", pending[0].ArgsJSON)
+	}
+	if pending[0].CreatedAt.IsZero() {
+		t.Error("CreatedAt was not populated")
+	}
+
+	if err := s.ResolvePendingCall(ctx, id, "allow"); err != nil {
+		t.Fatal(err)
+	}
+	// A resolved call is no longer pending: a restart must not re-ask.
+	pending, err = s.PendingCalls(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("PendingCalls after resolve = %+v, want empty", pending)
+	}
+}
+
+func TestPendingCallsAreScopedToASession(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	a, _ := s.CreateSession(ctx, "a")
+	b, _ := s.CreateSession(ctx, "b")
+	if _, err := s.AddPendingCall(ctx, PendingCall{SessionID: a, ToolUseID: "1", Tool: "fs_write", ArgsJSON: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.PendingCalls(ctx, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("session b sees %d pending calls from session a", len(got))
+	}
+}
+
+func TestSessionDecisionRemembersAllowForTheSession(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	sid, _ := s.CreateSession(ctx, "t")
+
+	if _, ok, err := s.SessionDecision(ctx, sid, "fs_write"); err != nil || ok {
+		t.Fatalf("SessionDecision before any answer = (ok %v, err %v), want not found", ok, err)
+	}
+	if err := s.RecordApproval(ctx, sid, "fs_write", []byte(`{"path":"x"}`), "allow", "session"); err != nil {
+		t.Fatal(err)
+	}
+	d, ok, err := s.SessionDecision(ctx, sid, "fs_write")
+	if err != nil || !ok || d != "allow" {
+		t.Fatalf("SessionDecision = (%q, %v, %v), want (allow, true, nil)", d, ok, err)
+	}
+	// A "once" answer is audited but never remembered.
+	if err := s.RecordApproval(ctx, sid, "shell_exec", []byte(`{}`), "allow", "once"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := s.SessionDecision(ctx, sid, "shell_exec"); ok {
+		t.Error("a once-scoped answer was remembered for the session")
+	}
+	// A decision in one session must not leak into another.
+	other, _ := s.CreateSession(ctx, "other")
+	if _, ok, _ := s.SessionDecision(ctx, other, "fs_write"); ok {
+		t.Error("a session-scoped decision leaked across sessions")
+	}
+}
+
+func TestLatestSessionDecisionWins(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	sid, _ := s.CreateSession(ctx, "t")
+	if err := s.RecordApproval(ctx, sid, "fs_write", []byte(`{}`), "allow", "session"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordApproval(ctx, sid, "fs_write", []byte(`{}`), "deny", "session"); err != nil {
+		t.Fatal(err)
+	}
+	d, ok, _ := s.SessionDecision(ctx, sid, "fs_write")
+	if !ok || d != "deny" {
+		t.Errorf("SessionDecision = %q, want the most recent answer (deny)", d)
 	}
 }
