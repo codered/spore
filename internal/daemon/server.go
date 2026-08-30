@@ -25,11 +25,12 @@ type Options struct {
 }
 
 type Server struct {
-	agent *agent.Agent
-	store *store.Store
-	cfg   *config.Config
-	guard *policy.Guard
-	hub   *Hub
+	agent  *agent.Agent
+	store  *store.Store
+	cfg    *config.Config
+	guard  *policy.Guard
+	hub    *Hub
+	broker *Broker
 
 	// base bounds every turn's lifetime. It is the SERVER's context, never a
 	// request's: a turn survives the client that started it (spec invariant
@@ -40,13 +41,19 @@ type Server struct {
 
 func New(o Options) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Server{
+	s := &Server{
 		agent: o.Agent, store: o.Store, cfg: o.Cfg, guard: o.Guard,
 		hub: NewHub(), base: ctx, cancel: cancel,
 	}
+	s.broker = NewBroker(s.hub)
+	return s
 }
 
 func (s *Server) Hub() *Hub { return s.hub }
+
+// Approver is the policy.Approver the guard must be built with. The daemon
+// creates it because it owns the hub the approval events travel over.
+func (s *Server) Approver() policy.Approver { return s.broker }
 
 // Close cancels every in-flight turn. Run calls it on shutdown.
 func (s *Server) Close() { s.cancel() }
@@ -61,6 +68,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleShowSession)
 	mux.HandleFunc("POST /api/sessions/{id}/messages", s.handlePostMessage)
 	mux.HandleFunc("GET /api/sessions/{id}/events", s.handleEvents)
+	mux.HandleFunc("GET /api/sessions/{id}/approvals", s.handleListApprovals)
+	mux.HandleFunc("POST /api/sessions/{id}/approvals/{pending}", s.handleResolveApproval)
 	return mux
 }
 

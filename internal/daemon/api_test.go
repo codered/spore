@@ -274,3 +274,20 @@ func TestPostMessageRejectsEmptyTextAndUnknownSession(t *testing.T) {
 		t.Errorf("unknown session status = %d, want 404", unknown.StatusCode)
 	}
 }
+
+// waitForWaiter blocks until the broker has registered a waiter for id, so a
+// test never races the goroutine that calls Ask.
+func waitForWaiter(t *testing.T, s *Server, id int64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s.broker.mu.Lock()
+		_, ok := s.broker.waiters[id]
+		s.broker.mu.Unlock()
+		if ok {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("no waiter registered for pending %d", id)
+}

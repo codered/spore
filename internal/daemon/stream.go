@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"time"
@@ -72,7 +71,3 @@ func writeSSE(w http.ResponseWriter, f http.Flusher, ev WireEvent) bool {
 	f.Flush()
 	return true
 }
-
-// pendingApprovalEvents is filled in by Task 4; it lists approvals already
-// waiting on a human when a client attaches.
-func (s *Server) pendingApprovalEvents(ctx context.Context, sessionID string) []WireEvent { return nil }
