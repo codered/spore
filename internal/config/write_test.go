@@ -1,0 +1,94 @@
+package config
+
+import (
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestLearnRuleCreatesTheManagedBlock(t *testing.T) {
+	p := write(t, `default_model = "anthropic/claude-opus-5"
+
+[policy]
+workspace = "/ws"
+ask = ["fs_write"]
+`)
+	if err := LearnRule(p, "allow", `fs_write(path matches /ws/src/**)`); err != nil {
+		t.Fatalf("LearnRule: %v", err)
+	}
+	body, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, ManagedBegin) || !strings.Contains(text, ManagedEnd) {
+		t.Fatalf("markers missing:\n%s", text)
+	}
+	// The user's own configuration is untouched above the marker.
+	if !strings.Contains(text, `ask = ["fs_write"]`) {
+		t.Errorf("hand-written config was lost:\n%s", text)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("the rewritten file no longer parses: %v", err)
+	}
+	if len(cfg.Policy.Learned.Allow) != 1 || !strings.Contains(cfg.Policy.Learned.Allow[0], "/ws/src/**") {
+		t.Errorf("learned rules = %+v", cfg.Policy.Learned)
+	}
+}
+
+func TestLearnRuleAppendsAndDeduplicates(t *testing.T) {
+	p := write(t, "default_model = \"a/b\"\n")
+	for i := 0; i < 2; i++ {
+		if err := LearnRule(p, "allow", "fs_write"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := LearnRule(p, "deny", "shell_exec"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Policy.Learned.Allow) != 1 {
+		t.Errorf("allow = %v, want the duplicate collapsed", cfg.Policy.Learned.Allow)
+	}
+	if len(cfg.Policy.Learned.Deny) != 1 {
+		t.Errorf("deny = %v", cfg.Policy.Learned.Deny)
+	}
+	body, _ := os.ReadFile(p)
+	if strings.Count(string(body), ManagedBegin) != 1 {
+		t.Errorf("the managed block was duplicated:\n%s", body)
+	}
+}
+
+func TestLearnRulePreservesTextAfterTheBlock(t *testing.T) {
+	p := write(t, "default_model = \"a/b\"\n"+
+		ManagedBegin+"\n[policy.learned]\nallow = [\"fs_read\"]\n"+ManagedEnd+"\n\n[trace]\nenabled = true\n")
+	if err := LearnRule(p, "allow", "fs_write"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Trace.Enabled {
+		t.Error("configuration after the managed block was lost")
+	}
+	if len(cfg.Policy.Learned.Allow) != 2 {
+		t.Errorf("allow = %v, want both the existing and the new rule", cfg.Policy.Learned.Allow)
+	}
+}
+
+func TestLearnRuleRejectsAnUnparseableRule(t *testing.T) {
+	p := write(t, "default_model = \"a/b\"\n")
+	// A rule that cannot be quoted safely must be refused rather than
+	// corrupting the file.
+	if err := LearnRule(p, "allow", "fs_write(path matches \"x\")"); err == nil {
+		t.Error("LearnRule accepted a rule containing a quote")
+	}
+	if err := LearnRule(p, "sometimes", "fs_write"); err == nil {
+		t.Error("LearnRule accepted an unknown decision")
+	}
+}
