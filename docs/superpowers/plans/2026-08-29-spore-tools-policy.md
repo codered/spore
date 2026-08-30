@@ -4217,11 +4217,12 @@ func WithSession(ctx context.Context, sessionID string, p Profile) context.Conte
 // one that allows the most.
 func SessionFrom(ctx context.Context) (string, Profile) {
 	info, ok := ctx.Value(sessionKey{}).(sessionInfo)
-	if !ok {
-		return "", ProfileRemote
-	}
-	if info.profile == "" {
-		info.profile = ProfileLocal
+	if !ok || info.profile == "" {
+		// Both cases are a caller mistake — nothing attached, or a session
+		// attached without naming its trust level — and both resolve to the
+		// strictest ruleset. A profile is only ever trusted because someone
+		// said so explicitly.
+		return info.id, ProfileRemote
 	}
 	return info.id, info.profile
 }
