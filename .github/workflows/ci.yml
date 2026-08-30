@@ -1,8 +1,10 @@
 name: ci
 
 on:
+  # Branch pushes are covered by pull_request; listing them here too would run
+  # every PR commit twice.
   push:
-    branches: ["**"]
+    branches: [master]
     tags: ["v*"]
   pull_request:
 
@@ -47,6 +49,9 @@ jobs:
   build:
     name: build (${{ matrix.goos }}/${{ matrix.goarch }})
     needs: test
+    # Binaries are produced on merge to master and on release tags. Pull
+    # requests run the test matrix only.
+    if: github.event_name == 'push'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
