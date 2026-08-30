@@ -184,3 +184,94 @@ func (s *Store) Summary(ctx context.Context, sessionID string) (string, int, err
 	}
 	return text, through, nil
 }
+
+// PendingCall is a tool call whose turn is suspended awaiting approval.
+type PendingCall struct {
+	ID        int64
+	SessionID string
+	ToolUseID string
+	Tool      string
+	Profile   string
+	Rule      string
+	ArgsJSON  []byte
+	CreatedAt time.Time
+}
+
+// AddPendingCall records a suspension before the turn blocks on an answer.
+func (s *Store) AddPendingCall(ctx context.Context, p PendingCall) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO pending_calls (session_id, tool_use_id, tool, args, profile, rule, state, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
+		p.SessionID, p.ToolUseID, p.Tool, string(p.ArgsJSON), p.Profile, p.Rule,
+		time.Now().UTC().Format(timeFormat))
+	if err != nil {
+		return 0, fmt.Errorf("add pending call: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+// PendingCalls returns the session's unanswered approvals, oldest first.
+func (s *Store) PendingCalls(ctx context.Context, sessionID string) ([]PendingCall, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, session_id, tool_use_id, tool, args, profile, rule, created_at
+		 FROM pending_calls WHERE session_id = ? AND state = 'pending' ORDER BY id`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("read pending calls: %w", err)
+	}
+	defer rows.Close()
+	var out []PendingCall
+	for rows.Next() {
+		var p PendingCall
+		var args, created string
+		if err := rows.Scan(&p.ID, &p.SessionID, &p.ToolUseID, &p.Tool, &args, &p.Profile, &p.Rule, &created); err != nil {
+			return nil, err
+		}
+		p.ArgsJSON = []byte(args)
+		p.CreatedAt, _ = time.Parse(timeFormat, created)
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ResolvePendingCall closes a suspension with the decision that ended it:
+// allow, deny, or timeout.
+func (s *Store) ResolvePendingCall(ctx context.Context, id int64, decision string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE pending_calls SET state = ?, decided_at = ? WHERE id = ?`,
+		decision, time.Now().UTC().Format(timeFormat), id)
+	if err != nil {
+		return fmt.Errorf("resolve pending call %d: %w", id, err)
+	}
+	return nil
+}
+
+// RecordApproval appends to the audit log. Only scope "session" is consulted
+// later, by SessionDecision; "once" is audit-only and "pattern" is written
+// into the config file instead.
+func (s *Store) RecordApproval(ctx context.Context, sessionID, tool string, args []byte, decision, scope string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO approvals (session_id, tool, args, decision, scope, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		sessionID, tool, string(args), decision, scope, time.Now().UTC().Format(timeFormat))
+	if err != nil {
+		return fmt.Errorf("record approval: %w", err)
+	}
+	return nil
+}
+
+// SessionDecision returns the most recent session-scoped answer for a tool in
+// this session, if any. "Always this session" is remembered per tool, not per
+// argument: the user answered about a capability, not about one path.
+func (s *Store) SessionDecision(ctx context.Context, sessionID, tool string) (string, bool, error) {
+	var decision string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT decision FROM approvals
+		 WHERE session_id = ? AND tool = ? AND scope = 'session'
+		 ORDER BY id DESC LIMIT 1`, sessionID, tool).Scan(&decision)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read session decision: %w", err)
+	}
+	return decision, true, nil
+}
