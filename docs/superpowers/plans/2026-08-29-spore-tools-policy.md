@@ -1356,8 +1356,10 @@ func (e *Engine) Evaluate(profile Profile, c Call) Result {
 	// call carrying junk would slip past the deny rules that inspect
 	// arguments. Every tool takes an object, so a valid-JSON payload that
 	// is not an object is refused for the same reason.
+	// Note the nil check: JSON "null" unmarshals into a map without error
+	// and leaves it nil, so err alone would let it through.
 	var argObj map[string]json.RawMessage
-	if err := json.Unmarshal(c.Args, &argObj); err != nil {
+	if err := json.Unmarshal(c.Args, &argObj); err != nil || argObj == nil {
 		return Result{Decision: DecisionDeny, Rule: "policy.malformed-arguments"}
 	}
 	rs, ok := e.profiles[profile]
