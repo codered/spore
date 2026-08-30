@@ -1187,9 +1187,12 @@ func TestMalformedArgsAreNeverAllowed(t *testing.T) {
 	// Arguments that do not parse cannot be checked against argument
 	// predicates, so they must not slip through an allow rule.
 	e := engine(t, config.PolicyConfig{Allow: []string{"fs_read"}})
-	got := e.Evaluate(ProfileLocal, Call{Tool: "fs_read", Args: json.RawMessage(`{not json`)})
-	if got.Decision != DecisionDeny {
-		t.Errorf("Decision = %q, want deny for unparseable arguments", got.Decision)
+	for _, args := range []string{`{not json`, ``, `[1,2]`, `"a string"`, `null`} {
+		got := e.Evaluate(ProfileLocal, Call{Tool: "fs_read", Args: json.RawMessage(args)})
+		if got.Decision != DecisionDeny {
+			t.Errorf("args %q: Decision = %q, want deny — an argument payload no\n"+
+				"predicate can inspect must never reach a tool", args, got.Decision)
+		}
 	}
 }
 
@@ -1346,10 +1349,15 @@ func (e *Engine) ApprovalTimeout() time.Duration { return e.timeout }
 // Evaluate resolves one call. Deny rules are checked first and win outright;
 // then allow and ask rules in configured order; then the profile default.
 func (e *Engine) Evaluate(profile Profile, c Call) Result {
-	// Arguments that do not parse cannot be checked against argument
-	// predicates, so a call carrying them is refused outright rather than
-	// matched against tool-name-only rules.
-	if !json.Valid(c.Args) {
+	// Arguments a predicate cannot inspect are refused outright rather than
+	// matched against tool-name-only rules. This gate is load-bearing
+	// security, not decoration: Rule.Match returns false for every
+	// argument predicate when the arguments do not decode, so without it a
+	// call carrying junk would slip past the deny rules that inspect
+	// arguments. Every tool takes an object, so a valid-JSON payload that
+	// is not an object is refused for the same reason.
+	var argObj map[string]json.RawMessage
+	if err := json.Unmarshal(c.Args, &argObj); err != nil {
 		return Result{Decision: DecisionDeny, Rule: "policy.malformed-arguments"}
 	}
 	rs, ok := e.profiles[profile]
