@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/codered/spore/internal/provider"
 )
@@ -133,7 +134,14 @@ func (r *Registry) Run(ctx context.Context, call provider.Block) (out provider.B
 		return ErrResult(call.ID, fmt.Errorf("tool %s: %w", call.Name, err))
 	}
 	if len(content) > r.maxOutput {
-		return Result(call.ID, content[:r.maxOutput]+truncationNote, false, true)
+		// Pull the cut back to a rune boundary: maxOutput is a byte budget,
+		// and slicing mid-rune hands the model a half-encoded character that
+		// JSON marshalling silently turns into U+FFFD.
+		cut := r.maxOutput
+		for cut > 0 && !utf8.RuneStart(content[cut]) {
+			cut--
+		}
+		return Result(call.ID, content[:cut]+truncationNote, false, true)
 	}
 	return Result(call.ID, content, false, false)
 }
