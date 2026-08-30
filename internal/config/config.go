@@ -7,11 +7,15 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
 
 type Config struct {
+	// Path is the file this config was loaded from. It carries no TOML tag:
+	// it is set by Load, never read from the file.
+	Path         string `toml:"-"`
 	DefaultModel string `toml:"default_model"`
 	SystemPrompt string `toml:"system_prompt"`
 	DataDir      string `toml:"data_dir"`
@@ -22,6 +26,9 @@ type Config struct {
 	Routes    []Route                   `toml:"route"`
 	Context   ContextConfig             `toml:"context"`
 	Trace     TraceConfig               `toml:"trace"`
+	Policy    PolicyConfig              `toml:"policy"`
+	Web       WebConfig                 `toml:"web"`
+	Shell     ShellConfig               `toml:"shell"`
 }
 
 // ProviderConfig describes one upstream. Kind selects the adapter
@@ -58,6 +65,70 @@ type TraceConfig struct {
 	Redact     bool    `toml:"redact"`
 }
 
+// PolicyConfig is the tool-call leash. Rules are ordered strings of the form
+// "tool" or "tool(predicate)"; see internal/policy for the grammar. Deny is
+// evaluated before allow and ask and cannot be overridden by either.
+type PolicyConfig struct {
+	// Workspace bounds every filesystem tool. "~" is expanded at load.
+	Workspace string `toml:"workspace"`
+	// Default is the decision for a call no rule matches: allow, ask or deny.
+	Default string `toml:"default"`
+	// ApprovalTimeout is a Go duration; an approval nobody answers within it
+	// is denied and reported back to the model.
+	ApprovalTimeout string `toml:"approval_timeout"`
+	// MaxOutput caps a single tool result in bytes before truncation.
+	MaxOutput int      `toml:"max_output"`
+	Allow     []string `toml:"allow"`
+	Ask       []string `toml:"ask"`
+	Deny      []string `toml:"deny"`
+	// Learned holds rules written back by "always allow this pattern". It
+	// lives in a marked section of the same file so policy stays readable.
+	Learned LearnedPolicy `toml:"learned"`
+	// Profiles override Default/Allow/Ask per trust profile ("local",
+	// "remote"). Deny is global and is never overridden.
+	Profiles map[string]ProfilePolicy `toml:"profile"`
+}
+
+type LearnedPolicy struct {
+	Allow []string `toml:"allow"`
+	Ask   []string `toml:"ask"`
+	Deny  []string `toml:"deny"`
+}
+
+type ProfilePolicy struct {
+	Default string   `toml:"default"`
+	Allow   []string `toml:"allow"`
+	Ask     []string `toml:"ask"`
+	Deny    []string `toml:"deny"`
+}
+
+type WebConfig struct {
+	// SearchProvider selects the web_search backend. "brave" is the only
+	// implementation in Plan 2; an empty key disables web_search entirely.
+	SearchProvider string `toml:"search_provider"`
+	BraveAPIKey    string `toml:"brave_api_key"`
+	UserAgent      string `toml:"user_agent"`
+}
+
+type ShellConfig struct {
+	// TimeoutSeconds bounds one shell_exec call when it names no timeout.
+	TimeoutSeconds int `toml:"timeout_seconds"`
+}
+
+// baselineDeny is always in force. A user's deny rules extend it; nothing
+// removes it. These are the categories no approval prompt should ever be
+// able to talk past.
+var baselineDeny = []string{
+	"fs_*(path outside workspace)",
+	"fs_*(path matches **/.env, **/.env.*, **/.ssh/**, **/*_rsa, **/*_ed25519, **/.aws/**, **/.gnupg/**)",
+	// "matches" is plain substring containment after whitespace collapsing,
+	// so a needle cannot span the middle of a command: "curl | sh" would
+	// never match "curl https://x.sh | sh". The pipe-to-a-shell shape is
+	// denied on the pipe itself, which costs the occasional false positive
+	// (a pipe into "shuf") and is the right trade for a deny baseline.
+	"shell_exec(matches rm -rf /, sudo , mkfs, dd if=, :(){, | sh, |sh, | bash, |bash, git push --force, shutdown, reboot)",
+}
+
 func Default() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
@@ -67,7 +138,30 @@ func Default() *Config {
 		Providers: map[string]ProviderConfig{},
 		Context:   ContextConfig{MaxTokens: 180_000, CompactAt: 0.75, KeepRecent: 12},
 		Trace:     TraceConfig{Endpoint: "http://localhost:6006/v1/traces", SampleRate: 1.0},
+		Policy: PolicyConfig{
+			Workspace:       home,
+			Default:         "ask",
+			ApprovalTimeout: "5m",
+			MaxOutput:       30_000,
+			Allow:           []string{"fs_read", "fs_list", "fs_glob", "fs_grep", "web_*"},
+			Ask:             []string{"fs_write", "fs_edit", "shell_exec", "mcp__*"},
+			Profiles:        map[string]ProfilePolicy{},
+		},
+		Web:   WebConfig{SearchProvider: "brave", UserAgent: "spore/0.1"},
+		Shell: ShellConfig{TimeoutSeconds: 120},
 	}
+}
+
+// expandHome turns a leading "~" into the user's home directory.
+func expandHome(p string) (string, error) {
+	if p != "~" && !strings.HasPrefix(p, "~/") {
+		return p, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p, err
+	}
+	return filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/")), nil
 }
 
 var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
@@ -114,9 +208,39 @@ func Load(path string) (*Config, error) {
 	if cfg.Context.KeepRecent == 0 {
 		cfg.Context.KeepRecent = Default().Context.KeepRecent
 	}
+	d := Default()
+	if cfg.Policy.Workspace == "" {
+		cfg.Policy.Workspace = d.Policy.Workspace
+	}
+	if expanded, err := expandHome(cfg.Policy.Workspace); err == nil {
+		cfg.Policy.Workspace = expanded
+	}
+	if cfg.Policy.Default == "" {
+		cfg.Policy.Default = d.Policy.Default
+	}
+	if cfg.Policy.ApprovalTimeout == "" {
+		cfg.Policy.ApprovalTimeout = d.Policy.ApprovalTimeout
+	}
+	if cfg.Policy.MaxOutput == 0 {
+		cfg.Policy.MaxOutput = d.Policy.MaxOutput
+	}
+	if len(cfg.Policy.Allow) == 0 && len(cfg.Policy.Ask) == 0 && len(cfg.Policy.Deny) == 0 {
+		cfg.Policy.Allow, cfg.Policy.Ask = d.Policy.Allow, d.Policy.Ask
+	}
+	cfg.Policy.Deny = append(append([]string{}, baselineDeny...), cfg.Policy.Deny...)
+	if cfg.Policy.Profiles == nil {
+		cfg.Policy.Profiles = map[string]ProfilePolicy{}
+	}
+	if cfg.Web.UserAgent == "" {
+		cfg.Web.UserAgent = d.Web.UserAgent
+	}
+	if cfg.Shell.TimeoutSeconds == 0 {
+		cfg.Shell.TimeoutSeconds = d.Shell.TimeoutSeconds
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	cfg.Path = path
 	return cfg, nil
 }
 
@@ -145,6 +269,21 @@ func (c *Config) Validate() error {
 	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt >= 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)
+	}
+	switch c.Policy.Default {
+	case "allow", "ask", "deny":
+	default:
+		return fmt.Errorf("policy.default must be allow, ask or deny, got %q", c.Policy.Default)
+	}
+	if _, err := time.ParseDuration(c.Policy.ApprovalTimeout); err != nil {
+		return fmt.Errorf("policy.approval_timeout %q: %w", c.Policy.ApprovalTimeout, err)
+	}
+	for name, p := range c.Policy.Profiles {
+		switch p.Default {
+		case "", "allow", "ask", "deny":
+		default:
+			return fmt.Errorf("policy.profile.%s.default must be allow, ask or deny, got %q", name, p.Default)
+		}
 	}
 	return nil
 }

@@ -21,18 +21,22 @@ type Span = oteltrace.Span
 
 // OpenInference attribute keys.
 const (
-	attrSpanKind   = "openinference.span.kind"
-	attrModelName  = "llm.model_name"
-	attrTokensIn   = "llm.token_count.prompt"
-	attrTokensOut  = "llm.token_count.completion"
-	attrInput      = "input.value"
-	attrOutput     = "output.value"
-	attrToolName   = "tool.name"
-	attrToolParams = "tool.parameters"
-	attrCallSite   = "spore.call_site"
-	attrCostUSD    = "spore.cost_usd"
-	attrSessionID  = "session.id"
-	attrClient     = "spore.client"
+	attrSpanKind       = "openinference.span.kind"
+	attrModelName      = "llm.model_name"
+	attrTokensIn       = "llm.token_count.prompt"
+	attrTokensOut      = "llm.token_count.completion"
+	attrInput          = "input.value"
+	attrOutput         = "output.value"
+	attrToolName       = "tool.name"
+	attrToolParams     = "tool.parameters"
+	attrCallSite       = "spore.call_site"
+	attrCostUSD        = "spore.cost_usd"
+	attrSessionID      = "session.id"
+	attrClient         = "spore.client"
+	attrPolicyDecision = "spore.policy.decision"
+	attrPolicyRule     = "spore.policy.rule"
+	attrToolIsError    = "spore.tool.is_error"
+	attrToolResultLen  = "spore.tool.result_bytes"
 )
 
 var redact atomic.Bool
@@ -107,4 +111,28 @@ func StartTool(ctx context.Context, name string, args []byte) (context.Context, 
 		kv = append(kv, attribute.String(attrToolParams, string(args)))
 	}
 	return tracer().Start(ctx, "tool "+name, oteltrace.WithAttributes(kv...))
+}
+
+// RecordPolicy annotates the current tool span with the decision that let the
+// call through — or stopped it. Called from internal/policy, which has no
+// other dependency on tracing.
+func RecordPolicy(ctx context.Context, decision, rule string) {
+	span := oteltrace.SpanFromContext(ctx)
+	span.SetAttributes(
+		attribute.String(attrPolicyDecision, decision),
+		attribute.String(attrPolicyRule, rule),
+	)
+}
+
+// RecordToolResult records the shape of a tool result. The content itself is
+// dropped when redacting, but its size and error flag are always kept.
+func RecordToolResult(span Span, content string, isErr, truncated bool) {
+	span.SetAttributes(
+		attribute.Int(attrToolResultLen, len(content)),
+		attribute.Bool(attrToolIsError, isErr),
+		attribute.Bool("spore.tool.truncated", truncated),
+	)
+	if !redact.Load() {
+		span.SetAttributes(attribute.String(attrOutput, content))
+	}
 }

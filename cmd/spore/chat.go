@@ -1,13 +1,13 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/codered/spore/internal/config"
+	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/store"
 )
 
@@ -24,8 +24,8 @@ func cmdChat(ctx context.Context, cfg *config.Config, st *store.Store, sessionID
 	}
 	fmt.Printf("session %s — ctrl-d to exit\n", sessionID)
 
-	sc := bufio.NewScanner(os.Stdin)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	ctx = policy.WithSession(ctx, sessionID, policy.ProfileLocal)
+	sc := stdinLines
 	for {
 		fmt.Print("\n> ")
 		if !sc.Scan() {

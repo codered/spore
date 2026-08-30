@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/provider"
@@ -15,6 +16,11 @@ import (
 // maxIterations bounds one turn's provider round trips so a model that keeps
 // calling tools cannot spin forever.
 const maxIterations = 12
+
+// maxParallelTools bounds a read-only batch's concurrency. A model can emit
+// any number of tool calls in one message, and each may open a file or an
+// HTTP connection; without a cap one turn can exhaust descriptors or sockets.
+const maxParallelTools = 8
 
 type EventType string
 
@@ -218,23 +224,27 @@ func (a *Agent) runTools(ctx context.Context, calls []provider.Block, out chan<-
 	}
 
 	run := func(call provider.Block) provider.Block {
-		_, span := sporetrace.StartTool(ctx, call.Name, call.Input)
+		toolCtx, span := sporetrace.StartTool(ctx, call.Name, call.Input)
 		defer span.End()
-		return a.Tools.Run(ctx, call)
+		res := a.Tools.Run(toolCtx, call)
+		sporetrace.RecordToolResult(span, res.Content, res.IsError, res.Truncated)
+		return res
 	}
 
 	results := make([]provider.Block, len(calls))
 	if allReadOnly && len(calls) > 1 {
-		done := make(chan struct{}, len(calls))
+		sem := make(chan struct{}, maxParallelTools)
+		var wg sync.WaitGroup
 		for i := range calls {
+			wg.Add(1)
 			go func(i int) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
 				results[i] = run(calls[i])
-				done <- struct{}{}
 			}(i)
 		}
-		for range calls {
-			<-done
-		}
+		wg.Wait()
 	} else {
 		for i := range calls {
 			results[i] = run(calls[i])

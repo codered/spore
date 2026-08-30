@@ -3,3 +3,4 @@
 *.db
 *.db-wal
 *.db-shm
+/spore-*-*
