@@ -75,13 +75,13 @@ func run(args []string) error {
 		if len(args) < 2 {
 			return fmt.Errorf("once needs a prompt")
 		}
-		return cmdOnce(ctx, cfg, st, args[1])
+		return cmdOnce(ctx, cfg, args[1])
 	case "chat":
 		id := ""
 		if len(args) > 1 {
 			id = args[1]
 		}
-		return cmdChat(ctx, cfg, st, id)
+		return cmdChat(ctx, cfg, id)
 	case "serve":
 		return cmdServe(ctx, cfg, st, args[1:])
 	case "session":
