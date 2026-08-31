@@ -5,6 +5,7 @@
 
 let sessionID = null;
 let stream = null;
+let generation = 0;
 // The assistant message currently being streamed, so text deltas append to
 // one node instead of creating one per delta.
 let liveMessage = null;
@@ -230,26 +231,37 @@ function attach(id, onReady) {
       setStatus("bad event from the daemon: " + err.message, true);
     }
   };
-  // The browser reconnects an EventSource on its own; say so rather than
-  // showing an error the user cannot act on.
-  stream.onerror = () => setStatus("reconnecting…");
+  stream.onerror = () => {
+    // A hard failure (bad status, wrong content-type) closes the stream
+    // permanently — the browser will not retry, so saying "reconnecting"
+    // would be a lie. Only a drop on an open stream auto-reconnects.
+    if (stream && stream.readyState === EventSource.CLOSED) {
+      setStatus("lost connection to this session — reload to retry", true);
+    } else {
+      setStatus("reconnecting…");
+    }
+  };
 }
 
 async function openSession(id) {
   sessionID = id;
   el("approvals").textContent = "";
-  // Capture the session id to guard against stale fetches if the user
-  // rapidly switches sessions.
-  const requestedID = id;
-  attach(id, async () => {
-    // Drop the result if sessionID has changed since the request went out.
-    if (sessionID !== requestedID) return;
+  // Monotonically increasing generation per openSession call; guards against
+  // out-of-order fetches if the user rapidly switches sessions.
+  const gen = ++generation;
+  const loadTranscript = async () => {
+    // Drop the result if a newer openSession call has arrived.
+    if (generation !== gen) return;
     try {
       renderTranscript(await api("GET", "/api/sessions/" + id));
     } catch (err) {
       setStatus(err.message, true);
     }
-  });
+  };
+  // Load the transcript directly on page load and on hard errors, so the view
+  // works whether or not the stream ever opens.
+  attach(id, loadTranscript);
+  await loadTranscript();
   for (const a of document.querySelectorAll("#sessions a")) {
     a.classList.toggle("active", a.dataset.id === id);
   }
