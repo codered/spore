@@ -52,39 +52,50 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		return fmt.Errorf("read due jobs: %w", err)
 	}
 	for _, job := range due {
-		sched, err := Parse(job.Spec)
-		if err != nil {
-			// A spec that cannot be parsed will never become valid on its
-			// own, and leaving it enabled means retrying it every tick
-			// forever. Disable it and say why.
-			slog.Error("disabling job with an invalid schedule", "job", job.ID, "spec", job.Spec, "err", err)
-			if err := s.store.SetJobEnabled(ctx, job.ID, false); err != nil {
-				slog.Error("could not disable the invalid job", "job", job.ID, "err", err)
+		// Wrap each job in a recover to prevent a panic in one job from stopping
+		// the others. The guarantee is that one failing job does not stop the
+		// others, for both errors and panics.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("job panicked", "job", job.ID, "panic", r)
+				}
+			}()
+
+			sched, err := Parse(job.Spec)
+			if err != nil {
+				// A spec that cannot be parsed will never become valid on its
+				// own, and leaving it enabled means retrying it every tick
+				// forever. Disable it and say why.
+				slog.Error("disabling job with an invalid schedule", "job", job.ID, "spec", job.Spec, "err", err)
+				if err := s.store.SetJobEnabled(ctx, job.ID, false); err != nil {
+					slog.Error("could not disable the invalid job", "job", job.ID, "err", err)
+				}
+				return
 			}
-			continue
-		}
-		next := sched.Next(now)
-		// Persist the advance BEFORE starting the job. StartJob commits a
-		// session row and launches a turn, so a crash after that point but
-		// before the advance was written would leave next_run in the past
-		// and re-fire the job on restart, duplicating the session. Writing
-		// first means a crash costs one SKIPPED run instead, which is the
-		// trade this scheduler deliberately makes.
-		if err := s.store.MarkJobRun(ctx, job.ID, now, next, ""); err != nil {
-			slog.Error("could not advance job; skipping this firing to avoid a re-fire loop",
-				"job", job.ID, "err", err)
-			continue
-		}
-		sessionID, startErr := s.runner.StartJob(ctx, job)
-		if startErr != nil {
-			// The job has already been advanced, so a runner that is briefly
-			// unavailable does not leave every job permanently due.
-			slog.Error("job did not start", "job", job.ID, "err", startErr)
-			continue
-		}
-		if err := s.store.SetJobLastSession(ctx, job.ID, sessionID); err != nil {
-			slog.Error("could not record the job's session", "job", job.ID, "err", err)
-		}
+			next := sched.Next(now)
+			// Persist the advance BEFORE starting the job. StartJob commits a
+			// session row and launches a turn, so a crash after that point but
+			// before the advance was written would leave next_run in the past
+			// and re-fire the job on restart, duplicating the session. Writing
+			// first means a crash costs one SKIPPED run instead, which is the
+			// trade this scheduler deliberately makes.
+			if err := s.store.MarkJobRun(ctx, job.ID, now, next, ""); err != nil {
+				slog.Error("could not advance job; skipping this firing to avoid a re-fire loop",
+					"job", job.ID, "err", err)
+				return
+			}
+			sessionID, startErr := s.runner.StartJob(ctx, job)
+			if startErr != nil {
+				// The job has already been advanced, so a runner that is briefly
+				// unavailable does not leave every job permanently due.
+				slog.Error("job did not start", "job", job.ID, "err", startErr)
+				return
+			}
+			if err := s.store.SetJobLastSession(ctx, job.ID, sessionID); err != nil {
+				slog.Error("could not record the job's session", "job", job.ID, "err", err)
+			}
+		}()
 	}
 	return nil
 }

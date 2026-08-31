@@ -261,3 +261,65 @@ func (a *assertingRunner) StartJob(ctx context.Context, job store.Job) (string, 
 	a.t.Fatalf("job %d not found in database when StartJob was called", job.ID)
 	return "", nil
 }
+
+type panicRunner struct {
+	inner   *fakeRunner
+	panicOn int64
+}
+
+func (p *panicRunner) StartJob(ctx context.Context, j store.Job) (string, error) {
+	if j.ID == p.panicOn {
+		panic("intentional panic for job")
+	}
+	return p.inner.StartJob(ctx, j)
+}
+
+func TestAPanicInOneJobDoesNotAbortTheRest(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	now := time.Date(2026, 9, 1, 9, 30, 0, 0, time.UTC)
+
+	// Create two jobs, both due at this tick.
+	id1, err := st.CreateJob(ctx, store.Job{
+		Kind: "cron", Spec: "0 9 * * *", Prompt: "will panic",
+		Enabled: true, NextRun: now.Add(-30 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob 1: %v", err)
+	}
+
+	id2, err := st.CreateJob(ctx, store.Job{
+		Kind: "cron", Spec: "0 9 * * *", Prompt: "will run",
+		Enabled: true, NextRun: now.Add(-30 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob 2: %v", err)
+	}
+
+	// A runner that panics on the first job and succeeds on the second.
+	inner := &fakeRunner{next: 0}
+	runner := &panicRunner{inner: inner, panicOn: id1}
+
+	s := New(st, runner, func() time.Time { return now })
+	err = s.Tick(ctx) // Should not panic or error
+	if err != nil {
+		t.Fatalf("Tick should not error when a job panics: %v", err)
+	}
+
+	// The first job panics in the runner (before reaching StartJob), but the
+	// second job should still be attempted and started by the inner runner.
+	started := inner.started()
+	if len(started) != 1 {
+		t.Fatalf("inner.started() = %d jobs, want 1 (only the second, since the first panicked before StartJob)", len(started))
+	}
+
+	// Verify that job 2 was actually started and recorded
+	jobs, _ := st.ListJobs(ctx)
+	for _, j := range jobs {
+		if j.ID == id2 {
+			if j.LastSessionID == "" {
+				t.Error("job 2 was not recorded as started")
+			}
+		}
+	}
+}
