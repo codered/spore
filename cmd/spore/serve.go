@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -62,14 +63,21 @@ func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []s
 		return nil
 	}
 
-	// A second daemon on the same database and port helps nobody.
-	if pid, err := daemon.ReadPidFile(pidPath); err == nil && daemon.PidAlive(pid) {
-		return fmt.Errorf("spore is already running (pid %d); use spore serve --stop first", pid)
-	}
-	if err := daemon.WritePidFile(pidPath); err != nil {
+	// Atomically claim the pidfile. If a daemon is already running, extract its pid
+	// for the user-facing error message.
+	if err := daemon.AcquirePidFile(pidPath); err != nil {
+		if errors.Is(err, daemon.ErrAlreadyRunning) {
+			// Try to extract the pid from the error message for a better message.
+			// The error format is "daemon is already running: pid N" when a live daemon
+			// exists.
+			pid, readErr := daemon.ReadPidFile(pidPath)
+			if readErr == nil && daemon.PidAlive(pid) {
+				return fmt.Errorf("spore is already running (pid %d); use spore serve --stop first", pid)
+			}
+		}
 		return err
 	}
-	defer daemon.RemovePidFile(pidPath)
+	defer daemon.ReleasePidFile(pidPath)
 
 	srv, err := buildServer(cfg, st)
 	if err != nil {
