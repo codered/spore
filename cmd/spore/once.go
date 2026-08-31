@@ -66,7 +66,7 @@ func cmdOnce(ctx context.Context, cfg *config.Config, prompt string) error {
 		return err
 	}
 
-	ap := terminalApprover{lines: stdinLines, out: os.Stdout}
+	ap := terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout}
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 

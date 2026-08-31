@@ -70,10 +70,10 @@ func ensureDaemon(ctx context.Context, cfg *config.Config) (*client, error) {
 		return nil, fmt.Errorf("release the daemon process: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "spore: started a daemon on %s (log: %s)\n", cfg.Daemon.Addr, logPath)
 	if err := waitForHealth(ctx, c, startupTimeout); err != nil {
 		return nil, fmt.Errorf("%w\n%s", err, tailFile(logPath, 2048))
 	}
+	fmt.Fprintf(os.Stderr, "spore: started a daemon on %s (log: %s)\n", cfg.Daemon.Addr, logPath)
 	return c, nil
 }
 

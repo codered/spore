@@ -139,7 +139,3 @@ func (c *client) streamFrom(ctx context.Context, sessionID string, connected cha
 	}
 	return sc.Err()
 }
-
-func (c *client) stream(ctx context.Context, sessionID string, fn func(daemon.WireEvent) error) error {
-	return c.streamFrom(ctx, sessionID, nil, fn)
-}
