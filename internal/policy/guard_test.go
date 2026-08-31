@@ -29,11 +29,11 @@ func (r *recordingRunner) Run(_ context.Context, c provider.Block) provider.Bloc
 }
 
 type scriptedApprover struct {
-	mu      sync.Mutex
-	asked   []Ask
-	answer  Answer
-	err     error
-	block   chan struct{} // when non-nil, Ask waits on it (and on ctx)
+	mu     sync.Mutex
+	asked  []Ask
+	answer Answer
+	err    error
+	block  chan struct{} // when non-nil, Ask waits on it (and on ctx)
 }
 
 func (a *scriptedApprover) Ask(ctx context.Context, ask Ask) (Answer, error) {
@@ -317,4 +317,61 @@ func TestGuardDelegatesSpecsAndReadOnly(t *testing.T) {
 	if g.Specs() != nil {
 		t.Error("Specs must delegate to the wrapped runner")
 	}
+}
+
+func TestNoDuplicateAuditRowsWhenApprovalRacesBetweenGuardAndBroker(t *testing.T) {
+	// Simulate: a pending call is added, then Guard.Resolve is called out of
+	// band to answer it (e.g., via HTTP), then the Guard's timeout path runs
+	// and tries to write its own audit row. ResolvePendingCall should return
+	// false to indicate the suspension was already claimed, preventing duplicate
+	// audit rows.
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	sid, err := st.CreateSession(ctx, "test session")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Add a pending call manually (simulating a suspension).
+	pendingID, err := st.AddPendingCall(ctx, store.PendingCall{
+		SessionID: sid,
+		ToolUseID: "c1",
+		Tool:      "fs_read",
+		ArgsJSON:  []byte(`{"path":"/etc/passwd"}`),
+		Profile:   string(ProfileRemote),
+		Rule:      "policy.deny",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate Guard.Resolve being called out of band to answer the suspension
+	// (e.g., via HTTP API or another client). This will claim the suspension
+	// and write an approval row via ClaimPendingCall (which is atomic).
+	guard := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{}), nil, st, nil)
+	err = guard.Resolve(ctx, sid, pendingID, Answer{Allow: true, Scope: ScopeOnce})
+	if err != nil {
+		t.Fatalf("Guard.Resolve failed: %v", err)
+	}
+
+	// Now simulate ResolvePendingCall being called from the timeout path (the
+	// race condition that caused duplicate rows). ResolvePendingCall should
+	// return false because the suspension was already claimed by Guard.Resolve,
+	// and the guard's audit write should be skipped.
+	claimed, err := st.ResolvePendingCall(ctx, pendingID, "timeout")
+	if err != nil {
+		t.Fatalf("ResolvePendingCall: %v", err)
+	}
+	if claimed {
+		t.Fatal("ResolvePendingCall claimed an already-resolved suspension: the race is not fixed")
+	}
+
+	// The test is successful if ResolvePendingCall correctly reported that the
+	// suspension was not claimed. The guard's code is responsible for skipping
+	// the audit write when claimed=false, preventing duplicate rows.
 }

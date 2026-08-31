@@ -216,7 +216,7 @@ func TestPendingCallLifecycle(t *testing.T) {
 		t.Error("CreatedAt was not populated")
 	}
 
-	if err := s.ResolvePendingCall(ctx, id, "allow"); err != nil {
+	if _, err := s.ResolvePendingCall(ctx, id, "allow"); err != nil {
 		t.Fatal(err)
 	}
 	// A resolved call is no longer pending: a restart must not re-ask.
