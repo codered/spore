@@ -6,9 +6,21 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/codered/spore/internal/policy"
 )
+
+// answeredTTL is how long to remember answered suspensions. This must exceed
+// the approval timeout so we don't re-answer the same suspension if the guard's
+// audit write is still in flight when a retry arrives.
+const answeredTTL = 10 * time.Minute
+
+// waiter is a waiting Ask, keyed by suspension id in the broker's map.
+type waiter struct {
+	sessionID string
+	ch        chan policy.Answer
+}
 
 // Broker is the daemon's policy.Approver. Ask cannot prompt a browser
 // synchronously, so it publishes the request to every client attached to the
@@ -21,19 +33,30 @@ import (
 type Broker struct {
 	hub *Hub
 
-	mu      sync.Mutex
-	waiters map[int64]chan policy.Answer
+	mu        sync.Mutex
+	waiters   map[int64]waiter
+	answered  map[int64]time.Time
+	answeredTTL time.Duration
 }
 
 func NewBroker(h *Hub) *Broker {
-	return &Broker{hub: h, waiters: map[int64]chan policy.Answer{}}
+	return NewBrokerWithTTL(h, answeredTTL)
+}
+
+func NewBrokerWithTTL(h *Hub, ttl time.Duration) *Broker {
+	return &Broker{
+		hub:       h,
+		waiters:   map[int64]waiter{},
+		answered:  map[int64]time.Time{},
+		answeredTTL: ttl,
+	}
 }
 
 // Ask implements policy.Approver.
 func (b *Broker) Ask(ctx context.Context, a policy.Ask) (policy.Answer, error) {
 	ch := make(chan policy.Answer, 1)
 	b.mu.Lock()
-	b.waiters[a.PendingID] = ch
+	b.waiters[a.PendingID] = waiter{sessionID: a.SessionID, ch: ch}
 	b.mu.Unlock()
 	defer func() {
 		b.mu.Lock()
@@ -51,6 +74,21 @@ func (b *Broker) Ask(ctx context.Context, a policy.Ask) (policy.Answer, error) {
 		})
 		return ans, nil
 	case <-ctx.Done():
+		// An answer delivered at the same instant the deadline fired must not
+		// be discarded: select picks randomly between two ready cases, so
+		// check the channel once more before reporting a timeout.
+		// A brief sleep gives concurrent Answer goroutines time to complete
+		// their send before we drain the channel.
+		time.Sleep(100 * time.Microsecond)
+		select {
+		case ans := <-ch:
+			b.hub.Publish(a.SessionID, WireEvent{
+				Type: WireResolved, PendingID: a.PendingID, Tool: a.Tool,
+				Decision: decisionOf(ans),
+			})
+			return ans, nil
+		default:
+		}
 		// The guard turns a deadline into a denial and records it; the broker
 		// only reports why it stopped waiting.
 		return policy.Answer{}, ctx.Err()
@@ -60,20 +98,51 @@ func (b *Broker) Ask(ctx context.Context, a policy.Ask) (policy.Answer, error) {
 // Answer hands an answer to a waiting Ask, reporting whether one was there.
 // False means the daemon restarted (or the turn was abandoned) since the
 // suspension was written, and the caller should use Guard.Resolve instead.
-func (b *Broker) Answer(pendingID int64, ans policy.Answer) bool {
+// It verifies that the asking session matches the caller's sessionID to prevent
+// cross-session approval.
+func (b *Broker) Answer(sessionID string, pendingID int64, ans policy.Answer) bool {
 	b.mu.Lock()
-	ch, ok := b.waiters[pendingID]
-	if ok {
-		// Delete under the lock so a second concurrent Answer finds nothing
-		// and is told it lost.
-		delete(b.waiters, pendingID)
-	}
-	b.mu.Unlock()
-	if !ok {
+	w, ok := b.waiters[pendingID]
+	if !ok || w.sessionID != sessionID {
+		// Either no waiter exists, or it's for a different session.
+		// Do NOT delete the waiter; another session must not destroy the real owner's waiter.
+		b.mu.Unlock()
 		return false
 	}
-	ch <- ans
+
+	// Delete under the lock so a second concurrent Answer finds nothing
+	// and is told it lost.
+	delete(b.waiters, pendingID)
+
+	// Record that we've answered this, so we reject retries that arrive
+	// before Guard.Run's audit write completes.
+	b.answered[pendingID] = time.Now()
+	b.pruneAnswered()
+	b.mu.Unlock()
+
+	// Send without the lock so we don't block other goroutines.
+	w.ch <- ans
 	return true
+}
+
+// AlreadyAnswered reports whether this daemon has already delivered an
+// answer for a suspension whose audit write may still be in flight.
+func (b *Broker) AlreadyAnswered(pendingID int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, ok := b.answered[pendingID]
+	return ok
+}
+
+// pruneAnswered removes entries older than the TTL. Must be called with the
+// lock held.
+func (b *Broker) pruneAnswered() {
+	now := time.Now()
+	for id, t := range b.answered {
+		if now.Sub(t) > b.answeredTTL {
+			delete(b.answered, id)
+		}
+	}
 }
 
 func approvalEvent(a policy.Ask) WireEvent {
@@ -122,6 +191,10 @@ func (s *Server) handleListApprovals(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleResolveApproval(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
+	// Verify the session exists early, before attempting to answer.
+	if _, ok := s.findSession(w, r, sessionID); !ok {
+		return
+	}
 	pendingID, err := strconv.ParseInt(r.PathValue("pending"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "pending id must be a number: %v", err)
@@ -150,8 +223,12 @@ func (s *Server) handleResolveApproval(w http.ResponseWriter, r *http.Request) {
 	// and Guard.Run records it. Only when nothing is waiting — the daemon
 	// restarted while the approval was open — does the out-of-band path
 	// apply. Taking both would write two audit rows for one decision.
-	if s.broker.Answer(pendingID, ans) {
+	if s.broker.Answer(sessionID, pendingID, ans) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "delivered"})
+		return
+	}
+	if s.broker.AlreadyAnswered(pendingID) {
+		writeError(w, http.StatusConflict, "approval %d was already answered", pendingID)
 		return
 	}
 	if s.guard == nil {

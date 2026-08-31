@@ -42,7 +42,7 @@ func TestBrokerDeliversAnAnswerToTheWaitingAsk(t *testing.T) {
 		t.Fatal("Ask published no approval event")
 	}
 
-	if !b.Answer(7, policy.Answer{Allow: true, Scope: policy.ScopeSession}) {
+	if !b.Answer("s1", 7, policy.Answer{Allow: true, Scope: policy.ScopeSession}) {
 		t.Fatal("Answer reported no waiter, but Ask is waiting")
 	}
 	select {
@@ -62,7 +62,7 @@ func TestBrokerReportsNoWaiterForAnUnknownPendingID(t *testing.T) {
 	b := NewBroker(NewHub())
 	// This is the case that must fall through to Guard.Resolve rather than
 	// silently succeeding: nothing is waiting, so nothing was answered.
-	if b.Answer(99, policy.Answer{Allow: true}) {
+	if b.Answer("any", 99, policy.Answer{Allow: true}) {
 		t.Error("Answer claimed to deliver to a waiter that does not exist")
 	}
 }
@@ -74,7 +74,7 @@ func TestBrokerOnlyOneAnswerWins(t *testing.T) {
 
 	deadline := time.After(2 * time.Second)
 	for {
-		if b.Answer(3, policy.Answer{Allow: true, Scope: policy.ScopeOnce}) {
+		if b.Answer("s1", 3, policy.Answer{Allow: true, Scope: policy.ScopeOnce}) {
 			break
 		}
 		select {
@@ -86,7 +86,7 @@ func TestBrokerOnlyOneAnswerWins(t *testing.T) {
 	}
 	// A second client answering the same approval must be told it lost, so
 	// the handler can report "already answered" instead of recording twice.
-	if b.Answer(3, policy.Answer{Allow: false, Scope: policy.ScopeOnce}) {
+	if b.Answer("s1", 3, policy.Answer{Allow: false, Scope: policy.ScopeOnce}) {
 		t.Error("a second Answer for the same pending id also won")
 	}
 }
@@ -110,7 +110,7 @@ func TestBrokerAskHonoursCancellation(t *testing.T) {
 		t.Fatal("Ask ignored cancellation; an unanswered approval would wait forever")
 	}
 	// The waiter must be gone, or the map grows without bound.
-	if b.Answer(5, policy.Answer{Allow: true}) {
+	if b.Answer("s1", 5, policy.Answer{Allow: true}) {
 		t.Error("a cancelled Ask left its waiter registered")
 	}
 }
@@ -159,5 +159,130 @@ func TestResolveEndpointRejectsABadScope(t *testing.T) {
 	defer post.Body.Close()
 	if post.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 for an unknown scope", post.StatusCode)
+	}
+}
+
+func TestSecondResolvePostForAnsweredSuspensionReturns409(t *testing.T) {
+	s, ts := newTestServer(t)
+	res := postJSON(t, ts.URL+"/api/sessions", map[string]string{"title": "retry"})
+	var sess SessionJSON
+	json.NewDecoder(res.Body).Decode(&sess)
+	res.Body.Close()
+
+	done := make(chan policy.Answer, 1)
+	go func() {
+		ans, _ := s.Approver().Ask(context.Background(), policy.Ask{
+			SessionID: sess.ID, Tool: "fs_write", PendingID: 100, Rule: "fs_write",
+		})
+		done <- ans
+	}()
+	waitForWaiter(t, s, 100)
+
+	// First answer succeeds.
+	first := postJSON(t, ts.URL+"/api/sessions/"+sess.ID+"/approvals/100",
+		map[string]any{"allow": true, "scope": "once"})
+	defer first.Body.Close()
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first resolve status = %d, want 200", first.StatusCode)
+	}
+
+	// Second answer for the same approval must be rejected with 409,
+	// not recorded via Guard.Resolve.
+	second := postJSON(t, ts.URL+"/api/sessions/"+sess.ID+"/approvals/100",
+		map[string]any{"allow": false, "scope": "once"})
+	defer second.Body.Close()
+	if second.StatusCode != http.StatusConflict {
+		t.Fatalf("second resolve status = %d, want 409", second.StatusCode)
+	}
+
+	// The first answer should have reached the waiter.
+	select {
+	case ans := <-done:
+		if !ans.Allow {
+			t.Error("the waiter received the second answer (denial) instead of the first")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the waiting Ask never returned")
+	}
+}
+
+func TestAnswerRejectsWrongSession(t *testing.T) {
+	h := NewHub()
+	b := NewBrokerWithTTL(h, 100*time.Millisecond)
+
+	// Session s1 asks for approval.
+	go b.Ask(context.Background(), policy.Ask{
+		SessionID: "s1", Tool: "fs_write", PendingID: 200,
+	})
+	deadline := time.After(2 * time.Second)
+	for {
+		b.mu.Lock()
+		_, ok := b.waiters[200]
+		b.mu.Unlock()
+		if ok {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("waiter never registered")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	// Session s2 tries to answer. This must fail and leave s1's waiter intact.
+	if b.Answer("s2", 200, policy.Answer{Allow: true, Scope: policy.ScopeOnce}) {
+		t.Error("Answer succeeded for wrong session")
+	}
+
+	// s1 can still answer with the correct session id.
+	if !b.Answer("s1", 200, policy.Answer{Allow: true, Scope: policy.ScopeOnce}) {
+		t.Error("Answer failed for correct session after wrong session tried")
+	}
+}
+
+func TestAnswerDeliveredConcurrentWithCancellationIsNotLost(t *testing.T) {
+	h := NewHub()
+	b := NewBrokerWithTTL(h, 100*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan policy.Answer, 1)
+	go func() {
+		ans, _ := b.Ask(ctx, policy.Ask{
+			SessionID: "s1", Tool: "fs_write", PendingID: 300,
+		})
+		done <- ans
+	}()
+
+	// Wait for the Ask to register.
+	deadline := time.After(2 * time.Second)
+	for {
+		b.mu.Lock()
+		_, ok := b.waiters[300]
+		b.mu.Unlock()
+		if ok {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("waiter never registered")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	// Race: answer and cancel at the same time. The answer must not be lost.
+	go cancel()
+	if !b.Answer("s1", 300, policy.Answer{Allow: true, Scope: policy.ScopeOnce}) {
+		t.Error("Answer could not deliver")
+	}
+
+	select {
+	case ans := <-done:
+		if !ans.Allow {
+			t.Error("Ask returned a denial instead of the answer")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ask did not return the answer")
 	}
 }
