@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -290,4 +291,54 @@ func waitForWaiter(t *testing.T, s *Server, id int64) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("no waiter registered for pending %d", id)
+}
+
+func TestJobAPICreateListCancel(t *testing.T) {
+	_, ts := newTestServer(t)
+
+	res := postJSON(t, ts.URL+"/api/jobs", map[string]string{
+		"spec": "0 9 * * *", "prompt": "morning briefing",
+	})
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create job status = %d, want 201", res.StatusCode)
+	}
+	var created JobJSON
+	json.NewDecoder(res.Body).Decode(&created)
+	if created.Kind != "cron" || created.NextRun.IsZero() {
+		t.Fatalf("created job = %+v, want kind cron and a computed next_run", created)
+	}
+
+	bad := postJSON(t, ts.URL+"/api/jobs", map[string]string{"spec": "nonsense", "prompt": "x"})
+	defer bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Errorf("invalid spec status = %d, want 400", bad.StatusCode)
+	}
+
+	noPrompt := postJSON(t, ts.URL+"/api/jobs", map[string]string{"spec": "0 9 * * *", "prompt": "  "})
+	defer noPrompt.Body.Close()
+	if noPrompt.StatusCode != http.StatusBadRequest {
+		t.Errorf("empty prompt status = %d, want 400", noPrompt.StatusCode)
+	}
+
+	req, _ := http.NewRequest("DELETE", ts.URL+"/api/jobs/"+strconv.FormatInt(created.ID, 10), nil)
+	del, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer del.Body.Close()
+	if del.StatusCode != http.StatusOK {
+		t.Fatalf("cancel status = %d, want 200", del.StatusCode)
+	}
+
+	listRes, err := http.Get(ts.URL + "/api/jobs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listRes.Body.Close()
+	var jobs []JobJSON
+	json.NewDecoder(listRes.Body).Decode(&jobs)
+	if len(jobs) != 1 || jobs[0].Enabled {
+		t.Errorf("jobs after cancel = %+v, want the one job disabled", jobs)
+	}
 }

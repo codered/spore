@@ -70,6 +70,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}/events", s.handleEvents)
 	mux.HandleFunc("GET /api/sessions/{id}/approvals", s.handleListApprovals)
 	mux.HandleFunc("POST /api/sessions/{id}/approvals/{pending}", s.handleResolveApproval)
+	mux.HandleFunc("GET /api/jobs", s.handleListJobs)
+	mux.HandleFunc("POST /api/jobs", s.handleCreateJob)
+	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleCancelJob)
 	return mux
 }
 
@@ -109,3 +112,5 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func writeError(w http.ResponseWriter, status int, format string, args ...any) {
 	writeJSON(w, status, map[string]string{"error": fmt.Sprintf(format, args...)})
 }
+
+var errSessionBusy = errors.New("the freshly created session already has a turn running")
