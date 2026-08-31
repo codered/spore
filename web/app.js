@@ -250,11 +250,14 @@ async function openSession(id) {
   // out-of-order fetches if the user rapidly switches sessions.
   const gen = ++generation;
   const loadTranscript = async () => {
-    // Drop the result if a newer openSession call has arrived.
-    if (generation !== gen) return;
     try {
-      renderTranscript(await api("GET", "/api/sessions/" + id));
+      const tr = await api("GET", "/api/sessions/" + id);
+      // Re-check AFTER the await: the fetch is exactly the window in which
+      // the user can switch sessions, so a check before it guards nothing.
+      if (generation !== gen) return;
+      renderTranscript(tr);
     } catch (err) {
+      if (generation !== gen) return;   // a stale error is noise too
       setStatus(err.message, true);
     }
   };
