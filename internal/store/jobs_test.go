@@ -207,3 +207,40 @@ func TestOpenMigratesThePlan2JobsStub(t *testing.T) {
 	}
 	s4.Close()
 }
+
+// SetJobLastSession records a session ID without updating next_run. It should
+// set the value and not error on an unknown job ID.
+func TestSetJobLastSession(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	base := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+
+	id, err := s.CreateJob(ctx, Job{
+		Kind: "cron", Spec: "0 9 * * *", Prompt: "test",
+		Enabled: true, NextRun: base,
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	// Setting the session ID should work
+	if err := s.SetJobLastSession(ctx, id, "sess-123"); err != nil {
+		t.Fatalf("SetJobLastSession: %v", err)
+	}
+
+	// Verify it was recorded
+	jobs, _ := s.ListJobs(ctx)
+	for _, j := range jobs {
+		if j.ID != id {
+			continue
+		}
+		if j.LastSessionID != "sess-123" {
+			t.Errorf("last_session_id = %q, want sess-123", j.LastSessionID)
+		}
+	}
+
+	// An unknown job ID should not error
+	if err := s.SetJobLastSession(ctx, 99999, "sess-456"); err != nil {
+		t.Errorf("SetJobLastSession on unknown id: %v, want no error", err)
+	}
+}

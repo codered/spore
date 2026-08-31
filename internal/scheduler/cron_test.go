@@ -30,6 +30,16 @@ func TestParseCronNext(t *testing.T) {
 		{"0 9,17 * * *", time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC)},
 		{"0 0 * * 0", time.Date(2026, 9, 6, 0, 0, 0, 0, time.UTC)},   // Sunday as 0
 		{"0 0 * * 7", time.Date(2026, 9, 6, 0, 0, 0, 0, time.UTC)},   // Sunday as 7
+		// Range forms
+		{"35-40 * * * *", time.Date(2026, 9, 1, 8, 35, 0, 0, time.UTC)},       // range in current hour
+		{"35-40/2 * * * *", time.Date(2026, 9, 1, 8, 35, 0, 0, time.UTC)},     // 35,37,39 -> first is 35
+		{"0 10-12 * * *", time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)},       // hours 10-12
+		{"0 18-23 * * *", time.Date(2026, 9, 1, 18, 0, 0, 0, time.UTC)},       // hours 18-23
+		{"0 20-23/2 * * *", time.Date(2026, 9, 1, 20, 0, 0, 0, time.UTC)},     // 20,22
+		// Day-of-month + day-of-week interactions
+		{"0 0 1,15 * 1", time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)},        // next Monday (OR rule: both restricted)
+		{"0 0 15 * *", time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)},         // only DOM restricted
+		{"0 0 * * 1", time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC)},           // only DOW restricted
 	}
 	for _, tc := range cases {
 		t.Run(tc.spec, func(t *testing.T) {

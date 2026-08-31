@@ -160,3 +160,14 @@ func (s *Store) SetJobEnabled(ctx context.Context, id int64, enabled bool) error
 	}
 	return nil
 }
+
+// SetJobLastSession records the session a firing produced. It is separate
+// from MarkJobRun because the advance must be persisted BEFORE the job runs,
+// while the session id only exists afterwards.
+func (s *Store) SetJobLastSession(ctx context.Context, id int64, sessionID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET last_session_id = ? WHERE id = ?`, sessionID, id)
+	if err != nil {
+		return fmt.Errorf("record job %d session: %w", id, err)
+	}
+	return nil
+}

@@ -193,3 +193,71 @@ func TestOneFailingJobDoesNotStopTheOthers(t *testing.T) {
 		}
 	}
 }
+
+// TestAdvanceIsDurableBeforeStarting verifies that a job's next_run is
+// persisted to the database BEFORE StartJob is called. This is the crash-safety
+// invariant: if the process dies between the advance and the start, next_run
+// is already in the future, so on restart the job is not due and does not
+// duplicate. This test uses a runner that inspects the database state when
+// StartJob is called to prove the advance has already been written.
+func TestAdvanceIsDurableBeforeStarting(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	now := time.Date(2026, 9, 1, 9, 30, 0, 0, time.UTC)
+
+	_, err := st.CreateJob(ctx, store.Job{
+		Kind: "cron", Spec: "0 9 * * *", Prompt: "test advance durability",
+		Enabled: true, NextRun: now.Add(-time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	// Create a runner that asserts the job's next_run has moved at call time
+	r := &assertingRunner{
+		st:  st,
+		now: now,
+		t:   t,
+	}
+
+	s := New(st, r, func() time.Time { return now })
+	if err := s.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	// The runner should have been called and should have passed its assertion
+	if !r.called {
+		t.Fatal("StartJob was never called")
+	}
+}
+
+// assertingRunner is a test runner that asserts the job's next_run has already
+// moved past 'now' when StartJob is called. This proves the advance is durable
+// before the side effect.
+type assertingRunner struct {
+	st     *store.Store
+	now    time.Time
+	t      *testing.T
+	called bool
+}
+
+func (a *assertingRunner) StartJob(ctx context.Context, job store.Job) (string, error) {
+	a.called = true
+	// Read the job back from the store to check its next_run
+	jobs, err := a.st.ListJobs(ctx)
+	if err != nil {
+		a.t.Fatalf("ListJobs in StartJob: %v", err)
+	}
+	for _, j := range jobs {
+		if j.ID != job.ID {
+			continue
+		}
+		// The critical assertion: next_run must be strictly after now
+		if !j.NextRun.After(a.now) {
+			a.t.Fatalf("at StartJob call time, job %d next_run is %v, want strictly after now (%v). Advance was not durable before start.", job.ID, j.NextRun, a.now)
+		}
+		return "sess-check", nil
+	}
+	a.t.Fatalf("job %d not found in database when StartJob was called", job.ID)
+	return "", nil
+}

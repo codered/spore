@@ -12,20 +12,24 @@ import (
 )
 
 type JobJSON struct {
-	ID            int64     `json:"id"`
-	Kind          string    `json:"kind"`
-	Spec          string    `json:"spec"`
-	Prompt        string    `json:"prompt"`
-	Enabled       bool      `json:"enabled"`
-	NextRun       time.Time `json:"next_run"`
-	LastRun       time.Time `json:"last_run,omitempty"`
-	LastSessionID string    `json:"last_session_id,omitempty"`
+	ID            int64      `json:"id"`
+	Kind          string     `json:"kind"`
+	Spec          string     `json:"spec"`
+	Prompt        string     `json:"prompt"`
+	Enabled       bool       `json:"enabled"`
+	NextRun       time.Time  `json:"next_run"`
+	LastRun       *time.Time `json:"last_run,omitempty"`
+	LastSessionID string     `json:"last_session_id,omitempty"`
 }
 
 func toJobJSON(j store.Job) JobJSON {
+	var lastRun *time.Time
+	if !j.LastRun.IsZero() {
+		lastRun = &j.LastRun
+	}
 	return JobJSON{
 		ID: j.ID, Kind: j.Kind, Spec: j.Spec, Prompt: j.Prompt, Enabled: j.Enabled,
-		NextRun: j.NextRun, LastRun: j.LastRun, LastSessionID: j.LastSessionID,
+		NextRun: j.NextRun, LastRun: lastRun, LastSessionID: j.LastSessionID,
 	}
 }
 
