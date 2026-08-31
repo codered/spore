@@ -17,6 +17,9 @@ const usage = `spore — a personal agent
 usage:
   spore once <prompt>          run one turn in a fresh session and print the reply
   spore chat [session-id]      interactive session (resumes when given an id)
+  spore serve                  run the daemon (HTTP API + web UI + scheduler)
+  spore serve --status         report whether a daemon is running
+  spore serve --stop           stop a running daemon
   spore session list           list recent sessions
   spore session show <id>      print a session transcript
   spore policy check <tool> [json-args]
@@ -79,6 +82,8 @@ func run(args []string) error {
 			id = args[1]
 		}
 		return cmdChat(ctx, cfg, st, id)
+	case "serve":
+		return cmdServe(ctx, cfg, st, args[1:])
 	case "session":
 		return cmdSession(ctx, st, args[1:])
 	case "policy":

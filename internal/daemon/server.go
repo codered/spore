@@ -55,6 +55,14 @@ func (s *Server) Hub() *Hub { return s.hub }
 // creates it because it owns the hub the approval events travel over.
 func (s *Server) Approver() policy.Approver { return s.broker }
 
+// Attach supplies the agent and guard after construction. The daemon owns
+// the approver the guard is built with, so the two cannot both be passed to
+// New; this is the seam where the cycle is broken.
+func (s *Server) Attach(a *agent.Agent, g *policy.Guard) {
+	s.agent = a
+	s.guard = g
+}
+
 // Close cancels every in-flight turn. Run calls it on shutdown.
 func (s *Server) Close() { s.cancel() }
 

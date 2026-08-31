@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/codered/spore/internal/agent"
 	"github.com/codered/spore/internal/config"
@@ -36,7 +37,7 @@ func stream(ch <-chan agent.Event, showCost bool) error {
 }
 
 func cmdOnce(ctx context.Context, cfg *config.Config, st *store.Store, prompt string) error {
-	a, err := buildAgent(cfg, st)
+	a, err := buildAgent(cfg, st, terminalApprover{lines: stdinLines, out: os.Stdout})
 	if err != nil {
 		return err
 	}

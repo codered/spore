@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -23,7 +24,7 @@ func TestBuildAgentRegistersConfiguredProviders(t *testing.T) {
 	}
 	cfg.Routes = []config.Route{{When: "compaction|title|classify", Model: "ollama/qwen3:8b"}}
 
-	a, err := buildAgent(cfg, st)
+	a, err := buildAgent(cfg, st, terminalApprover{lines: stdinLines, out: os.Stdout})
 	if err != nil {
 		t.Fatalf("buildAgent: %v", err)
 	}
@@ -46,7 +47,7 @@ func TestBuildAgentRejectsUnknownProviderKind(t *testing.T) {
 	cfg.DefaultModel = "weird/model"
 	cfg.Providers = map[string]config.ProviderConfig{"weird": {Kind: "telepathy"}}
 
-	if _, err := buildAgent(cfg, st); err == nil {
+	if _, err := buildAgent(cfg, st, terminalApprover{lines: stdinLines, out: os.Stdout}); err == nil {
 		t.Fatal("buildAgent accepted an unknown provider kind")
 	}
 }

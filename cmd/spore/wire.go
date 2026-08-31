@@ -7,6 +7,7 @@ import (
 
 	"github.com/codered/spore/internal/agent"
 	"github.com/codered/spore/internal/config"
+	"github.com/codered/spore/internal/daemon"
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/provider/anthropic"
@@ -21,9 +22,9 @@ import (
 )
 
 // buildTools assembles the registry, the policy engine and the guard that
-// wraps them. The agent receives the guard, so no tool call reaches a builtin
-// without a policy decision behind it.
-func buildTools(cfg *config.Config, st *store.Store) (*policy.Guard, error) {
+// wraps them. The approver is a parameter because the CLI asks on a terminal
+// and the daemon asks over SSE; everything else about the leash is identical.
+func buildTools(cfg *config.Config, st *store.Store, approver policy.Approver) (*policy.Guard, error) {
 	reg := tool.NewRegistry(cfg.Policy.MaxOutput)
 	tools := fs.New(cfg.Policy.Workspace, cfg.Policy.MaxOutput)
 	tools = append(tools, shell.New(cfg.Policy.Workspace,
@@ -39,7 +40,6 @@ func buildTools(cfg *config.Config, st *store.Store) (*policy.Guard, error) {
 	if err != nil {
 		return nil, err
 	}
-	approver := terminalApprover{lines: stdinLines, out: os.Stdout}
 	learn := func(d policy.Decision, rule string) error {
 		return config.LearnRule(cfg.Path, string(d), rule)
 	}
@@ -48,7 +48,7 @@ func buildTools(cfg *config.Config, st *store.Store) (*policy.Guard, error) {
 
 // buildAgent turns configuration into a wired agent. Plan 1 registers no
 // tools, so the agent runs text-only turns; Plan 2 passes a real ToolRunner.
-func buildAgent(cfg *config.Config, st *store.Store) (*agent.Agent, error) {
+func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (*agent.Agent, error) {
 	reg := provider.NewRegistry()
 	for name, pc := range cfg.Providers {
 		price := provider.ProviderPrice{In: pc.PriceIn, Out: pc.PriceOut}
@@ -72,9 +72,27 @@ func buildAgent(cfg *config.Config, st *store.Store) (*agent.Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	tools, err := buildTools(cfg, st)
+	tools, err := buildTools(cfg, st, approver)
 	if err != nil {
 		return nil, err
 	}
 	return agent.New(st, reg, rt, cfg, tools), nil
+}
+
+// buildServer wires the daemon. The ordering here is load-bearing: the guard
+// needs the daemon's approver, and the daemon needs the guard, so the server
+// is constructed first with no agent, and the agent is attached once its
+// tools have been built around the server's broker.
+func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, error) {
+	srv := daemon.New(daemon.Options{Store: st, Cfg: cfg})
+	a, err := buildAgent(cfg, st, srv.Approver())
+	if err != nil {
+		return nil, err
+	}
+	guard, ok := a.Tools.(*policy.Guard)
+	if !ok {
+		return nil, fmt.Errorf("internal: agent tools are %T, want *policy.Guard", a.Tools)
+	}
+	srv.Attach(a, guard)
+	return srv, nil
 }

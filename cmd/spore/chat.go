@@ -12,7 +12,7 @@ import (
 )
 
 func cmdChat(ctx context.Context, cfg *config.Config, st *store.Store, sessionID string) error {
-	a, err := buildAgent(cfg, st)
+	a, err := buildAgent(cfg, st, terminalApprover{lines: stdinLines, out: os.Stdout})
 	if err != nil {
 		return err
 	}
