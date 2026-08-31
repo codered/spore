@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/provider"
@@ -21,6 +22,16 @@ const maxIterations = 12
 // any number of tool calls in one message, and each may open a file or an
 // HTTP connection; without a cap one turn can exhaust descriptors or sockets.
 const maxParallelTools = 8
+
+// persistCtx detaches a transcript write from the turn's cancellation. A turn
+// can legitimately be abandoned mid-flight — the daemon shutting down, a
+// suspended approval nobody answers — but it must never be abandoned
+// half-recorded: an assistant message whose tool_use blocks have no matching
+// tool_result is rejected by every provider on every subsequent turn, which
+// breaks the session permanently. Values are preserved, cancellation is not.
+func persistCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+}
 
 type EventType string
 
@@ -94,6 +105,27 @@ func (a *Agent) Snapshot(ctx context.Context, sessionID string) (Snapshot, error
 		}
 		snap.Messages = append(snap.Messages, provider.Message{Role: provider.Role(r.Role), Blocks: blocks})
 	}
+
+	// Drop any trailing assistant message whose blocks contain a tool_use with
+	// no matching tool_result in the following message. A well-formed history
+	// always has the tool results after it, so a trailing tool_use means the
+	// turn was interrupted.
+	if len(snap.Messages) >= 1 {
+		lastMsg := snap.Messages[len(snap.Messages)-1]
+		if lastMsg.Role == provider.RoleAssistant {
+			hasToolUse := false
+			for _, block := range lastMsg.Blocks {
+				if block.Type == provider.BlockToolUse {
+					hasToolUse = true
+					break
+				}
+			}
+			if hasToolUse {
+				snap.Messages = snap.Messages[:len(snap.Messages)-1]
+			}
+		}
+	}
+
 	return snap, nil
 }
 
@@ -113,8 +145,11 @@ func (a *Agent) appendMessage(ctx context.Context, sessionID string, role provid
 // closed when the turn finishes; the caller may abandon it only by cancelling
 // ctx.
 func (a *Agent) Run(ctx context.Context, sessionID, input string) (<-chan Event, error) {
-	if err := a.appendMessage(ctx, sessionID, provider.RoleUser,
-		[]provider.Block{{Type: provider.BlockText, Text: input}}, "", "", provider.Usage{}, 0); err != nil {
+	pctx, cancelPersist := persistCtx(ctx)
+	err := a.appendMessage(pctx, sessionID, provider.RoleUser,
+		[]provider.Block{{Type: provider.BlockText, Text: input}}, "", "", provider.Usage{}, 0)
+	cancelPersist()
+	if err != nil {
 		return nil, fmt.Errorf("persist user message: %w", err)
 	}
 
@@ -189,7 +224,10 @@ func (a *Agent) loop(ctx context.Context, sessionID string, out chan<- Event) er
 		blocks = append(blocks, calls...)
 		cost := price.Cost(usage)
 		sporetrace.EndLLM(llmSpan, req.System, text, usage, cost)
-		if err := a.appendMessage(ctx, sessionID, provider.RoleAssistant, blocks, ref, router.SiteChat, usage, cost); err != nil {
+		pctx, cancelPersist := persistCtx(ctx)
+		err = a.appendMessage(pctx, sessionID, provider.RoleAssistant, blocks, ref, router.SiteChat, usage, cost)
+		cancelPersist()
+		if err != nil {
 			return err
 		}
 
@@ -205,7 +243,10 @@ func (a *Agent) loop(ctx context.Context, sessionID string, out chan<- Event) er
 		if err != nil {
 			return err
 		}
-		if err := a.appendMessage(ctx, sessionID, provider.RoleTool, results, "", "", provider.Usage{}, 0); err != nil {
+		pctx2, cancelPersist2 := persistCtx(ctx)
+		err = a.appendMessage(pctx2, sessionID, provider.RoleTool, results, "", "", provider.Usage{}, 0)
+		cancelPersist2()
+		if err != nil {
 			return err
 		}
 	}
