@@ -156,7 +156,7 @@ func Default() *Config {
 			ApprovalTimeout: "5m",
 			MaxOutput:       30_000,
 			Allow:           []string{"fs_read", "fs_list", "fs_glob", "fs_grep", "web_*"},
-			Ask:             []string{"fs_write", "fs_edit", "shell_exec", "mcp__*"},
+			Ask:             []string{"fs_write", "fs_edit", "shell_exec", "schedule_*", "mcp__*"},
 			Profiles:        map[string]ProfilePolicy{},
 		},
 		Web:    WebConfig{SearchProvider: "brave", UserAgent: "spore/0.1"},

@@ -15,6 +15,7 @@ import (
 	"github.com/codered/spore/internal/store"
 	"github.com/codered/spore/internal/tool"
 	"github.com/codered/spore/internal/tool/fs"
+	"github.com/codered/spore/internal/tool/schedule"
 	"github.com/codered/spore/internal/tool/shell"
 	"github.com/codered/spore/internal/tool/web"
 )
@@ -28,6 +29,7 @@ func buildTools(cfg *config.Config, st *store.Store) (*policy.Guard, error) {
 	tools = append(tools, shell.New(cfg.Policy.Workspace,
 		time.Duration(cfg.Shell.TimeoutSeconds)*time.Second, cfg.Policy.MaxOutput))
 	tools = append(tools, web.New(cfg.Web, cfg.Policy.MaxOutput)...)
+	tools = append(tools, schedule.New(st)...)
 	for _, t := range tools {
 		if err := reg.Register(t); err != nil {
 			return nil, err
