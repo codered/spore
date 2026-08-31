@@ -214,9 +214,15 @@ function handleEvent(ev) {
   }
 }
 
-function attach(id) {
+function attach(id, onReady) {
   if (stream) stream.close();
   stream = new EventSource("/api/sessions/" + id + "/events");
+  stream.onopen = () => {
+    // Re-fetch on every open, including the browser's own silent reconnects:
+    // the hub keeps no backlog, so anything published while we were away is
+    // not replayed and the transcript would otherwise be quietly incomplete.
+    onReady();
+  };
   stream.onmessage = (e) => {
     try {
       handleEvent(JSON.parse(e.data));
@@ -232,8 +238,18 @@ function attach(id) {
 async function openSession(id) {
   sessionID = id;
   el("approvals").textContent = "";
-  renderTranscript(await api("GET", "/api/sessions/" + id));
-  attach(id);
+  // Capture the session id to guard against stale fetches if the user
+  // rapidly switches sessions.
+  const requestedID = id;
+  attach(id, async () => {
+    // Drop the result if sessionID has changed since the request went out.
+    if (sessionID !== requestedID) return;
+    try {
+      renderTranscript(await api("GET", "/api/sessions/" + id));
+    } catch (err) {
+      setStatus(err.message, true);
+    }
+  });
   for (const a of document.querySelectorAll("#sessions a")) {
     a.classList.toggle("active", a.dataset.id === id);
   }

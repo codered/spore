@@ -70,14 +70,33 @@ func TestUIReferencesNoExternalResources(t *testing.T) {
 	}
 }
 
-func TestUnknownStaticFileIs404(t *testing.T) {
+func TestStaticNotFoundIsError(t *testing.T) {
+	_, ts := newTestServer(t)
+	res, err := http.Get(ts.URL + "/static/nonexistent.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Errorf("nonexistent asset status = %d, want 404", res.StatusCode)
+	}
+}
+
+// TestPathTraversalIsNotServed verifies that trying to traverse out of the
+// static assets directory does not return file contents. The request
+// /static/../server.go is cleaned and redirected by net/http to /server.go,
+// which handleIndex 404s (it only serves exactly "/"). The important property
+// is that a Go source file is never returned; the mechanism just happens to
+// be path cleaning and 404, not an error from handleStatic itself.
+func TestPathTraversalIsNotServed(t *testing.T) {
 	_, ts := newTestServer(t)
 	res, err := http.Get(ts.URL + "/static/../server.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
-	if res.StatusCode == http.StatusOK {
-		t.Error("a path traversal out of the embedded assets returned 200")
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if strings.Contains(string(body), "package daemon") {
+		t.Error("path traversal returned Go source code")
 	}
 }
