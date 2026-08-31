@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>spore</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<aside id="sidebar">
+  <header>
+    <h1>spore</h1>
+    <button id="new-session" type="button">new session</button>
+  </header>
+  <nav id="sessions" aria-label="sessions"></nav>
+  <section id="jobs-panel">
+    <h2>scheduled</h2>
+    <ul id="jobs"></ul>
+  </section>
+</aside>
+
+<main>
+  <div id="transcript" aria-live="polite"></div>
+  <div id="approvals"></div>
+  <form id="composer" autocomplete="off">
+    <textarea id="input" rows="3" placeholder="message spore… (enter to send, shift+enter for a newline)"></textarea>
+    <button type="submit" id="send">send</button>
+  </form>
+  <div id="status"></div>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
