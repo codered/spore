@@ -33,9 +33,9 @@ type waiter struct {
 type Broker struct {
 	hub *Hub
 
-	mu        sync.Mutex
-	waiters   map[int64]waiter
-	answered  map[int64]time.Time
+	mu          sync.Mutex
+	waiters     map[int64]waiter
+	answered    map[int64]time.Time
 	answeredTTL time.Duration
 }
 
@@ -45,9 +45,9 @@ func NewBroker(h *Hub) *Broker {
 
 func NewBrokerWithTTL(h *Hub, ttl time.Duration) *Broker {
 	return &Broker{
-		hub:       h,
-		waiters:   map[int64]waiter{},
-		answered:  map[int64]time.Time{},
+		hub:         h,
+		waiters:     map[int64]waiter{},
+		answered:    map[int64]time.Time{},
 		answeredTTL: ttl,
 	}
 }

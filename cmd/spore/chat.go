@@ -59,6 +59,8 @@ func cmdChat(ctx context.Context, cfg *config.Config, sessionID string) error {
 					// Approval queue full; drop it. The guard will time out
 					// and deny. Not ideal, but bounds memory and prevents
 					// a backlog in an unusual multi-client scenario.
+					fmt.Fprintf(os.Stderr, "approval for %s arrived but the queue is full; answer at http://%s/#%s\n",
+						ev.Tool, cfg.Daemon.Addr, sessionID)
 				}
 			case daemon.WireTurnDone, daemon.WireError:
 				select {

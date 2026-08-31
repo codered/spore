@@ -11,7 +11,7 @@ import (
 // this asserts the dependency stays one-directional.
 func TestAgentCoreImportsNoTransport(t *testing.T) {
 	banned := map[string]string{
-		"net/http":                             "the core must not know about HTTP",
+		"net/http": "the core must not know about HTTP",
 		"github.com/codered/spore/internal/daemon":    "the core must not import its own transport",
 		"github.com/codered/spore/internal/scheduler": "the core must not import the scheduler",
 	}

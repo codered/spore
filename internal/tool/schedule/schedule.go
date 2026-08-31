@@ -99,8 +99,10 @@ func (l listTool) Call(ctx context.Context, args json.RawMessage) (string, error
 
 type cancelTool struct{ st *store.Store }
 
-func (cancelTool) Name() string        { return "schedule_cancel" }
-func (cancelTool) Description() string { return "Cancel a scheduled job by id. Cancellation is permanent; there is no resume." }
+func (cancelTool) Name() string { return "schedule_cancel" }
+func (cancelTool) Description() string {
+	return "Cancel a scheduled job by id. Cancellation is permanent; there is no resume."
+}
 func (cancelTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
