@@ -15,9 +15,10 @@ import (
 	"github.com/codered/spore/internal/tool"
 )
 
-// New returns the schedule builtins. They are ask-gated by the default
-// policy: a model that can silently give itself a recurring wake-up is a
-// model that can work around any per-turn limit.
+// New returns the schedule builtins. schedule_list is allowed by default as
+// a read-only tool; schedule_create and schedule_cancel are ask-gated because
+// a model that can silently give itself a recurring wake-up is a model that
+// can work around any per-turn limit.
 func New(st *store.Store) []tool.Tool {
 	return []tool.Tool{
 		createTool{st: st},
@@ -69,7 +70,7 @@ type listTool struct{ st *store.Store }
 
 func (listTool) Name() string { return "schedule_list" }
 func (listTool) Description() string {
-	return "List scheduled jobs with their id, schedule, prompt and next run time."
+	return "List scheduled jobs. Each row shows: id, enabled/cancelled state, kind, schedule, next run time, and prompt."
 }
 func (listTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type": "object", "properties": {}}`)
@@ -99,7 +100,7 @@ func (l listTool) Call(ctx context.Context, args json.RawMessage) (string, error
 type cancelTool struct{ st *store.Store }
 
 func (cancelTool) Name() string        { return "schedule_cancel" }
-func (cancelTool) Description() string { return "Cancel a scheduled job by id." }
+func (cancelTool) Description() string { return "Cancel a scheduled job by id. Cancellation is permanent; there is no resume." }
 func (cancelTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
