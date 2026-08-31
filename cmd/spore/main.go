@@ -57,11 +57,6 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	st, err := store.Open(cfg.DBPath())
-	if err != nil {
-		return err
-	}
-	defer st.Close()
 
 	ctx := context.Background()
 	shutdown, err := sporetrace.Init(ctx, cfg.Trace)
@@ -83,8 +78,18 @@ func run(args []string) error {
 		}
 		return cmdChat(ctx, cfg, id)
 	case "serve":
+		st, err := store.Open(cfg.DBPath())
+		if err != nil {
+			return err
+		}
+		defer st.Close()
 		return cmdServe(ctx, cfg, st, args[1:])
 	case "session":
+		st, err := store.Open(cfg.DBPath())
+		if err != nil {
+			return err
+		}
+		defer st.Close()
 		return cmdSession(ctx, st, args[1:])
 	case "policy":
 		// spore policy check <tool> [json-args] [-profile local|remote]
