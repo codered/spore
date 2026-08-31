@@ -17,10 +17,10 @@ type fake struct {
 	fn       func(ctx context.Context, args json.RawMessage) (string, error)
 }
 
-func (f fake) Name() string                { return f.name }
-func (f fake) Description() string         { return "fake " + f.name }
-func (f fake) Schema() json.RawMessage     { return json.RawMessage(`{"type":"object"}`) }
-func (f fake) ReadOnly() bool              { return f.readOnly }
+func (f fake) Name() string            { return f.name }
+func (f fake) Description() string     { return "fake " + f.name }
+func (f fake) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (f fake) ReadOnly() bool          { return f.readOnly }
 func (f fake) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	return f.fn(ctx, args)
 }

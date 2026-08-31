@@ -216,7 +216,7 @@ func TestPendingCallLifecycle(t *testing.T) {
 		t.Error("CreatedAt was not populated")
 	}
 
-	if err := s.ResolvePendingCall(ctx, id, "allow"); err != nil {
+	if _, err := s.ResolvePendingCall(ctx, id, "allow"); err != nil {
 		t.Fatal(err)
 	}
 	// A resolved call is no longer pending: a restart must not re-ask.
@@ -288,5 +288,49 @@ func TestLatestSessionDecisionWins(t *testing.T) {
 	d, ok, _ := s.SessionDecision(ctx, sid, "fs_write")
 	if !ok || d != "deny" {
 		t.Errorf("SessionDecision = %q, want the most recent answer (deny)", d)
+	}
+}
+
+func TestSessionLookupByID(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	// Create a session
+	id, err := s.CreateSession(ctx, "test session")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Look up the existing session
+	sess, found, err := s.Session(ctx, id)
+	if err != nil {
+		t.Fatalf("Session: %v", err)
+	}
+	if !found {
+		t.Fatal("Session not found but expected to be found")
+	}
+	if sess.ID != id {
+		t.Errorf("Session ID = %q, want %q", sess.ID, id)
+	}
+	if sess.Title != "test session" {
+		t.Errorf("Session Title = %q, want %q", sess.Title, "test session")
+	}
+	if sess.CreatedAt.IsZero() {
+		t.Error("CreatedAt was not populated")
+	}
+	if sess.UpdatedAt.IsZero() {
+		t.Error("UpdatedAt was not populated")
+	}
+
+	// Look up a non-existent session
+	missing, found, err := s.Session(ctx, "nonexistent")
+	if err != nil {
+		t.Fatalf("Session lookup for nonexistent ID: %v", err)
+	}
+	if found {
+		t.Error("Nonexistent session was found")
+	}
+	if missing.ID != "" {
+		t.Errorf("Nonexistent session ID should be empty, got %q", missing.ID)
 	}
 }

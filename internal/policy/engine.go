@@ -122,7 +122,7 @@ func buildRuleset(def string, allow, ask, deny []string, learned config.LearnedP
 	return rs, nil
 }
 
-func (e *Engine) Workspace() string             { return e.env.Workspace }
+func (e *Engine) Workspace() string              { return e.env.Workspace }
 func (e *Engine) ApprovalTimeout() time.Duration { return e.timeout }
 
 // Evaluate resolves one call. Deny rules are checked first and win outright;

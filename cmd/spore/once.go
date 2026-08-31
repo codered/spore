@@ -3,51 +3,102 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 
-	"github.com/codered/spore/internal/agent"
 	"github.com/codered/spore/internal/config"
+	"github.com/codered/spore/internal/daemon"
 	"github.com/codered/spore/internal/policy"
-	"github.com/codered/spore/internal/store"
 )
 
-// stream prints one turn's events and returns the turn error, if any. When
-// showCost is set the per-turn footer also carries the attributed USD cost.
-func stream(ch <-chan agent.Event, showCost bool) error {
-	for ev := range ch {
-		switch ev.Type {
-		case agent.EvText:
-			fmt.Print(ev.Text)
-		case agent.EvToolCall:
-			fmt.Printf("\n  → %s %s\n", ev.Block.Name, string(ev.Block.Input))
-		case agent.EvToolResult:
-			fmt.Printf("  ← %d bytes\n", len(ev.Block.Content))
-		case agent.EvTurnDone:
-			cost := ""
-			if showCost {
-				cost = fmt.Sprintf(" · $%.4f", ev.Cost)
-			}
-			fmt.Printf("\n\n[%s · %d in / %d out%s]\n",
-				ev.Model, ev.Usage.InputTokens, ev.Usage.OutputTokens, cost)
-		case agent.EvError:
-			return ev.Err
+// printEvent renders one wire event on the terminal. It is the CLI's whole
+// display layer, shared by once and chat.
+func printEvent(ev daemon.WireEvent, showCost bool) {
+	switch ev.Type {
+	case daemon.WireText:
+		fmt.Print(ev.Text)
+	case daemon.WireToolCall:
+		fmt.Printf("\n  → %s %s\n", ev.Tool, ev.Args)
+	case daemon.WireToolResult:
+		mark := "←"
+		if ev.IsError {
+			mark = "✗"
 		}
+		fmt.Printf("  %s %d bytes\n", mark, len(ev.Content))
+	case daemon.WireTurnDone:
+		cost := ""
+		if showCost {
+			cost = fmt.Sprintf(" · $%.4f", ev.CostUSD)
+		}
+		fmt.Printf("\n\n[%s · %d in / %d out%s]\n", ev.Model, ev.TokensIn, ev.TokensOut, cost)
+	case daemon.WireError:
+		fmt.Fprintf(os.Stderr, "\nturn failed: %s\n", ev.Error)
 	}
-	return nil
 }
 
-func cmdOnce(ctx context.Context, cfg *config.Config, st *store.Store, prompt string) error {
-	a, err := buildAgent(cfg, st)
+// errTurnFinished ends a stream cleanly once the turn it was watching is
+// over. stream returns it, and callers treat it as success.
+var errTurnFinished = fmt.Errorf("turn finished")
+
+// approve renders an approval on the terminal and posts the answer back.
+// Errors are reported and swallowed: the guard denies on its own timeout, so
+// a failure to answer degrades to a denial rather than a hung turn.
+func approve(ctx context.Context, c *client, ap terminalApprover, sessionID string, ev daemon.WireEvent) {
+	ans, err := ap.Ask(ctx, policy.Ask{
+		SessionID: sessionID, Tool: ev.Tool, Args: []byte(ev.Args),
+		Rule: ev.Rule, PendingID: ev.PendingID, Pattern: ev.Pattern,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\napproval not answered: %v\n", err)
+		return
+	}
+	if err := c.resolve(ctx, sessionID, ev.PendingID, ans); err != nil {
+		fmt.Fprintf(os.Stderr, "\ncould not send the answer: %v\n", err)
+	}
+}
+
+func cmdOnce(ctx context.Context, cfg *config.Config, prompt string) error {
+	c, err := ensureDaemon(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	sid, err := st.CreateSession(ctx, prompt)
+	sessionID, err := c.createSession(ctx, prompt)
 	if err != nil {
 		return err
 	}
-	ctx = policy.WithSession(ctx, sid, policy.ProfileLocal)
-	ch, err := a.Run(ctx, sid, prompt)
-	if err != nil {
+
+	ap := terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout}
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Attach BEFORE posting the message, and wait for the connection rather
+	// than for the goroutine to start: an event published between the two
+	// would otherwise be missed, and for a one-shot turn that can be the
+	// whole reply.
+	connected := make(chan struct{})
+	errc := make(chan error, 1)
+	go func() {
+		errc <- c.streamFrom(streamCtx, sessionID, connected, func(ev daemon.WireEvent) error {
+			printEvent(ev, cfg.ShowCost)
+			switch ev.Type {
+			case daemon.WireApproval:
+				approve(streamCtx, c, ap, sessionID, ev)
+			case daemon.WireTurnDone, daemon.WireError:
+				return errTurnFinished
+			}
+			return nil
+		})
+	}()
+	select {
+	case <-connected:
+	case err := <-errc:
+		return fmt.Errorf("attach to the session: %w", err)
+	}
+
+	if err := c.send(ctx, sessionID, prompt); err != nil {
 		return err
 	}
-	return stream(ch, cfg.ShowCost)
+	if err := <-errc; err != nil && err != errTurnFinished {
+		return err
+	}
+	return nil
 }

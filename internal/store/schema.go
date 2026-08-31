@@ -69,13 +69,21 @@ CREATE TABLE IF NOT EXISTS pending_calls (
 
 CREATE INDEX IF NOT EXISTS idx_pending_session ON pending_calls(session_id, state);
 
+-- jobs drives the scheduler. kind is cron | once; spec is a five-field cron
+-- expression or an RFC3339 instant. next_run is the computed fire time and is
+-- the only column the tick loop queries on. A job always opens a FRESH
+-- session, so last_session_id is a record of what it produced, never a target.
 CREATE TABLE IF NOT EXISTS jobs (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  schedule   TEXT NOT NULL,
-  prompt     TEXT NOT NULL,
-  session_id TEXT,
-  enabled    INTEGER NOT NULL DEFAULT 1,
-  last_run   TEXT,
-  created_at TEXT NOT NULL
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind            TEXT NOT NULL,
+  spec            TEXT NOT NULL,
+  prompt          TEXT NOT NULL,
+  enabled         INTEGER NOT NULL DEFAULT 1,
+  next_run        TEXT NOT NULL,
+  last_run        TEXT,
+  last_session_id TEXT NOT NULL DEFAULT '',
+  created_at      TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_jobs_due ON jobs(enabled, next_run);
 `

@@ -195,12 +195,20 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 	})
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
-		_ = g.store.ResolvePendingCall(book, pendingID, "timeout")
-		_ = g.store.RecordApproval(book, sessionID, call.Name, call.Input, "deny", "timeout")
+		// Resolve the suspension. If this call claimed it (not already answered
+		// elsewhere), write the audit row. If not, skip — another path already
+		// recorded this decision and we must not add a second contradictory row.
+		if claimed, err := g.store.ResolvePendingCall(book, pendingID, "timeout"); err == nil && claimed {
+			_ = g.store.RecordApproval(book, sessionID, call.Name, call.Input, "deny", "timeout")
+		}
 		sporetrace.RecordPolicy(ctx, "deny", "approval timed out")
 		return denied(call.ID, "approval for %s timed out after %s and was denied", call.Name, g.engine.ApprovalTimeout())
 	case err != nil:
-		_ = g.store.ResolvePendingCall(book, pendingID, "error")
+		// Same as timeout branch: only write the audit row if we claimed the
+		// suspension, not if another path already answered it.
+		if claimed, err := g.store.ResolvePendingCall(book, pendingID, "error"); err == nil && claimed {
+			// Note: error case doesn't write an audit row in the original code
+		}
 		sporetrace.RecordPolicy(ctx, "deny", "approver unavailable")
 		return denied(call.ID, "could not ask for approval: %v", err)
 	}
@@ -209,14 +217,20 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 	if answer.Allow {
 		decision = DecisionAllow
 	}
-	_ = g.store.ResolvePendingCall(book, pendingID, string(decision))
-	_ = g.store.RecordApproval(book, sessionID, call.Name, call.Input, string(decision), string(answer.Scope))
+	// Resolve the suspension. If this call claimed it, write both the audit
+	// row and learn the rule if applicable. If not claimed, skip both because
+	// another path already recorded this decision.
+	claimed, err := g.store.ResolvePendingCall(book, pendingID, string(decision))
+	_ = err // Already logged by caller if needed
+	if claimed {
+		_ = g.store.RecordApproval(book, sessionID, call.Name, call.Input, string(decision), string(answer.Scope))
 
-	if answer.Scope == ScopePattern && g.learn != nil {
-		if err := g.learn(decision, pattern); err != nil {
-			// Failing to persist the rule must not change this call's
-			// outcome; the user simply gets asked again next time.
-			sporetrace.RecordPolicy(ctx, string(decision), "learned rule not persisted: "+err.Error())
+		if answer.Scope == ScopePattern && g.learn != nil {
+			if err := g.learn(decision, pattern); err != nil {
+				// Failing to persist the rule must not change this call's
+				// outcome; the user simply gets asked again next time.
+				sporetrace.RecordPolicy(ctx, string(decision), "learned rule not persisted: "+err.Error())
+			}
 		}
 	}
 

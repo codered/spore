@@ -9,4 +9,10 @@ test:
 vet:
 	go vet $(TAGS) ./...
 
-.PHONY: build test vet
+fmt:
+	gofmt -w .
+
+fmtcheck:
+	@out="$$(gofmt -l .)"; if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
+
+.PHONY: build test vet fmt fmtcheck

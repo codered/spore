@@ -403,3 +403,79 @@ func TestReadOnlyBatchConcurrencyIsBounded(t *testing.T) {
 		}
 	}
 }
+
+// cancellableTools cancels the context mid-tool-dispatch to simulate daemon
+// shutdown during a turn's tool phase.
+type cancellableTools struct {
+	cancel context.CancelFunc
+}
+
+func (c *cancellableTools) Specs() []provider.ToolSpec {
+	return []provider.ToolSpec{{Name: "fs.read", Description: "read a file", Schema: json.RawMessage(`{"type":"object"}`)}}
+}
+func (c *cancellableTools) ReadOnly(string) bool { return true }
+func (c *cancellableTools) Run(ctx context.Context, call provider.Block) provider.Block {
+	// Cancel the entire turn's context mid-dispatch to simulate daemon shutdown.
+	c.cancel()
+	// Let the cancellation propagate.
+	select {
+	case <-ctx.Done():
+	case <-time.After(100 * time.Millisecond):
+	}
+	// Return normally — persistCtx keeps the write alive even though ctx is cancelled.
+	return provider.Block{Type: provider.BlockToolResult, ID: call.ID, Content: "result"}
+}
+
+func TestCancelledTurnDoesNotOrphanToolUse(t *testing.T) {
+	ctx := context.Background()
+	script := provider.NewScript(
+		provider.ScriptTurn{
+			ToolCalls: []provider.Block{{
+				Type: provider.BlockToolUse, ID: "c1", Name: "fs.read",
+				Input: json.RawMessage(`{"path":"go.mod"}`),
+			}},
+			Usage: provider.Usage{InputTokens: 10, OutputTokens: 5},
+		},
+		provider.ScriptTurn{Text: "unreached", Usage: provider.Usage{InputTokens: 20, OutputTokens: 6}},
+	)
+	tools := &cancellableTools{}
+	a, st := harness(t, script, tools)
+	sid, _ := st.CreateSession(ctx, "t")
+
+	// Create a cancellable context and pass it to the tool runner.
+	runCtx, runCancel := context.WithCancel(ctx)
+	tools.cancel = runCancel
+
+	ch, err := a.Run(runCtx, sid, "read a file")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Consume events until the channel closes or we hit a timeout.
+	// The turn should fail due to cancellation.
+	select {
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn did not finish within timeout")
+	case <-ch:
+		// Turn completed or errored, which is expected.
+	}
+
+	// Read the persisted history. The tool_use message may have been written
+	// (due to persistCtx), but if the tool_result message was not written,
+	// Snapshot must drop the trailing tool_use.
+	snap, err := a.Snapshot(ctx, sid)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	// The last message should not be an assistant message containing tool_use blocks.
+	if len(snap.Messages) > 0 {
+		lastMsg := snap.Messages[len(snap.Messages)-1]
+		if lastMsg.Role == provider.RoleAssistant {
+			for _, block := range lastMsg.Blocks {
+				if block.Type == provider.BlockToolUse {
+					t.Fatal("Snapshot returned a trailing tool_use block without matching tool_result")
+				}
+			}
+		}
+	}
+}

@@ -89,7 +89,7 @@ func TestArgMatchesPredicateNormalisesWhitespace(t *testing.T) {
 		want    bool
 	}{
 		{"rm -rf /", true},
-		{"rm    -rf   /", true},   // collapsed whitespace still matches
+		{"rm    -rf   /", true},       // collapsed whitespace still matches
 		{"echo hi && rm -rf /", true}, // chained forms match
 		{"sudo apt install", true},
 		{"pseudonym --help", false}, // "sudo " needs the trailing space

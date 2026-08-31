@@ -54,6 +54,10 @@ func Open(path string) (*Store, error) {
 	// One writer keeps WAL contention out of the picture; the daemon is a
 	// single process and writes are short.
 	db.SetMaxOpenConns(1)
+	if err := migrateJobs(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if _, err := db.Exec(schemaSQL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
@@ -102,6 +106,24 @@ func (s *Store) ListSessions(ctx context.Context, limit int) ([]Session, error) 
 		out = append(out, sess)
 	}
 	return out, rows.Err()
+}
+
+// Session returns a session by ID, or (Session{}, false, nil) if not found.
+func (s *Store) Session(ctx context.Context, id string) (Session, bool, error) {
+	var sess Session
+	var created, updated string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, title, created_at, updated_at FROM sessions WHERE id = ?`, id).
+		Scan(&sess.ID, &sess.Title, &created, &updated)
+	if err == sql.ErrNoRows {
+		return Session{}, false, nil
+	}
+	if err != nil {
+		return Session{}, false, fmt.Errorf("read session: %w", err)
+	}
+	sess.CreatedAt, _ = time.Parse(timeFormat, created)
+	sess.UpdatedAt, _ = time.Parse(timeFormat, updated)
+	return sess, true, nil
 }
 
 // AppendMessage assigns the next seq for the session and writes the row.
@@ -235,15 +257,22 @@ func (s *Store) PendingCalls(ctx context.Context, sessionID string) ([]PendingCa
 
 // ResolvePendingCall closes a suspension with the decision that ended it:
 // allow, deny, timeout or error. The state guard makes it idempotent — a
-// second call for an already-answered suspension changes nothing.
-func (s *Store) ResolvePendingCall(ctx context.Context, id int64, decision string) error {
-	_, err := s.db.ExecContext(ctx,
+// second call for an already-answered suspension changes nothing. The bool
+// reports whether THIS call claimed it: the state guard makes the update
+// idempotent, so a false means someone else already answered and the caller
+// must not write an audit row of its own.
+func (s *Store) ResolvePendingCall(ctx context.Context, id int64, decision string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
 		`UPDATE pending_calls SET state = ?, decided_at = ? WHERE id = ? AND state = 'pending'`,
 		decision, time.Now().UTC().Format(timeFormat), id)
 	if err != nil {
-		return fmt.Errorf("resolve pending call %d: %w", id, err)
+		return false, fmt.Errorf("resolve pending call %d: %w", id, err)
 	}
-	return nil
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("resolve pending call %d: %w", id, err)
+	}
+	return affected > 0, nil
 }
 
 // ClaimPendingCall resolves a suspension AND writes its audit row in one

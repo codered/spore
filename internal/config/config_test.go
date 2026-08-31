@@ -111,3 +111,44 @@ func TestPolicyRejectsBadDefaultAndTimeout(t *testing.T) {
 		}
 	}
 }
+
+func TestDaemonDefaultsAndLoopbackOnly(t *testing.T) {
+	p := write(t, `
+default_model = "anthropic/claude-opus-5"
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Daemon.Addr != "127.0.0.1:7777" {
+		t.Errorf("daemon.addr = %q, want the loopback default", cfg.Daemon.Addr)
+	}
+	if cfg.Daemon.TickSeconds != 30 {
+		t.Errorf("daemon.tick_seconds = %d, want 30", cfg.Daemon.TickSeconds)
+	}
+	if got, want := cfg.PidPath(), filepath.Join(cfg.DataDir, "spore.pid"); got != want {
+		t.Errorf("PidPath() = %q, want %q", got, want)
+	}
+
+	// spore serves one person on one machine; a config that would expose the
+	// API to the network is rejected at load, not quietly honoured.
+	bad := write(t, `
+default_model = "anthropic/claude-opus-5"
+
+[daemon]
+addr = "0.0.0.0:7777"
+`)
+	if _, err := Load(bad); err == nil {
+		t.Fatal("Load accepted a non-loopback daemon.addr, want an error")
+	}
+
+	ok := write(t, `
+default_model = "anthropic/claude-opus-5"
+
+[daemon]
+addr = "localhost:9999"
+`)
+	if _, err := Load(ok); err != nil {
+		t.Fatalf("Load rejected a loopback host: %v", err)
+	}
+}

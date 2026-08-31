@@ -234,7 +234,8 @@ Each builtin is a small package implementing one interface (`Name`, `Schema`,
 | `recall` | search over history and facts |
 
 The `memory` and `recall` builtins depend on subsystems that land in Plan 5 and
-ship with it; the rest ship in Plan 2 (section 11).
+ship with it, and `schedule` ships in Plan 3 with the scheduler it drives; the
+rest ship in Plan 2 (section 11).
 
 Web search sits behind a provider interface with Brave as the first
 implementation (clean paid API, no scraping fragility); Tavily and DDG are
@@ -313,6 +314,28 @@ non-fatal and never block a turn.
 
 ## 8. Clients
 
+### Daemon
+
+`spore serve` binds loopback only and carries no authentication — multi-user
+operation and public endpoints are non-goals (section 1), so the trust boundary
+is the machine. The API is small: list, create and show sessions; post a message
+to a session; an SSE stream per session carrying turn deltas and tool-call
+events; resolve a pending approval; and job create, list and cancel.
+
+Multi-client behaviour falls out of that surface. One turn's events fan out to
+every client attached to the session, and a client disconnecting never cancels
+the turn — a turn's lifetime belongs to the daemon, not to the connection that
+started it (invariant 2).
+
+### Scheduler
+
+A job is a prompt plus either a cron expression or a one-shot time. Firing opens
+a **fresh session** and runs the prompt through the normal agent loop, so a job's
+output is a session that can be opened in the UI and the policy engine applies
+unchanged — a job that trips an `ask` rule suspends and waits exactly as a human
+turn does. A job whose time passed while the daemon was down fires once on the
+next start; missed runs are never backfilled.
+
 ### Web UI
 
 Server-rendered HTML plus vanilla JS over the SSE stream, `go:embed`ed into the
@@ -333,7 +356,11 @@ interface implemented again and is deferred.
 `spore serve | chat | once | session | recall | trace | mcp | doctor`.
 
 `chat` and `once` are thin clients against the daemon's HTTP API — the same path
-the web UI uses, so only one code path stays warm. `doctor` validates config,
+the web UI uses, so only one code path stays warm. When no daemon is listening
+they start one: a detached `spore serve` that outlives the CLI invocation, so
+scheduled jobs keep firing and a turn suspended awaiting approval can still be
+resolved after the terminal closes. A pidfile makes that daemon discoverable, and
+`spore serve --status | --stop` reports and stops it. `doctor` validates config,
 provider keys, MCP servers, Docker, and sidecar health in one pass.
 
 ## 9. Configuration

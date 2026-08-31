@@ -90,6 +90,48 @@ Check a ruleset without running anything:
 
     spore policy check fs_write '{"path":"/etc/hosts"}'
 
+## Running as a daemon
+
+    spore serve                  # HTTP API, web UI and scheduler on 127.0.0.1:7777
+    spore serve --status         # is one running?
+    spore serve --stop           # stop it
+
+`spore chat` and `spore once` are thin clients against that API — the same
+path the web UI uses. If nothing is listening they start a daemon themselves
+and leave it running, so scheduled jobs keep firing and an approval you have
+not answered yet survives closing the terminal. Its log is at
+`~/.spore/daemon.log` and its pidfile at `~/.spore/spore.pid`.
+
+The daemon binds loopback and has no authentication: spore serves one person
+on one machine. A non-loopback `addr` is rejected at load.
+
+    [daemon]
+    addr = "127.0.0.1:7777"
+    tick_seconds = 30
+
+## Web UI
+
+`http://127.0.0.1:7777/` — session list, transcript with collapsible tool
+calls, inline approval buttons, and the model and cost for each turn. It is
+served out of the binary; there is no build step and nothing to install.
+
+## Scheduled jobs
+
+A job is a prompt plus a schedule: a five-field cron expression (UTC) or an
+RFC3339 instant for a one-off. Each firing starts a **new** session, so a
+recurring job never grows one unbounded thread, and policy applies to it
+exactly as it does to a turn you typed — a job that trips an `ask` rule
+suspends and waits for you.
+
+    curl -s localhost:7777/api/jobs \
+      -d '{"spec":"0 9 * * 1-5","prompt":"summarise yesterday'\''s commits"}'
+
+The model can manage jobs itself through `schedule_create`, `schedule_list`
+and `schedule_cancel`, which are in the default `ask` list.
+
+If the daemon was down when a job was due, it fires once on the next start.
+Missed runs are never backfilled.
+
 ## Use
 
     spore once "what is this repo?"

@@ -14,7 +14,8 @@ import (
 func ask(t *testing.T, input string) (policy.Answer, string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	ap := terminalApprover{lines: bufio.NewScanner(strings.NewReader(input)), out: &out}
+	sc := bufio.NewScanner(strings.NewReader(input))
+	ap := terminalApprover{lines: scannerLines{sc: sc}, out: &out}
 	ans, err := ap.Ask(context.Background(), policy.Ask{
 		SessionID: "s1",
 		Tool:      "fs_write",
@@ -77,5 +78,30 @@ func TestTerminalApproverRepromptsOnGarbage(t *testing.T) {
 	}
 	if strings.Count(out, "[y]es") < 3 {
 		t.Errorf("the prompt was not repeated for each invalid answer:\n%s", out)
+	}
+}
+
+func TestTerminalApproverWithChanLines(t *testing.T) {
+	// Verify that chanLines works as a lineSource for the approver.
+	// This is the plumbing used by chat to answer approvals on the main
+	// goroutine without races.
+	ch := make(chan string, 1)
+	ch <- "y"
+	close(ch)
+
+	var out bytes.Buffer
+	ap := terminalApprover{lines: chanLines{ch: ch}, out: &out}
+	ans, err := ap.Ask(context.Background(), policy.Ask{
+		SessionID: "s1",
+		Tool:      "fs_write",
+		Args:      json.RawMessage(`{"path":"/ws/a.go"}`),
+		Rule:      "fs_write",
+		Pattern:   "fs_write(path matches /ws/**)",
+	})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if !ans.Allow {
+		t.Error("answer from chanLines was not accepted")
 	}
 }
