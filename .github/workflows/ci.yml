@@ -40,6 +40,9 @@ jobs:
       - name: vet
         run: go vet -tags "$TAGS" ./...
         shell: bash
+      - name: fmt
+        run: make fmtcheck
+        shell: bash
       - name: test
         # -race needs cgo, which is already on. The shell tool's tests drive
         # real processes and deadlines, so they are slower than the rest.

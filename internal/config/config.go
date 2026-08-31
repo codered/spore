@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -29,6 +30,7 @@ type Config struct {
 	Policy    PolicyConfig              `toml:"policy"`
 	Web       WebConfig                 `toml:"web"`
 	Shell     ShellConfig               `toml:"shell"`
+	Daemon    DaemonConfig              `toml:"daemon"`
 }
 
 // ProviderConfig describes one upstream. Kind selects the adapter
@@ -115,6 +117,16 @@ type ShellConfig struct {
 	TimeoutSeconds int `toml:"timeout_seconds"`
 }
 
+// DaemonConfig configures the HTTP + SSE server. Addr is validated to be a
+// loopback address: spore serves one person on one machine, and an exposed
+// endpoint is an explicit non-goal, so a wildcard bind is a config error
+// rather than a documented footgun.
+type DaemonConfig struct {
+	Addr string `toml:"addr"`
+	// TickSeconds is how often the scheduler looks for due jobs.
+	TickSeconds int `toml:"tick_seconds"`
+}
+
 // baselineDeny is always in force. A user's deny rules extend it; nothing
 // removes it. These are the categories no approval prompt should ever be
 // able to talk past.
@@ -143,12 +155,13 @@ func Default() *Config {
 			Default:         "ask",
 			ApprovalTimeout: "5m",
 			MaxOutput:       30_000,
-			Allow:           []string{"fs_read", "fs_list", "fs_glob", "fs_grep", "web_*"},
-			Ask:             []string{"fs_write", "fs_edit", "shell_exec", "mcp__*"},
+			Allow:           []string{"fs_read", "fs_list", "fs_glob", "fs_grep", "web_*", "schedule_list"},
+			Ask:             []string{"fs_write", "fs_edit", "shell_exec", "schedule_create", "schedule_cancel", "mcp__*"},
 			Profiles:        map[string]ProfilePolicy{},
 		},
-		Web:   WebConfig{SearchProvider: "brave", UserAgent: "spore/0.1"},
-		Shell: ShellConfig{TimeoutSeconds: 120},
+		Web:    WebConfig{SearchProvider: "brave", UserAgent: "spore/0.1"},
+		Shell:  ShellConfig{TimeoutSeconds: 120},
+		Daemon: DaemonConfig{Addr: "127.0.0.1:7777", TickSeconds: 30},
 	}
 }
 
@@ -237,6 +250,12 @@ func Load(path string) (*Config, error) {
 	if cfg.Shell.TimeoutSeconds == 0 {
 		cfg.Shell.TimeoutSeconds = d.Shell.TimeoutSeconds
 	}
+	if cfg.Daemon.Addr == "" {
+		cfg.Daemon.Addr = d.Daemon.Addr
+	}
+	if cfg.Daemon.TickSeconds == 0 {
+		cfg.Daemon.TickSeconds = d.Daemon.TickSeconds
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -285,8 +304,36 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("policy.profile.%s.default must be allow, ask or deny, got %q", name, p.Default)
 		}
 	}
+	if err := ValidateDaemonAddr(c.Daemon.Addr); err != nil {
+		return err
+	}
 	return nil
 }
 
 // DBPath is the SQLite file backing every session.
 func (c *Config) DBPath() string { return filepath.Join(c.DataDir, "spore.db") }
+
+// ValidateDaemonAddr rejects any daemon address that is not on the loopback
+// interface. Binding elsewhere would put an unauthenticated agent that can
+// run shell commands on the network. Exported because the daemon re-checks
+// the address it is handed rather than trusting its caller.
+func ValidateDaemonAddr(addr string) error {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("daemon.addr %q must be host:port: %w", addr, err)
+	}
+	if port == "" {
+		return fmt.Errorf("daemon.addr %q needs a port", addr)
+	}
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("daemon.addr %q is not a loopback address; spore has no authentication and must not be exposed", addr)
+}
+
+// PidPath is the file a detached daemon writes its process id to.
+func (c *Config) PidPath() string { return filepath.Join(c.DataDir, "spore.pid") }

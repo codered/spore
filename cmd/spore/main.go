@@ -17,6 +17,9 @@ const usage = `spore — a personal agent
 usage:
   spore once <prompt>          run one turn in a fresh session and print the reply
   spore chat [session-id]      interactive session (resumes when given an id)
+  spore serve                  run the daemon (HTTP API + web UI + scheduler)
+  spore serve --status         report whether a daemon is running
+  spore serve --stop           stop a running daemon
   spore session list           list recent sessions
   spore session show <id>      print a session transcript
   spore policy check <tool> [json-args]
@@ -54,11 +57,6 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	st, err := store.Open(cfg.DBPath())
-	if err != nil {
-		return err
-	}
-	defer st.Close()
 
 	ctx := context.Background()
 	shutdown, err := sporetrace.Init(ctx, cfg.Trace)
@@ -72,14 +70,26 @@ func run(args []string) error {
 		if len(args) < 2 {
 			return fmt.Errorf("once needs a prompt")
 		}
-		return cmdOnce(ctx, cfg, st, args[1])
+		return cmdOnce(ctx, cfg, args[1])
 	case "chat":
 		id := ""
 		if len(args) > 1 {
 			id = args[1]
 		}
-		return cmdChat(ctx, cfg, st, id)
+		return cmdChat(ctx, cfg, id)
+	case "serve":
+		st, err := store.Open(cfg.DBPath())
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		return cmdServe(ctx, cfg, st, args[1:])
 	case "session":
+		st, err := store.Open(cfg.DBPath())
+		if err != nil {
+			return err
+		}
+		defer st.Close()
 		return cmdSession(ctx, st, args[1:])
 	case "policy":
 		// spore policy check <tool> [json-args] [-profile local|remote]
