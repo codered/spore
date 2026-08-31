@@ -74,20 +74,25 @@ func (b *Broker) Ask(ctx context.Context, a policy.Ask) (policy.Answer, error) {
 		})
 		return ans, nil
 	case <-ctx.Done():
-		// An answer delivered at the same instant the deadline fired must not
-		// be discarded: select picks randomly between two ready cases, so
-		// check the channel once more before reporting a timeout.
-		// A brief sleep gives concurrent Answer goroutines time to complete
-		// their send before we drain the channel.
-		time.Sleep(100 * time.Microsecond)
-		select {
-		case ans := <-ch:
+		// Deciding to give up has to be atomic with respect to Answer, or a
+		// decision a human already made is discarded while the handler has
+		// told them it was delivered. The waiter map is the synchronisation
+		// point: if our entry is still there, no Answer has claimed us and
+		// giving up is safe. If it is gone, exactly one Answer removed it
+		// under the lock and is committed to sending into a buffered channel
+		// that cannot block — so the value is either there now or imminently,
+		// and we must take it.
+		b.mu.Lock()
+		_, stillWaiting := b.waiters[a.PendingID]
+		delete(b.waiters, a.PendingID)
+		b.mu.Unlock()
+		if !stillWaiting {
+			ans := <-ch
 			b.hub.Publish(a.SessionID, WireEvent{
 				Type: WireResolved, PendingID: a.PendingID, Tool: a.Tool,
 				Decision: decisionOf(ans),
 			})
 			return ans, nil
-		default:
 		}
 		// The guard turns a deadline into a denial and records it; the broker
 		// only reports why it stopped waiting.

@@ -242,47 +242,55 @@ func TestAnswerRejectsWrongSession(t *testing.T) {
 }
 
 func TestAnswerDeliveredConcurrentWithCancellationIsNotLost(t *testing.T) {
-	h := NewHub()
-	b := NewBrokerWithTTL(h, 100*time.Millisecond)
+	// Invariant: if Answer(sessionID, pendingID, ans) returns true, then the
+	// corresponding Ask must receive that answer (not a timeout), regardless
+	// of timing or concurrent cancellation.
+	for i := 0; i < 100; i++ {
+		h := NewHub()
+		b := NewBroker(h)
+		pendingID := int64(300 + i)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan policy.Answer, 1)
-	go func() {
-		ans, _ := b.Ask(ctx, policy.Ask{
-			SessionID: "s1", Tool: "fs_write", PendingID: 300,
-		})
-		done <- ans
-	}()
-
-	// Wait for the Ask to register.
-	deadline := time.After(2 * time.Second)
-	for {
-		b.mu.Lock()
-		_, ok := b.waiters[300]
-		b.mu.Unlock()
-		if ok {
-			break
+		ctx, cancel := context.WithCancel(context.Background())
+		type result struct {
+			ans policy.Answer
+			err error
 		}
-		select {
-		case <-deadline:
-			t.Fatal("waiter never registered")
-		default:
-			time.Sleep(time.Millisecond)
-		}
-	}
+		done := make(chan result, 1)
+		go func() {
+			ans, err := b.Ask(ctx, policy.Ask{
+				SessionID: "s1", Tool: "fs_write", PendingID: pendingID,
+			})
+			done <- result{ans, err}
+		}()
 
-	// Race: answer and cancel at the same time. The answer must not be lost.
-	go cancel()
-	if !b.Answer("s1", 300, policy.Answer{Allow: true, Scope: policy.ScopeOnce}) {
-		t.Error("Answer could not deliver")
-	}
-
-	select {
-	case ans := <-done:
-		if !ans.Allow {
-			t.Error("Ask returned a denial instead of the answer")
+		// Wait for the Ask to register.
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			b.mu.Lock()
+			_, ok := b.waiters[pendingID]
+			b.mu.Unlock()
+			if ok {
+				break
+			}
+			time.Sleep(time.Microsecond)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Ask did not return the answer")
+
+		// Race: cancel the context and answer at the same time from different
+		// goroutines. The answer must not be lost.
+		answerCh := make(chan bool, 1)
+		go func() {
+			answerCh <- b.Answer("s1", pendingID, policy.Answer{Allow: true, Scope: policy.ScopeOnce})
+		}()
+		cancel()
+
+		delivered := <-answerCh
+		res := <-done
+
+		if delivered && res.err != nil {
+			t.Errorf("iteration %d: Answer reported delivered but Ask returned error %v", i, res.err)
+		}
+		if delivered && !res.ans.Allow {
+			t.Errorf("iteration %d: Answer reported delivered but Ask got denial", i)
+		}
 	}
 }
