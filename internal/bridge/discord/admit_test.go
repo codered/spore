@@ -90,3 +90,33 @@ func TestAdmitEmptyAllowlistAdmitsNobody(t *testing.T) {
 		t.Fatal("the zero-value admitter admitted an interaction")
 	}
 }
+
+func TestAdmitSkipsEmptyAllowlistEntries(t *testing.T) {
+	// config.Load rejects empty entries, but NewAdmitter bypasses validation
+	// when the struct is built directly. Empty strings must not become live
+	// allowlist keys: a zero-value UserID or ChannelID should never be admitted.
+	cfg := config.DiscordConfig{
+		GuildID:    "G",
+		ChannelIDs: []string{"C1", "", "C2"},
+		UserIDs:    []string{"U1", "", "U2"},
+		AllowDMs:   true,
+	}
+	a := NewAdmitter(cfg)
+
+	// An empty UserID should not be admitted, even though "" is in the list.
+	if a.AdmitMessage(Inbound{UserID: "", GuildID: "G", ChannelID: "C1"}) {
+		t.Fatal("a message with an empty UserID was admitted")
+	}
+	// An empty ChannelID (without a parent) should not be admitted.
+	if a.AdmitMessage(Inbound{UserID: "U1", GuildID: "G", ChannelID: ""}) {
+		t.Fatal("a message with an empty ChannelID was admitted")
+	}
+	// An empty ParentID should not be admitted as a thread parent.
+	if a.AdmitMessage(Inbound{UserID: "U1", GuildID: "G", ChannelID: "T1", ParentID: ""}) {
+		t.Fatal("a thread with an empty ParentID was admitted")
+	}
+	// Real allowlisted entries still work.
+	if !a.AdmitMessage(Inbound{UserID: "U2", GuildID: "G", ChannelID: "C2"}) {
+		t.Fatal("a valid allowlisted user and channel were rejected")
+	}
+}

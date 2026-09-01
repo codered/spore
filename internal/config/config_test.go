@@ -221,6 +221,20 @@ func TestDiscordBridgeValidation(t *testing.T) {
 			toml: "[bridge.discord]\nenabled = true\ntoken = \"t\"\nuser_ids = [\"3\"]\n",
 			want: "guild_id",
 		},
+		{
+			// An empty user_id entry would become a live allowlist key,
+			// silently admitting any message with a zero UserID. Fail at load.
+			name: "enabled with an empty user_id entry",
+			toml: "[bridge.discord]\nenabled = true\ntoken = \"t\"\nguild_id = \"1\"\nchannel_ids = [\"2\"]\nuser_ids = [\"3\", \"\", \"4\"]\n",
+			want: "user_ids[1]",
+		},
+		{
+			// An empty channel_id entry would become a live allowlist key,
+			// silently admitting any thread with a zero ParentID. Fail at load.
+			name: "enabled with an empty channel_id entry",
+			toml: "[bridge.discord]\nenabled = true\ntoken = \"t\"\nguild_id = \"1\"\nchannel_ids = [\"2\", \"\", \"3\"]\nuser_ids = [\"4\"]\n",
+			want: "channel_ids[1]",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -20,6 +20,10 @@ type Admitter struct {
 }
 
 // NewAdmitter creates an Admitter that enforces the given configuration.
+// It builds the allowlists into maps once so admissions are O(1) lookups;
+// a later call to Admit does not re-parse config. It also skips empty
+// entries: config validation rejects them at load, but a struct built
+// directly bypasses validation, so this type must be self-defending.
 func NewAdmitter(cfg config.DiscordConfig) Admitter {
 	a := Admitter{
 		guildID:  cfg.GuildID,
@@ -28,10 +32,14 @@ func NewAdmitter(cfg config.DiscordConfig) Admitter {
 		allowDMs: cfg.AllowDMs,
 	}
 	for _, c := range cfg.ChannelIDs {
-		a.channels[c] = struct{}{}
+		if c != "" {
+			a.channels[c] = struct{}{}
+		}
 	}
 	for _, u := range cfg.UserIDs {
-		a.users[u] = struct{}{}
+		if u != "" {
+			a.users[u] = struct{}{}
+		}
 	}
 	return a
 }
@@ -62,6 +70,9 @@ func (a Admitter) admit(userID, guildID, channelID, parentID string) bool {
 	if guildID == "" {
 		return a.allowDMs
 	}
+	// At this point guildID != "". The a.guildID == "" check below is
+	// always false but is kept as an extra fail-closed guard: a bot
+	// unconfigured with a guild_id cannot admit any guild message.
 	if a.guildID == "" || guildID != a.guildID {
 		return false
 	}

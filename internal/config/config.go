@@ -167,11 +167,26 @@ func validateDiscord(d DiscordConfig) error {
 	if len(d.UserIDs) == 0 {
 		return fmt.Errorf("bridge.discord.user_ids must name at least one Discord user ID; an empty allowlist admits nobody")
 	}
+	// An empty or whitespace-only entry would become a live allowlist key,
+	// silently admitting any message with an empty UserID. Fail at load
+	// rather than silently widening the trust boundary.
+	for i, u := range d.UserIDs {
+		if strings.TrimSpace(u) == "" {
+			return fmt.Errorf("bridge.discord.user_ids[%d] is empty; allowlist entries must not be blank", i)
+		}
+	}
 	if d.GuildID == "" && !d.AllowDMs {
 		return fmt.Errorf("bridge.discord needs a surface: set guild_id, or allow_dms = true, or both")
 	}
 	if d.GuildID != "" && len(d.ChannelIDs) == 0 {
 		return fmt.Errorf("bridge.discord.channel_ids must name at least one channel when guild_id is set")
+	}
+	// Same check for channels: an empty entry would silently admit any thread
+	// or channel with a zero-value ID.
+	for i, c := range d.ChannelIDs {
+		if strings.TrimSpace(c) == "" {
+			return fmt.Errorf("bridge.discord.channel_ids[%d] is empty; allowlist entries must not be blank", i)
+		}
 	}
 	return nil
 }
