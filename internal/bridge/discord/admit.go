@@ -70,10 +70,11 @@ func (a Admitter) admit(userID, guildID, channelID, parentID string) bool {
 	if guildID == "" {
 		return a.allowDMs
 	}
-	// At this point guildID != "". The a.guildID == "" check below is
-	// always false but is kept as an extra fail-closed guard: a bot
-	// unconfigured with a guild_id cannot admit any guild message.
-	if a.guildID == "" || guildID != a.guildID {
+	// guildID is non-empty here (the DM branch returned above), so a bridge
+	// with no guild_id configured rejects every guild message on this
+	// comparison alone: "" never equals a real guild id. There is nothing
+	// an unconfigured guild can match.
+	if guildID != a.guildID {
 		return false
 	}
 	// A thread is admitted on its parent, so threads the bridge opens itself
