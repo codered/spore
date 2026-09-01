@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -375,6 +376,62 @@ func TestNoDuplicateAuditRowsWhenApprovalRacesBetweenGuardAndBroker(t *testing.T
 	// The test is successful if ResolvePendingCall correctly reported that the
 	// suspension was not claimed. The guard's code is responsible for skipping
 	// the audit write when claimed=false, preventing duplicate rows.
+}
+
+func TestResolveDowngradesADegradedPatternAnswer(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sid, err := st.CreateSession(ctx, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	learned := []string{}
+	g := NewGuard(nil, engine(t, config.PolicyConfig{}), nil, st, func(d Decision, rule string) error {
+		learned = append(learned, string(d)+" "+rule)
+		return nil
+	})
+
+	id, err := st.AddPendingCall(ctx, store.PendingCall{
+		SessionID: sid, ToolUseID: "tu1", Tool: "shell_exec",
+		ArgsJSON: []byte(`{"cmd":"ls"}`), Profile: "remote", Rule: "shell_exec",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A client asks for ScopePattern on a call that has no pattern.
+	if err := g.Resolve(ctx, sid, id, Answer{Allow: true, Scope: ScopePattern}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(learned) != 0 {
+		t.Fatalf("a rule was learned for a call with no pattern: %v", learned)
+	}
+	// The audit row must say what actually happened, not what was asked for.
+	scope, err := lastApprovalScope(t, st, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope != string(ScopeOnce) {
+		t.Fatalf("audit scope = %q, want %q", scope, ScopeOnce)
+	}
+}
+
+// lastApprovalScope reads the scope of the newest audit row for a session.
+func lastApprovalScope(t *testing.T, st *store.Store, sessionID string) (string, error) {
+	t.Helper()
+	rows, err := st.Approvals(context.Background(), sessionID)
+	if err != nil {
+		return "", err
+	}
+	if len(rows) == 0 {
+		return "", fmt.Errorf("no approval rows for session %s", sessionID)
+	}
+	return rows[len(rows)-1].Scope, nil
 }
 
 func TestPatternForReportsDegradation(t *testing.T) {

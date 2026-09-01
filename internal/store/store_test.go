@@ -334,3 +334,31 @@ func TestSessionLookupByID(t *testing.T) {
 		t.Errorf("Nonexistent session ID should be empty, got %q", missing.ID)
 	}
 }
+
+func TestPendingCallByID(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	sid, err := st.CreateSession(ctx, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := st.AddPendingCall(ctx, PendingCall{
+		SessionID: sid, ToolUseID: "tu1", Tool: "shell_exec",
+		ArgsJSON: []byte(`{"cmd":"ls"}`), Profile: "remote", Rule: "shell_exec",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, found, err := st.PendingCallByID(ctx, id)
+	if err != nil || !found {
+		t.Fatalf("PendingCallByID = (_, %v, %v), want (_, true, nil)", found, err)
+	}
+	if got.Tool != "shell_exec" || string(got.ArgsJSON) != `{"cmd":"ls"}` {
+		t.Fatalf("got %+v, want tool shell_exec with its args", got)
+	}
+
+	if _, found, err := st.PendingCallByID(ctx, id+999); err != nil || found {
+		t.Fatalf("missing id: got (found=%v, err=%v), want (false, nil)", found, err)
+	}
+}

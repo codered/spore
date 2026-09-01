@@ -289,6 +289,21 @@ func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, 
 	if ans.Allow {
 		decision = DecisionAllow
 	}
+	// Correct the scope BEFORE claiming: the claim writes the audit row, and
+	// an audit row that says "pattern" when no rule was learned is a lie in
+	// the log. Reading the row first is safe — a suspension's arguments never
+	// change, and the claim itself is still the atomic step.
+	if ans.Scope == ScopePattern {
+		p, found, err := g.store.PendingCallByID(ctx, pendingID)
+		if err != nil {
+			return err
+		}
+		if found {
+			if _, ok := PatternFor(Call{Tool: p.Tool, Args: p.ArgsJSON}); !ok {
+				ans.Scope = ScopeOnce
+			}
+		}
+	}
 	// One transaction claims the suspension and writes its audit row together.
 	// Two clients answering at once cannot both record an answer, and a
 	// failure part-way cannot leave a resolved row with no audit entry.

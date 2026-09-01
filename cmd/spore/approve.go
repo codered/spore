@@ -12,8 +12,8 @@ import (
 )
 
 // terminalApprover asks on the terminal. It is the CLI's implementation of
-// policy.Approver; the daemon and the Telegram bridge implement the same
-// interface over SSE and inline keyboards in Plans 3 and 4.
+// policy.Approver; the daemon implements it over SSE in Plan 3; the Discord
+// bridge answers through Guard.Resolve rather than implementing this interface at all.
 type terminalApprover struct {
 	// lines is the source of user input (see input.go). Exactly one goroutine
 	// may read from it — that is the whole point. In `once`, it is the stream
@@ -30,8 +30,15 @@ func (t terminalApprover) Ask(ctx context.Context, a policy.Ask) (policy.Answer,
 	fmt.Fprintf(t.out, "\n\033[1mspore wants to run %s\033[0m  (matched policy rule %q)\n  %s\n", a.Tool, a.Rule, args)
 
 	for {
-		fmt.Fprintf(t.out, "allow? [y]es once  [n]o  [s]ession (always %s this session)  [p]attern (always %s)\n> ",
-			a.Tool, a.Pattern)
+		// An empty Pattern means the guard found no pattern to generalise to,
+		// so the option is not offered. Do not print a key the user can press
+		// that would silently be treated as "once".
+		if a.Pattern == "" {
+			fmt.Fprintf(t.out, "allow? [y]es once  [n]o  [s]ession (always %s this session)\n> ", a.Tool)
+		} else {
+			fmt.Fprintf(t.out, "allow? [y]es once  [n]o  [s]ession (always %s this session)  [p]attern (always %s)\n> ",
+				a.Tool, a.Pattern)
+		}
 		// Honour cancellation between prompts: an approval that timed out
 		// upstream should not keep a dead prompt on screen.
 		select {
@@ -53,6 +60,10 @@ func (t terminalApprover) Ask(ctx context.Context, a policy.Ask) (policy.Answer,
 		case "s", "session":
 			return policy.Answer{Allow: true, Scope: policy.ScopeSession}, nil
 		case "p", "pattern":
+			if a.Pattern == "" {
+				fmt.Fprintln(t.out, "there is no pattern to generalise this call to; answer y, n or s")
+				continue
+			}
 			return policy.Answer{Allow: true, Scope: policy.ScopePattern}, nil
 		default:
 			fmt.Fprintln(t.out, "please answer y, n, s or p")

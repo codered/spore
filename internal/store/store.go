@@ -207,6 +207,17 @@ func (s *Store) Summary(ctx context.Context, sessionID string) (string, int, err
 	return text, through, nil
 }
 
+// Approval is an audit record of a user's approval decision.
+type Approval struct {
+	ID        int64
+	SessionID string
+	Tool      string
+	Args      []byte
+	Decision  string
+	Scope     string
+	CreatedAt time.Time
+}
+
 // PendingCall is a tool call whose turn is suspended awaiting approval.
 type PendingCall struct {
 	ID        int64
@@ -253,6 +264,27 @@ func (s *Store) PendingCalls(ctx context.Context, sessionID string) ([]PendingCa
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// PendingCallByID reads one suspension without claiming it. Resolve needs the
+// arguments before it claims, because the claim writes the audit row and the
+// scope on that row must already be correct.
+func (s *Store) PendingCallByID(ctx context.Context, id int64) (PendingCall, bool, error) {
+	var p PendingCall
+	var args, created string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, session_id, tool_use_id, tool, args, profile, rule, created_at
+		 FROM pending_calls WHERE id = ?`, id).
+		Scan(&p.ID, &p.SessionID, &p.ToolUseID, &p.Tool, &args, &p.Profile, &p.Rule, &created)
+	if err == sql.ErrNoRows {
+		return PendingCall{}, false, nil
+	}
+	if err != nil {
+		return PendingCall{}, false, fmt.Errorf("read pending call %d: %w", id, err)
+	}
+	p.ArgsJSON = []byte(args)
+	p.CreatedAt, _ = time.Parse(timeFormat, created)
+	return p, true, nil
 }
 
 // ResolvePendingCall closes a suspension with the decision that ended it:
@@ -331,6 +363,29 @@ func (s *Store) RecordApproval(ctx context.Context, sessionID, tool string, args
 		return fmt.Errorf("record approval: %w", err)
 	}
 	return nil
+}
+
+// Approvals returns all approval audit records for a session, oldest first.
+func (s *Store) Approvals(ctx context.Context, sessionID string) ([]Approval, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, session_id, tool, args, decision, scope, created_at
+		 FROM approvals WHERE session_id = ? ORDER BY id`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("read approvals: %w", err)
+	}
+	defer rows.Close()
+	var out []Approval
+	for rows.Next() {
+		var a Approval
+		var args, created string
+		if err := rows.Scan(&a.ID, &a.SessionID, &a.Tool, &args, &a.Decision, &a.Scope, &created); err != nil {
+			return nil, err
+		}
+		a.Args = []byte(args)
+		a.CreatedAt, _ = time.Parse(timeFormat, created)
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 // SessionDecision returns the most recent session-scoped answer for a tool in
