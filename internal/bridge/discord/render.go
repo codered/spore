@@ -230,9 +230,27 @@ func (r *renderer) flush(ctx context.Context) {
 		}
 		head, tail := splitAt(text, room)
 		ok := r.write(ctx, head, nil)
-		if sending && !ok {
-			// buf still holds the whole, untouched text (head+tail) — retry
-			// it whole on the next flush.
+		if !ok {
+			if sending {
+				// A failed Send never reached Discord, so nothing captured
+				// this text anywhere else. buf still holds the whole,
+				// untouched text (head+tail) — retry it whole on the next
+				// flush.
+				return
+			}
+			// A failed Edit is different: write already appended head into
+			// currentContent before the Edit call (its self-healing
+			// convention — see write's comment), so the live message will
+			// pick up head the next time an edit to it succeeds. Do NOT
+			// widen this to "retry head+tail whole" the way the Send case
+			// does — head is already accounted for in currentContent, and
+			// requeuing it into buf would send it a second time once a
+			// later edit succeeds, duplicating it on screen. So keep msgID
+			// and currentContent exactly as they are (do not treat this
+			// message as closed) and only requeue tail, the part nothing
+			// has captured yet.
+			r.buf.Reset()
+			r.buf.WriteString(tail)
 			return
 		}
 		// Whatever did not fit belongs to a new message.

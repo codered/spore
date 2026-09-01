@@ -294,3 +294,33 @@ func TestRendererStaysUnderLimitAfterAFailedEdit(t *testing.T) {
 		}
 	}
 }
+
+func TestRendererKeepsTextWhenAnEditFailsDuringASplit(t *testing.T) {
+	// An open message being edited, where the new text also needs a split.
+	// The head chunk goes out as an Edit; if that Edit fails, head must be
+	// retried, not silently dropped — the live Discord message still shows
+	// only the pre-edit content, so nothing else is holding that text.
+	f := newFakeClient()
+	r := newRenderer(f, "C1", 0)
+	drain(t, r,
+		daemon.WireEvent{Type: daemon.WireText, Text: strings.Repeat("a", 1500)},
+		daemon.WireEvent{Type: daemon.WireText, Text: func() string {
+			f.setFailNext("Edit", errors.New("rate limited"))
+			return strings.Repeat("b", 1500)
+		}()},
+		daemon.WireEvent{Type: daemon.WireTurnDone},
+	)
+	var all strings.Builder
+	for _, c := range f.finalContents("C1") {
+		all.WriteString(c)
+	}
+	got := all.String()
+	if a, b := strings.Count(got, "a"), strings.Count(got, "b"); a != 1500 || b != 1500 {
+		t.Fatalf("text lost on a failed Edit during a split: got %d a's and %d b's, want 1500 and 1500", a, b)
+	}
+	for _, m := range finalMessages(f, "C1") {
+		if len(m.Content) > messageLimit {
+			t.Fatalf("message %d bytes over the %d limit", len(m.Content), messageLimit)
+		}
+	}
+}
