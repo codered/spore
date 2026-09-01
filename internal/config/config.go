@@ -175,8 +175,8 @@ func validateDiscord(d DiscordConfig) error {
 			return fmt.Errorf("bridge.discord.user_ids[%d] is empty; allowlist entries must not be blank", i)
 		}
 	}
-	if d.GuildID == "" && !d.AllowDMs {
-		return fmt.Errorf("bridge.discord needs a surface: set guild_id, or allow_dms = true, or both")
+	if strings.TrimSpace(d.GuildID) == "" && !d.AllowDMs {
+		return fmt.Errorf("bridge.discord needs a surface: set bridge.discord.guild_id, or bridge.discord.allow_dms = true, or both")
 	}
 	if d.GuildID != "" && len(d.ChannelIDs) == 0 {
 		return fmt.Errorf("bridge.discord.channel_ids must name at least one channel when guild_id is set")

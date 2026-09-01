@@ -216,7 +216,22 @@ func (b *Bridge) handleMessage(in Inbound) {
 // without running a turn. Rebinding an external id is legal (Store's
 // BindExternal replaces the old target), which is what makes a rolling DM
 // session possible: the same channel id, a new session behind it.
+//
+// That rebind is only safe on the surfaces resolveSession itself binds
+// directly to a channel/thread id: a DM (no GuildID), or a reply inside a
+// thread (ParentID set). A plain guild channel is the opposite case —
+// resolveSession's own comment explains why it deliberately leaves the
+// channel unbound: every top-level message there must open its own session
+// and thread. Binding the channel here would write exactly what that
+// function goes out of its way not to write, silently turning every later
+// top-level message in the channel into a continuation of this one session
+// instead of a new thread.
 func (b *Bridge) handleNew(in Inbound) {
+	if in.GuildID != "" && in.ParentID == "" {
+		b.say(in.ChannelID, "/new only applies in a DM or inside a thread; a new message in this channel already starts a fresh session and thread")
+		return
+	}
+
 	sessionID, err := b.store.CreateSession(b.ctx, "")
 	if err != nil {
 		slog.Warn("discord /new: create session", "err", err)

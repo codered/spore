@@ -205,7 +205,8 @@ func (r *renderer) sendEmbed(ctx context.Context, e Embed) {
 func (r *renderer) flush(ctx context.Context) {
 	for r.buf.Len() > 0 {
 		room := messageLimit
-		if r.msgID != "" {
+		sending := r.msgID == ""
+		if !sending {
 			// When appending to an open message, derive room from actual content
 			// length to account for any failed writes. Failed edits don't update
 			// onScreen, but currentContent grows anyway, so we use its length to
@@ -214,12 +215,26 @@ func (r *renderer) flush(ctx context.Context) {
 		}
 		text := r.buf.String()
 		if len(text) <= room {
-			r.write(ctx, text, nil)
+			ok := r.write(ctx, text, nil)
+			if sending && !ok {
+				// A failed Send never reached Discord, so unlike a failed Edit
+				// nothing captured this text anywhere else (currentContent for
+				// an unsent message is not self-healing — the next Send just
+				// overwrites it). Leave buf intact so the same text is retried
+				// as a new Send on the next flush, and stop here rather than
+				// spinning on the same failure within this call.
+				return
+			}
 			r.buf.Reset()
 			return
 		}
 		head, tail := splitAt(text, room)
-		r.write(ctx, head, nil)
+		ok := r.write(ctx, head, nil)
+		if sending && !ok {
+			// buf still holds the whole, untouched text (head+tail) — retry
+			// it whole on the next flush.
+			return
+		}
 		// Whatever did not fit belongs to a new message.
 		r.msgID, r.onScreen = "", 0
 		r.currentContent.Reset()
@@ -229,9 +244,12 @@ func (r *renderer) flush(ctx context.Context) {
 }
 
 // write sends when msgID is empty and edits otherwise, recording the new msgID.
-// On error it logs and returns without changing state. Failed edits leave
-// currentContent intact for recovery on the next successful flush (self-healing).
-func (r *renderer) write(ctx context.Context, content string, embeds []Embed) {
+// It reports whether the call succeeded. On error it logs and returns false
+// without otherwise changing state. Failed edits leave currentContent intact
+// for recovery on the next successful flush (self-healing); a failed Send has
+// no such recovery path — nothing server-side captured the content — so the
+// caller (flush) is responsible for retrying rather than discarding it.
+func (r *renderer) write(ctx context.Context, content string, embeds []Embed) bool {
 	if r.msgID == "" {
 		// Send a new message
 		r.currentContent.Reset()
@@ -240,26 +258,27 @@ func (r *renderer) write(ctx context.Context, content string, embeds []Embed) {
 		id, err := r.client.Send(ctx, r.channelID, m)
 		if err != nil {
 			slog.Warn("discord render", "err", err)
-			return
+			return false
 		}
 		r.msgID = id
 		r.onScreen = r.currentContent.Len()
-	} else {
-		// Edit the existing message with appended content. Append to currentContent
-		// before attempting the edit, so failed edits still have the full delta for
-		// recovery. Only update onScreen on success, since the server saw nothing.
-		// The next flush derives room from currentContent.Len(), making it
-		// conservative when a message hasn't been edited successfully yet.
-		r.currentContent.WriteString(content)
-		fullContent := r.currentContent.String()
-		m := Message{Content: fullContent, Embeds: embeds}
-		err := r.client.Edit(ctx, r.channelID, r.msgID, m)
-		if err != nil {
-			slog.Warn("discord render", "err", err)
-			return
-		}
-		r.onScreen = r.currentContent.Len()
+		return true
 	}
+	// Edit the existing message with appended content. Append to currentContent
+	// before attempting the edit, so failed edits still have the full delta for
+	// recovery. Only update onScreen on success, since the server saw nothing.
+	// The next flush derives room from currentContent.Len(), making it
+	// conservative when a message hasn't been edited successfully yet.
+	r.currentContent.WriteString(content)
+	fullContent := r.currentContent.String()
+	m := Message{Content: fullContent, Embeds: embeds}
+	err := r.client.Edit(ctx, r.channelID, r.msgID, m)
+	if err != nil {
+		slog.Warn("discord render", "err", err)
+		return false
+	}
+	r.onScreen = r.currentContent.Len()
+	return true
 }
 
 // onApproval sets the handler for approval events. Left nil, an

@@ -360,6 +360,41 @@ func TestSlashNewStartsAFreshDMSession(t *testing.T) {
 	}
 }
 
+func TestSlashNewInAChannelDoesNotDisableThreadPerSession(t *testing.T) {
+	// /new in a plain guild channel must not bind the channel: resolveSession
+	// deliberately leaves the channel unbound so every top-level message
+	// opens its own thread. If /new bound it anyway, the very next ordinary
+	// message in the channel would silently resolve to the /new session
+	// instead of opening a new thread.
+	b, f, turns, st := newTestBridge(t)
+	defer b.Close()
+	b.Start(context.Background())
+
+	f.deliver(Inbound{MessageID: "m1", UserID: "U", GuildID: "G", ChannelID: "C1", Content: "/new"})
+	waitFor(t, func() bool { return len(f.sentTo("C1")) > 0 })
+	if turns.startCount() != 0 {
+		t.Fatalf("/new started %d turns, want 0", turns.startCount())
+	}
+	if _, found, _ := st.SessionForExternal(context.Background(), bridgeName, "C1"); found {
+		t.Fatal("/new bound the guild channel itself; resolveSession must be free to open a thread for the next message")
+	}
+
+	f.deliver(Inbound{MessageID: "m2", UserID: "U", GuildID: "G", ChannelID: "C1", Content: "ordinary message"})
+	turns.waitForTurn(t)
+
+	threads := f.allThreads()
+	if len(threads) != 1 {
+		t.Fatalf("created %d threads, want 1", len(threads))
+	}
+	threadSID, found, err := st.SessionForExternal(context.Background(), bridgeName, threads[0].ThreadID)
+	if err != nil || !found {
+		t.Fatalf("the thread was not bound to a session: (found=%v, err=%v)", found, err)
+	}
+	if got := turns.lastStart(); got.sessionID != threadSID || got.text != "ordinary message" {
+		t.Fatalf("started %+v, want the thread's own new session", got)
+	}
+}
+
 func TestABusySessionTellsTheUser(t *testing.T) {
 	// A second prompt while a turn is running is refused by the hub. Saying
 	// nothing would look like the bot had died.

@@ -167,17 +167,30 @@ func TestRendererReportsATurnError(t *testing.T) {
 }
 
 func TestRendererSurvivesASendFailure(t *testing.T) {
-	// Discord is a network. A failed edit must not kill the goroutine
-	// draining the hub, or the session stops receiving events forever.
+	// Discord is a network. A failed Send must not kill the goroutine
+	// draining the hub, or the session stops receiving events forever. It
+	// must also not lose the user's text: unlike a failed Edit — where the
+	// content is already captured in currentContent and the next successful
+	// edit resends everything — a failed Send has no such recovery path,
+	// since nothing server-side ever saw the content. The buffered text must
+	// be retried on the next flush, not overwritten and lost.
 	f := newFakeClient()
 	f.setFailNext("Send", errors.New("rate limited"))
 	r := newRenderer(f, "C1", 0)
 	drain(t, r,
-		daemon.WireEvent{Type: daemon.WireText, Text: "first"},
-		daemon.WireEvent{Type: daemon.WireText, Text: "second"},
+		daemon.WireEvent{Type: daemon.WireText, Text: "FIRST-CHUNK"},
+		daemon.WireEvent{Type: daemon.WireText, Text: "SECOND-CHUNK"},
 		daemon.WireEvent{Type: daemon.WireTurnDone},
 	)
-	// The point is that Consume returned rather than panicked or blocked.
+
+	var all strings.Builder
+	for _, c := range f.finalContents("C1") {
+		all.WriteString(c)
+	}
+	got := all.String()
+	if !strings.Contains(got, "FIRST-CHUNK") || !strings.Contains(got, "SECOND-CHUNK") {
+		t.Fatalf("a failed Send lost text: final content = %q, want it to contain both %q and %q", got, "FIRST-CHUNK", "SECOND-CHUNK")
+	}
 }
 
 func TestRendererSplitsAtNewlines(t *testing.T) {

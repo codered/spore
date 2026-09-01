@@ -222,6 +222,15 @@ func TestDiscordBridgeValidation(t *testing.T) {
 			want: "guild_id",
 		},
 		{
+			// A whitespace-only guild_id must not pass as a real surface: it
+			// would clear this check and then fail every later comparison in
+			// admit, producing exactly the "starts and then silently ignores
+			// you" failure this function exists to prevent.
+			name: "enabled with a whitespace-only guild_id and no DMs",
+			toml: "[bridge.discord]\nenabled = true\ntoken = \"t\"\nguild_id = \"   \"\nuser_ids = [\"3\"]\n",
+			want: "bridge.discord.guild_id",
+		},
+		{
 			// An empty user_id entry would become a live allowlist key,
 			// silently admitting any message with a zero UserID. Fail at load.
 			name: "enabled with an empty user_id entry",
