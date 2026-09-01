@@ -46,7 +46,11 @@ type Ask struct {
 	Rule string
 	// PendingID is the persisted suspension this request belongs to.
 	PendingID int64
-	// Pattern is the rule "always allow this pattern" would write.
+	// Pattern is the rule "always allow this pattern" would write. An empty
+	// string signals that no pattern could be derived and the client must not
+	// offer the option — the only pattern left would be the bare tool name,
+	// a blanket allow for every call to that tool. This is the wire convention
+	// every approver (terminal, daemon, bridge) uses to hide the option.
 	Pattern string
 }
 
