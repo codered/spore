@@ -51,6 +51,14 @@ func New(o Options) *Server {
 
 func (s *Server) Hub() *Hub { return s.hub }
 
+// Store, Guard and Broker are the collaborators a bridge needs. They are
+// accessors rather than constructor arguments because the daemon owns the
+// approver the guard is built with, so a bridge cannot be wired before the
+// server exists.
+func (s *Server) Store() *store.Store  { return s.store }
+func (s *Server) Guard() *policy.Guard { return s.guard }
+func (s *Server) Broker() *Broker      { return s.broker }
+
 // Approver is the policy.Approver the guard must be built with. The daemon
 // creates it because it owns the hub the approval events travel over.
 func (s *Server) Approver() policy.Approver { return s.broker }

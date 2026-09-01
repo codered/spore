@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -135,7 +136,7 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "session %s already has a turn running", id)
 		return
 	}
-	if err := s.startTurn(id, text, "http"); err != nil {
+	if err := s.startTurn(id, text, "http", policy.ProfileLocal); err != nil {
 		s.hub.End(id)
 		writeError(w, http.StatusInternalServerError, "start turn: %v", err)
 		return
@@ -145,8 +146,10 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 
 // startTurn runs one turn on the SERVER's context and pumps its events into
 // the hub. The caller must already hold the session's turn slot; startTurn
-// releases it when the turn ends.
-func (s *Server) startTurn(sessionID, text, client string) error {
+// releases it when the turn ends. The profile is the caller's trust level and
+// decides which ruleset the policy engine applies — an HTTP client on
+// loopback is local, a chat bridge is remote.
+func (s *Server) startTurn(sessionID, text, client string, profile policy.Profile) error {
 	var turn sporetrace.Span
 	// Recover before any operations so panics in policy.WithSession or
 	// sporetrace.StartTurn are also caught.
@@ -161,7 +164,7 @@ func (s *Server) startTurn(sessionID, text, client string) error {
 		}
 	}()
 
-	ctx := policy.WithSession(s.base, sessionID, policy.ProfileLocal)
+	ctx := policy.WithSession(s.base, sessionID, profile)
 	ctx, turn = sporetrace.StartTurn(ctx, sessionID, client)
 
 	ch, err := s.agent.Run(ctx, sessionID, text)
@@ -192,5 +195,24 @@ func (s *Server) startTurn(sessionID, text, client string) error {
 			s.hub.Publish(sessionID, FromAgent(ev))
 		}
 	}()
+	return nil
+}
+
+// ErrTurnRunning reports that the session already has a turn in flight. Two
+// clients posting at once must not interleave two turns into one transcript.
+var ErrTurnRunning = errors.New("the session already has a turn running")
+
+// StartTurn runs a turn for a non-HTTP client. It claims the session's turn
+// slot, so callers must not call hub.Begin themselves. The turn runs on the
+// server's context and outlives whatever started it (spec invariant 2), which
+// is why no caller's context is accepted here.
+func (s *Server) StartTurn(sessionID, text, client string, profile policy.Profile) error {
+	if !s.hub.Begin(sessionID) {
+		return ErrTurnRunning
+	}
+	if err := s.startTurn(sessionID, text, client, profile); err != nil {
+		s.hub.End(sessionID)
+		return err
+	}
 	return nil
 }
