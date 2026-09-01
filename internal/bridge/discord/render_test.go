@@ -20,6 +20,31 @@ func drain(t *testing.T, r *renderer, evs ...daemon.WireEvent) {
 	r.Consume(context.Background(), ch)
 }
 
+// finalMessages returns the final on-screen state of each message sent to
+// channelID: per message id in send order, the latest edit's Message if one
+// exists, otherwise the sent Message. This is what the user actually sees.
+func finalMessages(f *fakeClient, channelID string) []Message {
+	sent := f.sentTo(channelID)
+	edits := f.editsTo(channelID)
+
+	// Build a map of message id -> latest edit
+	latestEdit := make(map[string]Message)
+	for _, e := range edits {
+		latestEdit[e.MessageID] = e.Message
+	}
+
+	// For each sent message, use its latest edit if any, else the sent one
+	result := make([]Message, len(sent))
+	for i, s := range sent {
+		if edit, ok := latestEdit[s.MessageID]; ok {
+			result[i] = edit
+		} else {
+			result[i] = s.Message
+		}
+	}
+	return result
+}
+
 func TestRendererCoalescesTextIntoOneMessage(t *testing.T) {
 	f := newFakeClient()
 	// A zero throttle makes every flush immediate, so the test is not timing
@@ -87,21 +112,23 @@ func TestRendererShowsToolCallsAsEmbeds(t *testing.T) {
 		daemon.WireEvent{Type: daemon.WireTurnDone},
 	)
 
-	var embeds []Embed
-	for _, m := range append(f.sentTo("C1"), f.editsTo("C1")...) {
-		embeds = append(embeds, m.Message.Embeds...)
-	}
-	if len(embeds) == 0 {
-		t.Fatal("the tool call produced no embed")
-	}
-	found := false
-	for _, e := range embeds {
-		if strings.Contains(e.Title, "fs_read") {
-			found = true
+	// Check what actually survives on screen (not historical calls).
+	finals := finalMessages(f, "C1")
+
+	// Both the tool call and result embeds must be visible in their own messages.
+	var callFound, resultFound bool
+	for _, msg := range finals {
+		for _, e := range msg.Embeds {
+			if strings.Contains(e.Title, "⚙") && strings.Contains(e.Title, "fs_read") {
+				callFound = true
+			}
+			if strings.Contains(e.Title, "↳") && strings.Contains(e.Title, "fs_read") {
+				resultFound = true
+			}
 		}
 	}
-	if !found {
-		t.Fatalf("no embed names the tool: %+v", embeds)
+	if !callFound || !resultFound {
+		t.Fatalf("both tool call and result embeds must survive on screen: callFound=%v, resultFound=%v, finals=%#v", callFound, resultFound, finals)
 	}
 }
 
@@ -113,14 +140,17 @@ func TestRendererMarksAFailedToolCall(t *testing.T) {
 		daemon.WireEvent{Type: daemon.WireToolResult, ToolUseID: "t1", Content: "not found", IsError: true},
 		daemon.WireEvent{Type: daemon.WireTurnDone},
 	)
-	for _, m := range append(f.sentTo("C1"), f.editsTo("C1")...) {
-		for _, e := range m.Message.Embeds {
+
+	// Check what actually survives on screen.
+	finals := finalMessages(f, "C1")
+	for _, msg := range finals {
+		for _, e := range msg.Embeds {
 			if e.Error {
 				return
 			}
 		}
 	}
-	t.Fatal("a failed tool call was not marked as an error")
+	t.Fatal("a failed tool call was not marked as an error in the final on-screen state")
 }
 
 func TestRendererReportsATurnError(t *testing.T) {
@@ -153,8 +183,8 @@ func TestRendererSurvivesASendFailure(t *testing.T) {
 func TestRendererSplitsAtNewlines(t *testing.T) {
 	// splitAt prefers the last '\n' between n/2 and n when splitting.
 	// This tests that the newline-preferring branch is exercised and correct.
-	// Input: 40 lines of 80 chars (80 chars + newline = 81 bytes each).
-	// Total: 3240 bytes, which exceeds messageLimit (2000), causing a split.
+	// Input: 40 lines of 80 bytes (79 'x' chars + newline).
+	// Total: 3200 bytes, which exceeds messageLimit (2000), causing a split.
 	f := newFakeClient()
 	r := newRenderer(f, "C1", 0)
 

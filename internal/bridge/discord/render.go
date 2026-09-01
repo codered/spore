@@ -100,7 +100,9 @@ func (r *renderer) handleEvent(ctx context.Context, ev daemon.WireEvent) {
 	switch ev.Type {
 	case daemon.WireText:
 		r.buf.WriteString(ev.Text)
-		// Flush immediately if throttle is 0 or if we would exceed the limit.
+		// With throttle=0, tests don't wait on a clock; flush on every event
+		// so the test loop runs to completion immediately. If buffered text would
+		// exceed the message limit, split now to stay under Discord's 2000-char cap.
 		if r.throttle <= 0 || r.onScreen+r.buf.Len() >= messageLimit {
 			r.flush(ctx)
 		}
@@ -109,7 +111,9 @@ func (r *renderer) handleEvent(ctx context.Context, ev daemon.WireEvent) {
 		r.flush(ctx)
 		r.pendingCalls[ev.ToolUseID] = ev.Tool
 
-		// Send embed for the tool call
+		// Send embed for the tool call. Each embed is a boundary in the
+		// transcript, so the embed gets its own message and any following text
+		// starts a fresh one.
 		desc := truncate(ev.Args, 1000)
 		// Wrap in code fence
 		desc = "```\n" + desc + "\n```"
@@ -117,18 +121,27 @@ func (r *renderer) handleEvent(ctx context.Context, ev daemon.WireEvent) {
 			Title:       "⚙ " + ev.Tool,
 			Description: desc,
 		})
+		// Reset so the next embed gets its own message, not an edit.
+		r.msgID = ""
+		r.onScreen = 0
+		r.currentContent.Reset()
 
 	case daemon.WireToolResult:
 		// Get the tool name from pending calls
 		toolName := r.pendingCalls[ev.ToolUseID]
 		delete(r.pendingCalls, ev.ToolUseID)
 
+		// Send result embed as its own message.
 		desc := truncate(ev.Content, 1000)
 		r.sendEmbed(ctx, Embed{
 			Title:       "↳ " + toolName,
 			Description: desc,
 			Error:       ev.IsError,
 		})
+		// Reset so any following text starts a fresh message.
+		r.msgID = ""
+		r.onScreen = 0
+		r.currentContent.Reset()
 
 	case daemon.WireApproval:
 		r.flush(ctx)
@@ -157,10 +170,11 @@ func (r *renderer) handleEvent(ctx context.Context, ev daemon.WireEvent) {
 
 	case daemon.WireTurnDone:
 		r.flush(ctx)
-		// Reset for next turn
+		// Reset for next turn so each turn starts fresh
 		r.msgID = ""
 		r.onScreen = 0
 		r.currentContent.Reset()
+		clear(r.pendingCalls)
 
 	case daemon.WireError:
 		r.flush(ctx)
@@ -210,7 +224,8 @@ func (r *renderer) flush(ctx context.Context) {
 }
 
 // write sends when msgID is empty and edits otherwise, recording the new msgID
-// and adding to onScreen; on error it logs and returns without changing state.
+// and updating onScreen from currentContent to prevent drift on failed edits.
+// On error it logs and returns without changing state.
 func (r *renderer) write(ctx context.Context, content string, embeds []Embed) {
 	if r.msgID == "" {
 		// Send a new message
@@ -223,9 +238,12 @@ func (r *renderer) write(ctx context.Context, content string, embeds []Embed) {
 			return
 		}
 		r.msgID = id
-		r.onScreen = len(content)
+		r.onScreen = r.currentContent.Len()
 	} else {
-		// Edit the existing message - append to the current content
+		// Edit the existing message with appended content. Append first, then
+		// attempt the edit, so failed edits don't leave currentContent orphaned.
+		// onScreen is derived from currentContent.Len() after success to prevent
+		// drift when edits fail.
 		r.currentContent.WriteString(content)
 		fullContent := r.currentContent.String()
 		m := Message{Content: fullContent, Embeds: embeds}
@@ -234,7 +252,7 @@ func (r *renderer) write(ctx context.Context, content string, embeds []Embed) {
 			slog.Warn("discord render", "err", err)
 			return
 		}
-		r.onScreen += len(content)
+		r.onScreen = r.currentContent.Len()
 	}
 }
 
