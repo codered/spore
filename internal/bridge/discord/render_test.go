@@ -218,3 +218,66 @@ func TestRendererSplitsAtNewlines(t *testing.T) {
 		}
 	}
 }
+
+func TestRendererBackToBackToolCalls(t *testing.T) {
+	// Two tool calls and results with no text between them exercises the
+	// WireToolResult reset, which is load-bearing: without it, the second
+	// call's embed Edit overwrites the first result's message.
+	f := newFakeClient()
+	r := newRenderer(f, "C1", 0)
+
+	drain(t, r,
+		daemon.WireEvent{Type: daemon.WireToolCall, ToolUseID: "t1", Tool: "fs_read", Args: `{"path":"/a"}`},
+		daemon.WireEvent{Type: daemon.WireToolResult, ToolUseID: "t1", Content: "content1"},
+		daemon.WireEvent{Type: daemon.WireToolCall, ToolUseID: "t2", Tool: "shell_exec", Args: `{"cmd":"ls"}`},
+		daemon.WireEvent{Type: daemon.WireToolResult, ToolUseID: "t2", Content: "result2"},
+		daemon.WireEvent{Type: daemon.WireTurnDone},
+	)
+
+	// All four embeds must survive in their own messages.
+	finals := finalMessages(f, "C1")
+	var titles []string
+	for _, msg := range finals {
+		for _, e := range msg.Embeds {
+			titles = append(titles, e.Title)
+		}
+	}
+
+	expected := []string{"⚙ fs_read", "↳ fs_read", "⚙ shell_exec", "↳ shell_exec"}
+	if len(titles) != len(expected) {
+		t.Fatalf("expected %d embeds, got %d: titles=%v", len(expected), len(titles), titles)
+	}
+	for i, exp := range expected {
+		if titles[i] != exp {
+			t.Fatalf("embed %d: got %q, want %q", i, titles[i], exp)
+		}
+	}
+}
+
+func TestRendererHandlesFailedEditMidStream(t *testing.T) {
+	// When an Edit fails mid-stream (e.g., rate limit), onScreen drift could
+	// cause the next flush to compute room too generously and split too late,
+	// sending a message over the limit. This test verifies no message ever
+	// exceeds the limit even with a failed edit mid-turn.
+	f := newFakeClient()
+	r := newRenderer(f, "C1", 0)
+
+	// Queue a failure for the Edit call that happens after the first flush.
+	f.setFailNext("Edit", errors.New("rate limited"))
+
+	// Send enough text to trigger multiple flushes. The first flush Sends,
+	// subsequent flushes Edit. The failed Edit shouldn't cause overflow.
+	drain(t, r,
+		daemon.WireEvent{Type: daemon.WireText, Text: strings.Repeat("a", 1500)},
+		daemon.WireEvent{Type: daemon.WireText, Text: strings.Repeat("b", 1500)},
+		daemon.WireEvent{Type: daemon.WireText, Text: strings.Repeat("c", 1500)},
+		daemon.WireEvent{Type: daemon.WireTurnDone},
+	)
+
+	// All messages must stay under the limit, even with the failed edit.
+	for _, msg := range finalMessages(f, "C1") {
+		if len(msg.Content) > messageLimit {
+			t.Fatalf("message exceeds limit: %d bytes > %d", len(msg.Content), messageLimit)
+		}
+	}
+}

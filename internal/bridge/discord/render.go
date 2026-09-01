@@ -186,10 +186,11 @@ func (r *renderer) handleEvent(ctx context.Context, ev daemon.WireEvent) {
 			Error:       true,
 		}
 		r.write(ctx, content, []Embed{embed})
-		// Reset for next message (error ends the turn)
+		// Reset for next turn (error ends the turn)
 		r.msgID = ""
 		r.onScreen = 0
 		r.currentContent.Reset()
+		clear(r.pendingCalls)
 	}
 }
 
@@ -203,9 +204,13 @@ func (r *renderer) sendEmbed(ctx context.Context, e Embed) {
 // or paragraph is not cut mid-line when there is a reasonable place to cut.
 func (r *renderer) flush(ctx context.Context) {
 	for r.buf.Len() > 0 {
-		room := messageLimit - r.onScreen
-		if r.msgID == "" {
-			room = messageLimit
+		room := messageLimit
+		if r.msgID != "" {
+			// When appending to an open message, derive room from actual content
+			// length to account for any failed writes. Failed edits don't update
+			// onScreen, but currentContent grows anyway, so we use its length to
+			// compute room conservatively — splitting earlier if needed to stay safe.
+			room = messageLimit - r.currentContent.Len()
 		}
 		text := r.buf.String()
 		if len(text) <= room {
@@ -223,9 +228,9 @@ func (r *renderer) flush(ctx context.Context) {
 	}
 }
 
-// write sends when msgID is empty and edits otherwise, recording the new msgID
-// and updating onScreen from currentContent to prevent drift on failed edits.
-// On error it logs and returns without changing state.
+// write sends when msgID is empty and edits otherwise, recording the new msgID.
+// On error it logs and returns without changing state. Failed edits leave
+// currentContent intact for recovery on the next successful flush (self-healing).
 func (r *renderer) write(ctx context.Context, content string, embeds []Embed) {
 	if r.msgID == "" {
 		// Send a new message
@@ -240,10 +245,11 @@ func (r *renderer) write(ctx context.Context, content string, embeds []Embed) {
 		r.msgID = id
 		r.onScreen = r.currentContent.Len()
 	} else {
-		// Edit the existing message with appended content. Append first, then
-		// attempt the edit, so failed edits don't leave currentContent orphaned.
-		// onScreen is derived from currentContent.Len() after success to prevent
-		// drift when edits fail.
+		// Edit the existing message with appended content. Append to currentContent
+		// before attempting the edit, so failed edits still have the full delta for
+		// recovery. Only update onScreen on success, since the server saw nothing.
+		// The next flush derives room from currentContent.Len(), making it
+		// conservative when a message hasn't been edited successfully yet.
 		r.currentContent.WriteString(content)
 		fullContent := r.currentContent.String()
 		m := Message{Content: fullContent, Embeds: embeds}
