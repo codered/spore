@@ -2014,7 +2014,46 @@ func TestAnswererRefusesAnotherSessionsApproval(t *testing.T) {
 }
 ```
 
-`newLoadedGuard` writes a temp `config.toml` with `[policy] workspace`, `default = "ask"` and `ask = ["shell_exec"]`, calls `config.Load`, opens a temp store, and builds the guard the way `cmd/spore/wire.go` does. Put it in this package's test files.
+`newLoadedGuard` is the helper Task 11 also uses, so write it once here, in `helpers_test.go`. `cmd/spore/wire.go`'s `buildTools` is in `package main` and cannot be imported, so the wiring is repeated — this is the only place it is repeated, which is why it is a named helper rather than inline setup:
+
+```go
+// newLoadedGuard builds a real policy guard over a real store, from config
+// read off disk. config.Load, never config.Default: Load is what appends the
+// baseline deny rules, and a guard built without them will happily allow a
+// read of /etc/passwd through an fs_read allow rule — so a security test
+// written on Default passes while proving nothing.
+func newLoadedGuard(t *testing.T) (*store.Store, *policy.Guard) {
+	t.Helper()
+	cfg := loadPolicyConfig(t, t.TempDir())
+	st := openTestStore(t)
+	guard, err := buildTestGuard(cfg, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st, guard
+}
+
+// buildTestGuard mirrors cmd/spore/wire.go's buildTools. It exists because
+// that function lives in package main and cannot be imported.
+func buildTestGuard(cfg *config.Config, st *store.Store, approver policy.Approver) (*policy.Guard, error) {
+	reg := tool.NewRegistry(cfg.Policy.MaxOutput)
+	tools := fs.New(cfg.Policy.Workspace, cfg.Policy.MaxOutput)
+	tools = append(tools, shell.New(cfg.Policy.Workspace,
+		time.Duration(cfg.Shell.TimeoutSeconds)*time.Second, cfg.Policy.MaxOutput))
+	for _, tl := range tools {
+		if err := reg.Register(tl); err != nil {
+			return nil, err
+		}
+	}
+	engine, err := policy.NewEngine(cfg.Policy)
+	if err != nil {
+		return nil, err
+	}
+	return policy.NewGuard(reg, engine, approver, st, nil), nil
+}
+```
+
+`loadPolicyConfig(t, workspace)` writes a temp `config.toml` carrying `default_model`, a `[providers.fake]` block of kind `openai` with an unreachable `base_url`, and a `[policy]` section with `workspace`, `default = "ask"`, `allow = ["fs_read"]` and `ask = ["shell_exec"]`, then returns `config.Load` of it.
 
 - [ ] **Step 5: Run**
 
@@ -2885,7 +2924,48 @@ user_ids    = ["U"]
 }
 ```
 
-`newDaemonWithScriptedProvider(t, cfg, script)` builds a real `store`, `agent`, `policy.Guard` and `daemon.Server` the way `cmd/spore/wire.go` does, substituting the scripted fake provider the daemon's own end-to-end test already uses; reuse that helper rather than writing a third fake provider. `scriptShellThenText` replays one `shell_exec` tool call, then the text `"done"` once the tool result arrives. `writeFile` is a two-line `os.WriteFile` helper with `t.Fatal` on error.
+`newDaemonWithScriptedProvider` goes in `helpers_test.go` beside `buildTestGuard` (Task 8). The daemon's own end-to-end helpers are unexported and in another package, so they cannot be reused — but `provider.Script` **is** exported non-test code, and it is the same scripted fake those tests use. Build on it:
+
+```go
+// newDaemonWithScriptedProvider boots a real daemon over a real store, a real
+// guard and a real policy engine, with provider.Script standing in for the
+// model. The construction order is load-bearing and is the same order
+// cmd/spore/wire.go uses: the guard needs the server's approver, and the
+// server needs the guard, so the server is built first with no agent and the
+// agent is attached once its tools exist.
+func newDaemonWithScriptedProvider(t *testing.T, cfg *config.Config, turns []provider.ScriptTurn) (*daemon.Server, *store.Store) {
+	t.Helper()
+	st := openTestStore(t)
+
+	srv := daemon.New(daemon.Options{Store: st, Cfg: cfg})
+
+	preg := provider.NewRegistry()
+	preg.Register("fake", provider.NewScript(turns...), provider.ProviderPrice{})
+	rt, err := router.New(cfg.Routes, cfg.DefaultModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard, err := buildTestGuard(cfg, st, srv.Approver())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.Attach(agent.New(st, preg, rt, cfg, guard), guard)
+	t.Cleanup(srv.Close)
+	return srv, st
+}
+
+// scriptShellThenText replays one shell_exec call, then a closing sentence
+// once its result comes back.
+var scriptShellThenText = []provider.ScriptTurn{
+	{ToolCalls: []provider.Block{{
+		Type: provider.BlockToolUse, ID: "tu1", Name: "shell_exec",
+		Input: []byte(`{"cmd":"ls"}`),
+	}}},
+	{Text: "done"},
+}
+```
+
+Check `provider.Block`'s field names and the tool-use block constant against `internal/provider/types.go` before writing this, and match whatever is there — the shape above is the intent, not a licence to invent field names. `writeFile` is a two-line `os.WriteFile` helper with `t.Fatal` on error.
 
 - [ ] **Step 2: Run it**
 
