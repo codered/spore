@@ -143,6 +143,8 @@ func NewGatewayClient(token string) (Client, error) {
 // and onInteraction must be safe to call concurrently — that obligation is
 // documented on Client, not enforced here.
 func (c *gatewayClient) Open(ctx context.Context, onMessage func(Inbound), onInteraction func(Interaction)) error {
+	// ctx is unused here, unlike every other method below: discordgo's
+	// Session.Open takes no context, so there is nothing to plumb it into.
 	c.sess.AddHandler(func(s *discordgo.Session, m *discordgo.MessageCreate) {
 		if onMessage == nil || m.Message == nil {
 			return

@@ -21,6 +21,8 @@ type fakeClient struct {
 	edits    []sentMessage
 	threads  []createdThread
 	responds []respondCall
+	opens    int
+	isClosed bool
 	nextID   int
 
 	onMessage     func(Inbound)
@@ -60,9 +62,24 @@ func (f *fakeClient) setFailNext(name string, err error) {
 	f.failNext[name] = err
 }
 
+// cloneMessage detaches m's nested slices so the fake owns its own copy.
+// Cloning on the way IN rather than on the way out is what makes this safe:
+// a caller that reuses its Embeds buffer across streamed edits — which is
+// exactly how the renderer works — would otherwise mutate, without
+// synchronisation, a slice a test goroutine is reading through sentTo or
+// lastEdit.
+func cloneMessage(m Message) Message {
+	m.Embeds = append([]Embed(nil), m.Embeds...)
+	m.Buttons = append([]Button(nil), m.Buttons...)
+	return m
+}
+
 func (f *fakeClient) Open(ctx context.Context, onMessage func(Inbound), onInteraction func(Interaction)) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// Counted even on failure: Task 10's supervisor test counts failed
+	// connect attempts as attempts, not just successful ones.
+	f.opens++
 	if err := f.take("Open"); err != nil {
 		return err
 	}
@@ -73,7 +90,11 @@ func (f *fakeClient) Open(ctx context.Context, onMessage func(Inbound), onIntera
 func (f *fakeClient) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.take("Close")
+	if err := f.take("Close"); err != nil {
+		return err
+	}
+	f.isClosed = true
+	return nil
 }
 
 func (f *fakeClient) Send(ctx context.Context, channelID string, m Message) (string, error) {
@@ -84,7 +105,7 @@ func (f *fakeClient) Send(ctx context.Context, channelID string, m Message) (str
 	}
 	f.nextID++
 	id := fmt.Sprintf("m%d", f.nextID)
-	f.sent = append(f.sent, sentMessage{ChannelID: channelID, MessageID: id, Message: m})
+	f.sent = append(f.sent, sentMessage{ChannelID: channelID, MessageID: id, Message: cloneMessage(m)})
 	return id, nil
 }
 
@@ -94,7 +115,7 @@ func (f *fakeClient) Edit(ctx context.Context, channelID, messageID string, m Me
 	if err := f.take("Edit"); err != nil {
 		return err
 	}
-	f.edits = append(f.edits, sentMessage{ChannelID: channelID, MessageID: messageID, Message: m})
+	f.edits = append(f.edits, sentMessage{ChannelID: channelID, MessageID: messageID, Message: cloneMessage(m)})
 	return nil
 }
 
@@ -142,7 +163,8 @@ func (f *fakeClient) press(i Interaction) {
 
 // sentTo returns a copy of every message Send has sent to channelID, in
 // call order. Tests must use this rather than reading f.sent directly,
-// because the render goroutine writes to it concurrently.
+// because the render goroutine writes to it concurrently. Safe because Send
+// clones the nested Embeds/Buttons slices before storing them.
 func (f *fakeClient) sentTo(channelID string) []sentMessage {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -155,8 +177,33 @@ func (f *fakeClient) sentTo(channelID string) []sentMessage {
 	return out
 }
 
-// lastEdit returns a copy of the most recent Edit call for channelID, and
-// whether one exists.
+// allSent returns a copy of every Send call made so far, in call order,
+// regardless of channel.
+func (f *fakeClient) allSent() []sentMessage {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]sentMessage, len(f.sent))
+	copy(out, f.sent)
+	return out
+}
+
+// editsTo returns a copy of every Edit call for channelID, in call order.
+func (f *fakeClient) editsTo(channelID string) []sentMessage {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []sentMessage
+	for _, e := range f.edits {
+		if e.ChannelID == channelID {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// lastEdit returns the most recent Edit call for channelID, and whether one
+// exists. Safe to hand to a test directly because Edit clones the nested
+// Embeds/Buttons slices before storing them — the returned value shares no
+// backing array with anything a writer still holds.
 func (f *fakeClient) lastEdit(channelID string) (sentMessage, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -166,6 +213,40 @@ func (f *fakeClient) lastEdit(channelID string) (sentMessage, bool) {
 		}
 	}
 	return sentMessage{}, false
+}
+
+// finalContents returns, for each message id Send has sent to channelID, in
+// send order, the Content of its most recent Edit if any, otherwise the
+// Content it was sent with. This is how a test reads "what the user finally
+// sees" after a streamed turn that edits one message repeatedly.
+func (f *fakeClient) finalContents(channelID string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var ids []string
+	sentContent := map[string]string{}
+	for _, s := range f.sent {
+		if s.ChannelID == channelID {
+			ids = append(ids, s.MessageID)
+			sentContent[s.MessageID] = s.Message.Content
+		}
+	}
+	latestEdit := map[string]string{}
+	for _, e := range f.edits {
+		if e.ChannelID == channelID {
+			latestEdit[e.MessageID] = e.Message.Content
+		}
+	}
+
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		if c, ok := latestEdit[id]; ok {
+			out[i] = c
+		} else {
+			out[i] = sentContent[id]
+		}
+	}
+	return out
 }
 
 // allThreads returns a copy of every thread CreateThread has created.
@@ -184,4 +265,21 @@ func (f *fakeClient) allResponds() []respondCall {
 	out := make([]respondCall, len(f.responds))
 	copy(out, f.responds)
 	return out
+}
+
+// openCount returns how many times Open has been called, including calls
+// that failed via failNext — Task 10's supervisor retries a failed connect,
+// and its test counts attempts, not just successes.
+func (f *fakeClient) openCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.opens
+}
+
+// closed reports whether Close has been called (and did not itself fail via
+// failNext).
+func (f *fakeClient) closed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.isClosed
 }
