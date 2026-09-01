@@ -1,12 +1,11 @@
 package daemon
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
-	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codered/spore/internal/policy"
@@ -20,7 +19,7 @@ import (
 func TestStartTurnCarriesTheProfile(t *testing.T) {
 	// Policy: fs_read allowed for local, denied for remote
 	policyTOML := `[policy]
-workspace = "%s"
+workspace = "%WORKSPACE%"
 default = "deny"
 allow = ["fs_read", "fs_list"]
 ask = ["fs_write"]
@@ -71,13 +70,8 @@ allow = ["fs_list"]
 				t.Fatalf("CreateSession: %v", err)
 			}
 
-			// Attach to SSE stream
-			req, _ := http.NewRequest("GET", ts.URL+"/api/sessions/"+id+"/events", nil)
-			res, err := http.DefaultClient.Do(req)
-			if err != nil {
-				t.Fatalf("attach: %v", err)
-			}
-			defer res.Body.Close()
+			// Attach to SSE stream using the existing helper
+			reader := attachStream(t, ts, id)
 
 			// Post the turn via StartTurn (not via HTTP)
 			if err := srv.StartTurn(id, "read test.txt", "test", tc.profile); err != nil {
@@ -85,7 +79,7 @@ allow = ["fs_list"]
 			}
 
 			// Read SSE events
-			r := readSSE(t, bufio.NewReader(res.Body), 4) // tool_call, tool_result, text, turn_done
+			r := readSSE(t, reader, 4) // tool_call, tool_result, text, turn_done
 
 			// Find the tool result event
 			var toolResult *WireEvent
@@ -104,14 +98,14 @@ allow = ["fs_list"]
 				if !toolResult.IsError {
 					t.Errorf("expected tool error for %s profile, but got success", tc.profile)
 				}
-				if !contains(toolResult.Content, "denied by policy") {
+				if !strings.Contains(toolResult.Content, "denied by policy") {
 					t.Errorf("error message = %q, want it to mention policy denial", toolResult.Content)
 				}
 			} else {
 				if toolResult.IsError {
 					t.Errorf("expected tool success for %s profile, but got error: %s", tc.profile, toolResult.Content)
 				}
-				if !contains(toolResult.Content, "hello from test") {
+				if !strings.Contains(toolResult.Content, "hello from test") {
 					t.Errorf("tool result = %q, want the file's content", toolResult.Content)
 				}
 			}
@@ -144,25 +138,10 @@ func TestStartTurnRefusesASecondTurn(t *testing.T) {
 	// Release the slot
 	srv.Hub().End(sid)
 
-	// Now StartTurn should succeed (though it will fail later if there's no agent,
-	// but that's OK — we're testing that it gets past the slot check)
+	// Now StartTurn should succeed. agent.Run returns synchronously with the
+	// event channel; the scripted provider's "script exhausted" error comes
+	// asynchronously into the channel and never surfaces as a return value.
 	if err := srv.StartTurn(sid, "two", "test", policy.ProfileRemote); err != nil {
-		// It's OK if it fails due to missing agent setup, but it should not be
-		// ErrTurnRunning
-		if errors.Is(err, ErrTurnRunning) {
-			t.Fatalf("StartTurn after slot released: got ErrTurnRunning, but should have gotten past the slot check")
-		}
-		// Agent is not attached in this test, so some error is expected
-		// but it should not be about the turn slot
+		t.Fatalf("StartTurn after slot released: err = %v, want nil", err)
 	}
-}
-
-// Helper function to check if a string contains a substring
-func contains(s, substr string) bool {
-	for i := range s {
-		if i+len(substr) <= len(s) && s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

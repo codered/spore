@@ -3,7 +3,6 @@ package daemon
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,7 +26,7 @@ import (
 // builtins, real policy guard, real agent. Only the model is scripted. Every
 // other test in this package fakes at least one neighbour; this one fakes
 // none, which is the only way the seams between them get exercised.
-// policyTOML should be a format string where %s will be replaced with the workspace path.
+// policyTOML should contain %WORKSPACE% as a placeholder for the workspace path.
 func newFullServerWithPolicy(t *testing.T, policyTOML string, turns ...provider.ScriptTurn) (*Server, *httptest.Server, string) {
 	t.Helper()
 	workspace := t.TempDir()
@@ -46,7 +45,7 @@ func newFullServerWithPolicy(t *testing.T, policyTOML string, turns ...provider.
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
 	configContent := `default_model = "script/fake"
 
-` + fmt.Sprintf(policyTOML, workspace)
+` + strings.ReplaceAll(policyTOML, "%WORKSPACE%", workspace)
 	if err := os.WriteFile(cfgPath, []byte(configContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +86,7 @@ func newFullServerWithPolicy(t *testing.T, policyTOML string, turns ...provider.
 func newFullServer(t *testing.T, turns ...provider.ScriptTurn) (*Server, *httptest.Server, string) {
 	t.Helper()
 	return newFullServerWithPolicy(t, `[policy]
-workspace = "%s"
+workspace = "%WORKSPACE%"
 default = "deny"
 allow = ["fs_read", "fs_list"]
 ask = ["fs_write"]
