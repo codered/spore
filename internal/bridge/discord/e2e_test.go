@@ -8,6 +8,7 @@ import (
 
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/policy"
+	"github.com/codered/spore/internal/provider"
 )
 
 // TestEndToEndDiscordTurnWithApproval boots a real daemon, a real store, a
@@ -45,11 +46,21 @@ user_ids    = ["U"]
 		t.Fatal(err)
 	}
 
-	// The provider script: one shell_exec (which policy says ask), then a
-	// sentence once the tool result comes back.
+	// The provider script: two shell_exec calls to test forging pattern answers.
 	// Use a recording learn callback to ensure no blanket rules are written.
 	learned := make([]string, 0)
-	srv, st := newDaemonWithScriptedProviderAndLearn(t, cfg, scriptShellThenText, func(d policy.Decision, rule string) error {
+	script := []provider.ScriptTurn{
+		{ToolCalls: []provider.Block{{
+			Type: provider.BlockToolUse, ID: "tu1", Name: "shell_exec",
+			Input: []byte(`{"cmd":"ls"}`),
+		}}},
+		{ToolCalls: []provider.Block{{
+			Type: provider.BlockToolUse, ID: "tu2", Name: "shell_exec",
+			Input: []byte(`{"cmd":"pwd"}`),
+		}}},
+		{Text: "done"},
+	}
+	srv, st := newDaemonWithScriptedProviderAndLearn(t, cfg, script, func(d policy.Decision, rule string) error {
 		learned = append(learned, rule)
 		return nil
 	})
@@ -70,27 +81,27 @@ user_ids    = ["U"]
 
 	f.deliver(Inbound{MessageID: "m1", UserID: "U", GuildID: "G", ChannelID: "C1", Content: "run ls"})
 
-	// The approval must arrive as buttons, and the pattern button must be
-	// absent: shell_exec has no path-shaped argument to generalise to.
-	var prompt sentMessage
+	// First approval (for the first shell_exec): approve with "allow once".
+	// The pattern button must be absent: shell_exec has no path-shaped argument to generalise to.
+	var firstPrompt sentMessage
 	waitFor(t, func() bool {
 		for _, m := range f.allSent() {
 			if len(m.Message.Buttons) > 0 {
-				prompt = m
+				firstPrompt = m
 				return true
 			}
 		}
 		return false
 	})
-	for _, btn := range prompt.Message.Buttons {
+	for _, btn := range firstPrompt.Message.Buttons {
 		if _, _, ans, err := decodeCustomID(btn.CustomID); err == nil && ans.Scope == policy.ScopePattern {
 			t.Fatal("a one-tap blanket allow for shell_exec was offered on the phone surface")
 		}
 	}
 
-	// Press "allow once".
+	// Press "allow once" on the first approval.
 	var allowOnce string
-	for _, btn := range prompt.Message.Buttons {
+	for _, btn := range firstPrompt.Message.Buttons {
 		if _, _, ans, err := decodeCustomID(btn.CustomID); err == nil && ans.Allow && ans.Scope == policy.ScopeOnce {
 			allowOnce = btn.CustomID
 		}
@@ -100,6 +111,47 @@ user_ids    = ["U"]
 	}
 	f.press(Interaction{ID: "i1", Token: "tok", UserID: "U", GuildID: "G",
 		ChannelID: f.allThreads()[0].ThreadID, ParentID: "C1", CustomID: allowOnce})
+
+	// Second approval (for the second shell_exec): this is still live.
+	// Forge the answer the UI refuses to offer: a pattern-scoped answer for a
+	// degraded call (one with no path-shaped argument). This tests that the
+	// guard independently refuses, not just the UI. The waiter is live, so
+	// this goes through Guard.Run, not Guard.Resolve.
+	var secondPrompt sentMessage
+	waitFor(t, func() bool {
+		allSent := f.allSent()
+		if len(allSent) < 2 {
+			return false
+		}
+		// Find a sent message that's not firstPrompt and has buttons
+		for _, m := range allSent {
+			if m.MessageID != firstPrompt.MessageID && len(m.Message.Buttons) > 0 {
+				secondPrompt = m
+				return true
+			}
+		}
+		return false
+	})
+
+	// Find the allow-once button for the second approval
+	var secondAllowOnce string
+	for _, btn := range secondPrompt.Message.Buttons {
+		if _, _, ans, err := decodeCustomID(btn.CustomID); err == nil && ans.Allow && ans.Scope == policy.ScopeOnce {
+			secondAllowOnce = btn.CustomID
+		}
+	}
+	if secondAllowOnce == "" {
+		t.Fatal("no allow-once button on second approval")
+	}
+
+	// Forge a pattern-scoped press for the second approval
+	sid, pid, _, err := decodeCustomID(secondAllowOnce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := encodeCustomID(sid, pid, true, policy.ScopePattern)
+	f.press(Interaction{ID: "i2", Token: "tok2", UserID: "U", GuildID: "G",
+		ChannelID: f.allThreads()[0].ThreadID, ParentID: "C1", CustomID: forged})
 
 	// The turn resumes and its text reaches Discord.
 	waitFor(t, func() bool {
@@ -111,24 +163,25 @@ user_ids    = ["U"]
 		return false
 	})
 
-	// No suspension is left open. The session id comes from the binding the
-	// bridge wrote, which is also a check that the binding is correct.
+	// Get the session for later assertions.
 	sessionID, found, err := st.SessionForExternal(context.Background(), bridgeName, f.allThreads()[0].ThreadID)
 	if err != nil || !found {
 		t.Fatalf("no session bound to the thread: (found=%v, err=%v)", found, err)
 	}
+
+	// No suspension is left open.
 	pending, err := srv.Guard().Pending(context.Background(), sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(pending) != 0 {
-		t.Fatalf("%d suspensions left open after the button press", len(pending))
+		t.Fatalf("%d suspensions left open after the button presses", len(pending))
 	}
 
-	// The key security property: answering a degraded shell_exec approval
-	// (one with no path-shaped argument to generalize to) must not write a
-	// blanket rule. The answer was "allow once" (ScopeOnce), not "allow
-	// pattern", and learn should never have been called.
+	// The key security property: the guard must refuse a pattern scope for
+	// a degraded call (one with no path-shaped argument). Presentation is not
+	// enforcement: even when someone forges a pattern-scoped press on a live
+	// approval, the guard downgrades it to once and refuses to learn.
 	if len(learned) != 0 {
 		t.Fatalf("the guard attempted to learn %d rules for a degraded approval: %v", len(learned), learned)
 	}
