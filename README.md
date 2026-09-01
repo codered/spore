@@ -3,11 +3,11 @@
 A personal AI agent in a single Go binary: your providers, your tools, your
 policy. Built to run as an always-on daemon on your own machine.
 
-Status: **Plan 2 (tools and policy)** — everything in Plan 1, plus a tool
-registry with `fs`, `shell` and `web` builtins and a policy engine that
-resolves every call to allow, ask or deny on the tool and its arguments.
-Approvals suspend the turn, persist to SQLite, and survive a restart. The
-daemon and web UI, MCP, Telegram, and Weaviate recall land in Plans 3–5.
+Status: **Plan 3 (daemon and web UI)** — everything in Plans 1 and 2, plus an
+HTTP + SSE API, multi-client sessions, an embedded web UI, and the scheduler.
+Tool calls resolve to allow, ask or deny on the tool and its arguments;
+approvals suspend the turn, persist to SQLite, and survive a restart. The
+Discord bridge, MCP, and Weaviate recall land in Plans 4–5.
 
 ## Build
 
