@@ -66,6 +66,31 @@ type Bridge struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// resolveMu serialises resolveSession end to end, including the
+	// CreateThread call. Two inbound messages on the same not-yet-bound
+	// channel arrive on separate discordgo dispatch goroutines; without this
+	// lock both could pass the "no session yet" check before either writes
+	// its binding, and each would open its own session and its own Discord
+	// thread for what is really one conversation. spore serves one person,
+	// so serialising here costs nothing worth avoiding — a per-key lock or
+	// singleflight would be solving a throughput problem this bridge
+	// doesn't have.
+	resolveMu sync.Mutex
+
+	// closeMu and closing rule out a race between Close's wg.Wait and a
+	// concurrent startTurn's wg.Add. sync.WaitGroup requires that an Add
+	// which takes the counter from zero happen before the Wait it is paired
+	// with, and nothing about Client.Close documents that in-flight
+	// handleMessage calls have returned by the time it returns — so timing
+	// alone cannot be trusted to keep Add ahead of Wait. Close sets closing
+	// under this lock before it ever calls Wait; startTurn checks closing
+	// under the same lock before calling Add. A goroutine that observes
+	// closing == false is therefore guaranteed to complete its Add before
+	// Close can reach Wait, and one that observes true simply declines to
+	// start new work — the race is impossible by construction, not by luck.
+	closeMu sync.Mutex
+	closing bool
 }
 
 // New validates the required collaborators and wires the Admitter and
@@ -80,6 +105,9 @@ func New(o Options) (*Bridge, error) {
 	}
 	if o.Store == nil {
 		return nil, errors.New("discord bridge: Store is required")
+	}
+	if o.Broker == nil {
+		return nil, errors.New("discord bridge: Broker is required")
 	}
 	throttle := o.Throttle
 	if throttle == 0 {
@@ -106,10 +134,17 @@ func (b *Bridge) Start(ctx context.Context) error {
 }
 
 // Close stops accepting new work and waits for every render goroutine the
-// bridge started to finish. Cancelling before closing the client, rather
-// than after, is what lets a render goroutine mid-flush notice ctx.Done()
-// and return instead of racing the client's own teardown.
+// bridge started to finish. closing is set under closeMu first, and before
+// anything else, so that no startTurn call still in flight can register a
+// wg.Add after this reaches wg.Wait (see the field doc on closeMu). Only
+// then does it cancel — before closing the client, rather than after, which
+// is what lets a render goroutine mid-flush notice ctx.Done() and return
+// instead of racing the client's own teardown.
 func (b *Bridge) Close() error {
+	b.closeMu.Lock()
+	b.closing = true
+	b.closeMu.Unlock()
+
 	if b.cancel != nil {
 		b.cancel()
 	}
@@ -182,7 +217,16 @@ func (b *Bridge) handleNew(in Inbound) {
 // the conversation's first message. replyChannel is where the turn's output
 // should go: the existing binding's channel, the thread just opened, or the
 // original channel if opening one failed.
+//
+// The whole function runs under resolveMu, from the SessionForExternal read
+// through CreateThread to the last BindExternal write, so a second message
+// that arrives on the same still-unbound channel while the first is being
+// resolved always waits and then finds the first message's binding, rather
+// than racing it into a second session and a second thread.
 func (b *Bridge) resolveSession(in Inbound) (sessionID, replyChannel string, err error) {
+	b.resolveMu.Lock()
+	defer b.resolveMu.Unlock()
+
 	if sid, found, err := b.store.SessionForExternal(b.ctx, bridgeName, in.ChannelID); err != nil {
 		return "", "", err
 	} else if found {
@@ -206,22 +250,47 @@ func (b *Bridge) resolveSession(in Inbound) (sessionID, replyChannel string, err
 	}
 
 	threadID, threadErr := b.client.CreateThread(b.ctx, in.ChannelID, in.MessageID, threadName(in.Content))
-	bindTo, reply := in.ChannelID, in.ChannelID
-	if threadErr == nil {
-		bindTo, reply = threadID, threadID
-	} else {
+	if threadErr != nil {
 		// A bridge that cannot make threads must still work: fall back to
 		// binding the channel itself, and say so rather than answering
 		// silently in a mode the user didn't expect.
 		slog.Warn("discord create thread failed, replying in channel", "err", threadErr)
+		if err := b.store.BindExternal(b.ctx, bridgeName, in.ChannelID, sid); err != nil {
+			return "", "", err
+		}
+		b.say(in.ChannelID, "could not open a thread for this, so I'll reply here instead")
+		return sid, in.ChannelID, nil
 	}
-	if err := b.store.BindExternal(b.ctx, bridgeName, bindTo, sid); err != nil {
+
+	// Bind both the origin channel and the new thread to sid. Binding the
+	// channel — not just the thread — is what makes resolveMu actually
+	// prevent the duplicate-thread race described above: a second message
+	// that loses the race for this channel finds sid on its own
+	// SessionForExternal(in.ChannelID) lookup instead of falling through to
+	// create a second session and thread. Accepted side effect: a later
+	// top-level message posted straight to the channel, not a reply inside
+	// the thread, now also continues this session (replying in the channel)
+	// rather than opening a fresh thread of its own — /new remains the
+	// explicit way to start over.
+	if err := b.store.BindExternal(b.ctx, bridgeName, in.ChannelID, sid); err != nil {
 		return "", "", err
 	}
-	if threadErr != nil {
-		b.say(reply, "could not open a thread for this, so I'll reply here instead")
+	if err := b.store.BindExternal(b.ctx, bridgeName, threadID, sid); err != nil {
+		// The thread now exists and looks like an ordinary conversation to
+		// the user, but the bind that points the THREAD at sid failed.
+		// MarkSeen already claimed this message's id before resolveSession
+		// was ever called, so there is no retry coming from gateway
+		// redelivery — the prompt is gone unless we say something now, in
+		// the only place the user is watching. The channel binding just
+		// above succeeded, so telling them to use the channel rather than
+		// the now-orphaned thread gives them a working path forward. The
+		// session row CreateSession made above is left in place: Store has
+		// no delete-session call, and an unbound, message-less row is
+		// harmless clutter, not a leak of anything that matters.
+		b.say(threadID, "something went wrong opening this conversation; please send your message again in this channel")
+		return "", "", err
 	}
-	return sid, reply, nil
+	return sid, threadID, nil
 }
 
 // startTurn subscribes to the session's events before asking the daemon to
@@ -240,7 +309,20 @@ func (b *Bridge) startTurn(sessionID, replyChannel, text string) {
 	r.onApproval(func(ev daemon.WireEvent) { b.postApproval(sessionID, replyChannel, ev) })
 	r.stopAfterTurn = true
 
+	// See closeMu's doc on Bridge: this check-then-Add, both under closeMu,
+	// is what keeps a wg.Add from ever landing after Close has moved on to
+	// wg.Wait. If Close already flipped closing, there is nothing left to
+	// join a turn to — detach the subscription and give up on this message
+	// rather than starting work the bridge is already shutting down.
+	b.closeMu.Lock()
+	if b.closing {
+		b.closeMu.Unlock()
+		cancel()
+		return
+	}
 	b.wg.Add(1)
+	b.closeMu.Unlock()
+
 	go func() {
 		defer b.wg.Done()
 		defer cancel()

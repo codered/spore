@@ -138,6 +138,16 @@ func (f *fakeTurns) startCount() int {
 	return len(f.starts)
 }
 
+// allStarts returns a copy of every StartTurn call recorded so far, in call
+// order.
+func (f *fakeTurns) allStarts() []startedTurn {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]startedTurn, len(f.starts))
+	copy(out, f.starts)
+	return out
+}
+
 // testDiscordConfig is the allowlist every bridge test is built on: one
 // guild, one channel, one user, DMs open.
 func testDiscordConfig() config.DiscordConfig {
@@ -390,4 +400,51 @@ func TestTheTurnsFirstEventReachesDiscord(t *testing.T) {
 		}
 		return false
 	})
+}
+
+func TestConcurrentFirstMessagesResolveToOneSession(t *testing.T) {
+	// Two messages landing on the same brand-new channel at nearly the same
+	// instant arrive on two separate discordgo dispatch goroutines in
+	// production; deliver reproduces that here by calling the handler from
+	// two real goroutines with two different message ids. Without
+	// resolveSession's lock, both can pass the "no session yet" check before
+	// either writes a binding, and each opens its own session and its own
+	// Discord thread for what is really one conversation.
+	b, f, turns, st := newTestBridge(t)
+	defer b.Close()
+	if err := b.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		f.deliver(Inbound{MessageID: "a1", UserID: "U", GuildID: "G", ChannelID: "C1", Content: "one"})
+	}()
+	go func() {
+		defer wg.Done()
+		f.deliver(Inbound{MessageID: "a2", UserID: "U", GuildID: "G", ChannelID: "C1", Content: "two"})
+	}()
+	wg.Wait()
+
+	turns.waitForTurn(t)
+	turns.waitForTurn(t)
+
+	threads := f.allThreads()
+	if len(threads) != 1 {
+		t.Fatalf("created %d threads for two concurrent first messages, want 1", len(threads))
+	}
+	sid, found, err := st.SessionForExternal(context.Background(), bridgeName, threads[0].ThreadID)
+	if err != nil || !found {
+		t.Fatalf("the thread was not bound to a session: (found=%v, err=%v)", found, err)
+	}
+	if turns.startCount() != 2 {
+		t.Fatalf("started %d turns for two messages, want 2 (both still get a turn)", turns.startCount())
+	}
+	for _, s := range turns.allStarts() {
+		if s.sessionID != sid {
+			t.Fatalf("a turn started for session %q, want every turn on %q — both messages must share one session", s.sessionID, sid)
+		}
+	}
 }
