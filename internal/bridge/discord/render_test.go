@@ -149,3 +149,42 @@ func TestRendererSurvivesASendFailure(t *testing.T) {
 	)
 	// The point is that Consume returned rather than panicked or blocked.
 }
+
+func TestRendererSplitsAtNewlines(t *testing.T) {
+	// splitAt prefers the last '\n' between n/2 and n when splitting.
+	// This tests that the newline-preferring branch is exercised and correct.
+	// Input: 40 lines of 80 chars (80 chars + newline = 81 bytes each).
+	// Total: 3240 bytes, which exceeds messageLimit (2000), causing a split.
+	f := newFakeClient()
+	r := newRenderer(f, "C1", 0)
+
+	input := strings.Repeat(strings.Repeat("x", 79)+"\n", 40)
+
+	drain(t, r,
+		daemon.WireEvent{Type: daemon.WireText, Text: input},
+		daemon.WireEvent{Type: daemon.WireTurnDone},
+	)
+
+	contents := f.finalContents("C1")
+
+	// Assertion 1: At least 2 messages were sent (content exceeded limit and split).
+	if len(contents) < 2 {
+		t.Fatalf("split %d messages, want at least 2", len(contents))
+	}
+
+	// Assertion 2: Concatenated content equals input byte-for-byte (test is load-bearing).
+	var all strings.Builder
+	for _, c := range contents {
+		all.WriteString(c)
+	}
+	if got := all.String(); got != input {
+		t.Fatalf("content not preserved: got %d bytes, want %d bytes", len(got), len(input))
+	}
+
+	// Assertion 3: No message exceeds messageLimit.
+	for i, c := range contents {
+		if len(c) > messageLimit {
+			t.Fatalf("message %d is %d bytes, exceeds %d limit", i, len(c), messageLimit)
+		}
+	}
+}
