@@ -405,3 +405,60 @@ func (s *Store) SessionDecision(ctx context.Context, sessionID, tool string) (st
 	}
 	return decision, true, nil
 }
+
+// BindExternal points a bridge's own identifier at a session. Rebinding an
+// identifier is legal and replaces the old target: the DM surface rebinds its
+// rolling session every time /new is used.
+func (s *Store) BindExternal(ctx context.Context, bridge, externalID, sessionID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO bridge_bindings (bridge, external_id, session_id, created_at)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(bridge, external_id) DO UPDATE SET session_id = excluded.session_id`,
+		bridge, externalID, sessionID, time.Now().UTC().Format(timeFormat))
+	if err != nil {
+		return fmt.Errorf("bind %s/%s: %w", bridge, externalID, err)
+	}
+	return nil
+}
+
+// SessionForExternal resolves a bridge identifier to its session.
+func (s *Store) SessionForExternal(ctx context.Context, bridge, externalID string) (string, bool, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT session_id FROM bridge_bindings WHERE bridge = ? AND external_id = ?`,
+		bridge, externalID).Scan(&id)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("resolve %s/%s: %w", bridge, externalID, err)
+	}
+	return id, true, nil
+}
+
+// MarkSeen records an inbound event id and reports whether this is the first
+// time it has been presented. The insert is the test: making the claim and
+// checking it one statement means two concurrent deliveries cannot both win.
+func (s *Store) MarkSeen(ctx context.Context, bridge, eventID string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO bridge_seen (bridge, event_id, created_at) VALUES (?, ?, ?)`,
+		bridge, eventID, time.Now().UTC().Format(timeFormat))
+	if err != nil {
+		return false, fmt.Errorf("mark seen %s/%s: %w", bridge, eventID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+// PruneSeen drops dedupe rows older than the window. The gateway only
+// redelivers recent events, so this table is a short memory, not a log.
+func (s *Store) PruneSeen(ctx context.Context, olderThan time.Duration) error {
+	cutoff := time.Now().UTC().Add(-olderThan).Format(timeFormat)
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM bridge_seen WHERE created_at <= ?`, cutoff); err != nil {
+		return fmt.Errorf("prune seen: %w", err)
+	}
+	return nil
+}
