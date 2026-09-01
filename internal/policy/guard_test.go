@@ -227,13 +227,14 @@ func TestPatternScopeLearnsARule(t *testing.T) {
 }
 
 func TestPatternForNarrowsToTheDirectory(t *testing.T) {
-	got := PatternFor(Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"/ws/src/a.go"}`)})
-	if got != "fs_write(path matches /ws/src/**)" {
-		t.Errorf("PatternFor = %q", got)
+	got, ok := PatternFor(Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"/ws/src/a.go"}`)})
+	if got != "fs_write(path matches /ws/src/**)" || !ok {
+		t.Errorf("PatternFor = (%q, %v)", got, ok)
 	}
-	// With no path to generalise from, the pattern is the bare tool name.
-	if got := PatternFor(Call{Tool: "shell_exec", Args: json.RawMessage(`{"command":"ls"}`)}); got != "shell_exec" {
-		t.Errorf("PatternFor(shell) = %q, want the bare tool name", got)
+	// With no path to generalise from, the pattern degrades.
+	got, ok = PatternFor(Call{Tool: "shell_exec", Args: json.RawMessage(`{"command":"ls"}`)})
+	if got != "" || ok {
+		t.Errorf("PatternFor(shell) = (%q, %v), want (\"\", false)", got, ok)
 	}
 }
 
@@ -374,4 +375,49 @@ func TestNoDuplicateAuditRowsWhenApprovalRacesBetweenGuardAndBroker(t *testing.T
 	// The test is successful if ResolvePendingCall correctly reported that the
 	// suspension was not claimed. The guard's code is responsible for skipping
 	// the audit write when claimed=false, preventing duplicate rows.
+}
+
+func TestPatternForReportsDegradation(t *testing.T) {
+	cases := []struct {
+		name    string
+		call    Call
+		want    string
+		wantOK  bool
+	}{
+		{
+			name:   "a single path generalises to its directory",
+			call:   Call{Tool: "fs_read", Args: json.RawMessage(`{"path":"/w/src/main.go"}`)},
+			want:   "fs_read(path matches /w/src/**)",
+			wantOK: true,
+		},
+		{
+			name: "no path-shaped argument degrades",
+			// This is the case the whole task exists for: the only pattern
+			// derivable from a shell command is the bare tool name, which
+			// would allow every shell_exec there is.
+			call:   Call{Tool: "shell_exec", Args: json.RawMessage(`{"cmd":"ls -l"}`)},
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:   "two paths are ambiguous and degrade",
+			call:   Call{Tool: "fs_edit", Args: json.RawMessage(`{"from":"/w/a.go","to":"/w/b.go"}`)},
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:   "a bare filename has no directory to generalise to",
+			call:   Call{Tool: "fs_read", Args: json.RawMessage(`{"path":"notes.md"}`)},
+			want:   "",
+			wantOK: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := PatternFor(tc.call)
+			if got != tc.want || ok != tc.wantOK {
+				t.Fatalf("PatternFor = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
 }

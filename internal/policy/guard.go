@@ -160,7 +160,10 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 		return denied(call.ID, "%s needs approval but no approver is attached", call.Name)
 	}
 
-	pattern := PatternFor(c)
+	// An empty pattern is the wire signal to every approver — terminal,
+	// browser and bridge — that the "always this pattern" option must not
+	// be offered for this call.
+	pattern, patternOK := PatternFor(c)
 	pendingID, err := g.store.AddPendingCall(ctx, store.PendingCall{
 		SessionID: sessionID,
 		ToolUseID: call.ID,
@@ -223,9 +226,18 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 	claimed, err := g.store.ResolvePendingCall(book, pendingID, string(decision))
 	_ = err // Already logged by caller if needed
 	if claimed {
-		_ = g.store.RecordApproval(book, sessionID, call.Name, call.Input, string(decision), string(answer.Scope))
+		// A pattern answer for a call with no derivable pattern is recorded
+		// as "once". A client that offers the option anyway — an old build,
+		// or a crafted request straight to the API — must not be able to
+		// widen policy by asking. Presentation is not the enforcement.
+		scope := answer.Scope
+		if scope == ScopePattern && !patternOK {
+			scope = ScopeOnce
+			sporetrace.RecordPolicy(ctx, string(decision), "pattern answer degraded to once: no pattern for this call")
+		}
+		_ = g.store.RecordApproval(book, sessionID, call.Name, call.Input, string(decision), string(scope))
 
-		if answer.Scope == ScopePattern && g.learn != nil {
+		if scope == ScopePattern && g.learn != nil {
 			if err := g.learn(decision, pattern); err != nil {
 				// Failing to persist the rule must not change this call's
 				// outcome; the user simply gets asked again next time.
@@ -242,19 +254,23 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 	return g.inner.Run(ctx, call)
 }
 
-// PatternFor proposes the rule an "always allow this pattern" answer writes.
-// When the call has a path it generalises to that path's directory; otherwise
-// it falls back to the bare tool name rather than guessing.
-func PatternFor(c Call) string {
+// PatternFor proposes the rule an "always allow this pattern" answer would
+// write, and reports whether a real pattern exists. Deriving one needs a
+// single path-shaped argument. Without one the only thing left is the bare
+// tool name, and a rule that broad is not a pattern — it is a blanket allow
+// for the tool, bounded only by the baseline deny list. Rather than return
+// something that reads like a narrow rule and behaves like a wide one, this
+// reports false and callers suppress the option.
+func PatternFor(c Call) (string, bool) {
 	paths := argPaths(c)
 	if len(paths) != 1 {
-		return c.Tool
+		return "", false
 	}
 	dir := filepath.Dir(paths[0])
 	if dir == "." || dir == string(filepath.Separator) {
-		return c.Tool
+		return "", false
 	}
-	return fmt.Sprintf("%s(path matches %s/**)", c.Tool, strings.TrimSuffix(dir, "/"))
+	return fmt.Sprintf("%s(path matches %s/**)", c.Tool, strings.TrimSuffix(dir, "/")), true
 }
 
 // Pending lists the session's unanswered approval requests. A client that
@@ -284,12 +300,15 @@ func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, 
 		return fmt.Errorf("no pending call %d in session %s (already answered, or another session's)", pendingID, sessionID)
 	}
 	if ans.Scope == ScopePattern && g.learn != nil {
-		if err := g.learn(decision, PatternFor(Call{Tool: claimed.Tool, Args: claimed.ArgsJSON})); err != nil {
-			// Same invariant as Run: failing to persist a learned rule must not
-			// undo an answer already recorded, or the caller retries and is
-			// told the call was "already answered". The user is asked again
-			// next time instead.
-			sporetrace.RecordPolicy(ctx, string(decision), "learned rule not persisted: "+err.Error())
+		pattern, ok := PatternFor(Call{Tool: claimed.Tool, Args: claimed.ArgsJSON})
+		if ok {
+			if err := g.learn(decision, pattern); err != nil {
+				// Same invariant as Run: failing to persist a learned rule must not
+				// undo an answer already recorded, or the caller retries and is
+				// told the call was "already answered". The user is asked again
+				// next time instead.
+				sporetrace.RecordPolicy(ctx, string(decision), "learned rule not persisted: "+err.Error())
+			}
 		}
 	}
 	return nil
