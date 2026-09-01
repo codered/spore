@@ -68,12 +68,19 @@ type Bridge struct {
 	wg     sync.WaitGroup
 
 	// resolveMu serialises resolveSession end to end, including the
-	// CreateThread call. Two inbound messages on the same not-yet-bound
-	// channel arrive on separate discordgo dispatch goroutines; without this
-	// lock both could pass the "no session yet" check before either writes
-	// its binding, and each would open its own session and its own Discord
-	// thread for what is really one conversation. spore serves one person,
-	// so serialising here costs nothing worth avoiding — a per-key lock or
+	// CreateThread call. It protects the paths where one external id is
+	// meant to map to exactly one session over time: a DM channel (one
+	// rolling session per admitted user, per the design spec) and a thread
+	// spore did not open itself. Two first DMs from the same user arriving
+	// on separate discordgo dispatch goroutines would otherwise both miss
+	// SessionForExternal, both CreateSession, and both BindExternal — two
+	// sessions for what the spec calls one rolling conversation, with the
+	// second write silently winning. It does NOT exist to stop two threads
+	// from being opened in a guild channel: the spec is explicit that every
+	// top-level channel message opens its OWN session and thread, so two
+	// concurrent first messages in a channel correctly producing two
+	// threads is not a race to fix. spore serves one person, so serialising
+	// the whole function costs nothing worth avoiding — a per-key lock or
 	// singleflight would be solving a throughput problem this bridge
 	// doesn't have.
 	resolveMu sync.Mutex
@@ -218,11 +225,19 @@ func (b *Bridge) handleNew(in Inbound) {
 // should go: the existing binding's channel, the thread just opened, or the
 // original channel if opening one failed.
 //
-// The whole function runs under resolveMu, from the SessionForExternal read
-// through CreateThread to the last BindExternal write, so a second message
-// that arrives on the same still-unbound channel while the first is being
-// resolved always waits and then finds the first message's binding, rather
-// than racing it into a second session and a second thread.
+// Per the design spec (§8 Bridges), a DM is one rolling session per admitted
+// user, and a reply inside a thread spore did not open continues whatever
+// session that thread is already bound to — both are cases where one
+// external id must map to exactly one session over time. A top-level message
+// in a guild channel is the opposite: it always opens its OWN session and
+// thread, by design, so two such messages arriving together correctly
+// produce two threads, not a race to prevent.
+//
+// The whole function still runs under resolveMu, including the CreateThread
+// call, so it stays simple to reason about — but the lock is only load
+// bearing for the DM and reopened-thread cases above: it is what stops two
+// concurrent first DMs from the same user each creating their own session
+// and each winning the same BindExternal write.
 func (b *Bridge) resolveSession(in Inbound) (sessionID, replyChannel string, err error) {
 	b.resolveMu.Lock()
 	defer b.resolveMu.Unlock()
@@ -262,32 +277,23 @@ func (b *Bridge) resolveSession(in Inbound) (sessionID, replyChannel string, err
 		return sid, in.ChannelID, nil
 	}
 
-	// Bind both the origin channel and the new thread to sid. Binding the
-	// channel — not just the thread — is what makes resolveMu actually
-	// prevent the duplicate-thread race described above: a second message
-	// that loses the race for this channel finds sid on its own
-	// SessionForExternal(in.ChannelID) lookup instead of falling through to
-	// create a second session and thread. Accepted side effect: a later
-	// top-level message posted straight to the channel, not a reply inside
-	// the thread, now also continues this session (replying in the channel)
-	// rather than opening a fresh thread of its own — /new remains the
-	// explicit way to start over.
-	if err := b.store.BindExternal(b.ctx, bridgeName, in.ChannelID, sid); err != nil {
-		return "", "", err
-	}
+	// Bind only the thread, not the origin channel. The spec is explicit
+	// that every top-level channel message opens its own session and
+	// thread, so the channel id must stay unbound — binding it would make
+	// the SECOND thing asked in this channel silently resolve to today's
+	// session instead of starting a new one, which is exactly the DM
+	// behaviour the spec reserves for DMs alone.
 	if err := b.store.BindExternal(b.ctx, bridgeName, threadID, sid); err != nil {
 		// The thread now exists and looks like an ordinary conversation to
-		// the user, but the bind that points the THREAD at sid failed.
-		// MarkSeen already claimed this message's id before resolveSession
-		// was ever called, so there is no retry coming from gateway
-		// redelivery — the prompt is gone unless we say something now, in
-		// the only place the user is watching. The channel binding just
-		// above succeeded, so telling them to use the channel rather than
-		// the now-orphaned thread gives them a working path forward. The
-		// session row CreateSession made above is left in place: Store has
-		// no delete-session call, and an unbound, message-less row is
-		// harmless clutter, not a leak of anything that matters.
-		b.say(threadID, "something went wrong opening this conversation; please send your message again in this channel")
+		// the user, but the bind that points it at sid failed. MarkSeen
+		// already claimed this message's id before resolveSession was ever
+		// called, so there is no retry coming from gateway redelivery — the
+		// prompt is gone unless we say something now, in the only place the
+		// user is watching. The session row CreateSession made above is
+		// left in place: Store has no delete-session call, and an unbound,
+		// message-less row is harmless clutter, not a leak of anything that
+		// matters.
+		b.say(threadID, "something went wrong opening this conversation; please send your message again")
 		return "", "", err
 	}
 	return sid, threadID, nil
