@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/codered/spore/internal/bridge/discord"
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/daemon"
 	"github.com/codered/spore/internal/scheduler"
@@ -89,6 +91,19 @@ func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []s
 
 	sched := scheduler.New(st, srv, nil)
 	go sched.Run(ctx, time.Duration(cfg.Daemon.TickSeconds)*time.Second)
+
+	bridge, err := buildBridge(cfg, srv)
+	if err != nil {
+		// A misconfigured bridge is a config error and should stop startup:
+		// silently serving without the surface you asked for is worse.
+		return err
+	}
+	if bridge != nil {
+		go discord.Supervise(ctx, bridge, slog.Default())
+		if !detach {
+			fmt.Println("discord bridge enabled")
+		}
+	}
 
 	if !detach {
 		fmt.Printf("spore listening on http://%s\n", cfg.Daemon.Addr)
