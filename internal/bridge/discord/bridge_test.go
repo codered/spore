@@ -72,6 +72,18 @@ func (f *fakeTurns) StartTurn(sessionID, text, client string, profile policy.Pro
 	case f.started <- struct{}{}:
 	default:
 	}
+	// Publish the turn's first event the way Hub.Publish does: to whoever is
+	// subscribed right now. A bridge that starts the turn before subscribing
+	// loses it, exactly as it would in production, which is what makes that
+	// ordering regression visible to a test. Never create the channel here —
+	// only Subscribe does that — so a StartTurn that races ahead of Subscribe
+	// finds nobody listening and drops the event, same as the real hub.
+	if ch, ok := f.events[sessionID]; ok {
+		select {
+		case ch <- daemon.WireEvent{Type: daemon.WireText, Text: "first"}:
+		default:
+		}
+	}
 	return nil
 }
 
@@ -356,4 +368,26 @@ func TestABusySessionTellsTheUser(t *testing.T) {
 	if !strings.Contains(strings.ToLower(joined.String()), "already") {
 		t.Fatalf("the user was not told the session is busy: %q", joined.String())
 	}
+}
+
+func TestTheTurnsFirstEventReachesDiscord(t *testing.T) {
+	// Subscribe must precede StartTurn. If it does not, the hub publishes the
+	// turn's opening events to nobody and they are lost — the user sees a
+	// thread that sits empty until some later event happens to arrive.
+	b, f, turns, _ := newTestBridge(t)
+	defer b.Close()
+	if err := b.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f.deliver(Inbound{MessageID: "m1", UserID: "U", GuildID: "G", ChannelID: "C1", Content: "hello"})
+	turns.waitForTurn(t)
+	thread := f.allThreads()[0].ThreadID
+	waitFor(t, func() bool {
+		for _, c := range f.finalContents(thread) {
+			if strings.Contains(c, "first") {
+				return true
+			}
+		}
+		return false
+	})
 }
