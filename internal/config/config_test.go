@@ -16,6 +16,22 @@ func write(t *testing.T, body string) string {
 	return p
 }
 
+func loadTestConfig(t *testing.T, toml string) *Config {
+	t.Helper()
+	p := write(t, "default_model = \"anthropic/claude-opus-5\"\n"+toml)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return cfg
+}
+
+func loadTestConfigErr(t *testing.T, toml string) (*Config, error) {
+	t.Helper()
+	p := write(t, "default_model = \"anthropic/claude-opus-5\"\n"+toml)
+	return Load(p)
+}
+
 func TestLoadInterpolatesEnvAndAppliesDefaults(t *testing.T) {
 	t.Setenv("SPORE_TEST_KEY", "sk-secret")
 	p := write(t, `
@@ -150,5 +166,75 @@ addr = "localhost:9999"
 `)
 	if _, err := Load(ok); err != nil {
 		t.Fatalf("Load rejected a loopback host: %v", err)
+	}
+}
+
+func TestLoadDiscordBridge(t *testing.T) {
+	t.Setenv("SPORE_TEST_DISCORD_TOKEN", "s3cret")
+	cfg := loadTestConfig(t, `
+[bridge.discord]
+enabled     = true
+token       = "${SPORE_TEST_DISCORD_TOKEN}"
+guild_id    = "111"
+channel_ids = ["222", "333"]
+user_ids    = ["444"]
+allow_dms   = true
+`)
+	d := cfg.Bridge.Discord
+	if !d.Enabled || d.Token != "s3cret" || d.GuildID != "111" || !d.AllowDMs {
+		t.Fatalf("discord config not loaded: %+v", d)
+	}
+	if len(d.ChannelIDs) != 2 || d.ChannelIDs[0] != "222" {
+		t.Fatalf("channel_ids = %v", d.ChannelIDs)
+	}
+	if len(d.UserIDs) != 1 || d.UserIDs[0] != "444" {
+		t.Fatalf("user_ids = %v", d.UserIDs)
+	}
+}
+
+func TestDiscordBridgeValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		toml string
+		want string
+	}{
+		{
+			name: "enabled with no token",
+			toml: "[bridge.discord]\nenabled = true\nguild_id = \"1\"\nchannel_ids = [\"2\"]\nuser_ids = [\"3\"]\n",
+			want: "bridge.discord.token",
+		},
+		{
+			// An empty user allowlist admits nobody, which is safe but is
+			// always a mistake — the bridge would sit there ignoring you.
+			// Failing at load beats debugging silence.
+			name: "enabled with no users",
+			toml: "[bridge.discord]\nenabled = true\ntoken = \"t\"\nguild_id = \"1\"\nchannel_ids = [\"2\"]\n",
+			want: "bridge.discord.user_ids",
+		},
+		{
+			name: "enabled with a guild but no channels",
+			toml: "[bridge.discord]\nenabled = true\ntoken = \"t\"\nguild_id = \"1\"\nuser_ids = [\"3\"]\n",
+			want: "bridge.discord.channel_ids",
+		},
+		{
+			name: "enabled with no surface at all",
+			toml: "[bridge.discord]\nenabled = true\ntoken = \"t\"\nuser_ids = [\"3\"]\n",
+			want: "guild_id",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadTestConfigErr(t, tc.toml)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestDisabledDiscordBridgeSkipsValidation(t *testing.T) {
+	// A block left behind with enabled = false must not block startup.
+	if _, err := loadTestConfigErr(t, "[bridge.discord]\nenabled = false\n"); err != nil {
+		t.Fatalf("a disabled bridge should not be validated: %v", err)
 	}
 }
