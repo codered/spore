@@ -254,30 +254,30 @@ func TestRendererBackToBackToolCalls(t *testing.T) {
 	}
 }
 
-func TestRendererHandlesFailedEditMidStream(t *testing.T) {
-	// When an Edit fails mid-stream (e.g., rate limit), onScreen drift could
-	// cause the next flush to compute room too generously and split too late,
-	// sending a message over the limit. This test verifies no message ever
-	// exceeds the limit even with a failed edit mid-turn.
+func TestRendererStaysUnderLimitAfterAFailedEdit(t *testing.T) {
+	// A failed Edit on the non-split path makes onScreen and currentContent
+	// diverge. The split path resets both together, hiding the drift, so the
+	// bug only manifests when a failed Edit is followed by a chunk that fits
+	// the optimistic room (messageLimit - onScreen) but not the true remaining
+	// space (messageLimit - currentContent.Len()).
+	//
+	// Scenario: 1500 sends (onScreen=1500, currentContent=1500); 100 fails Edit
+	// (currentContent grows to 1600, onScreen stays 1500); 450 fits optimistic
+	// room of 500 but overflows true remaining 400, sending 2050 bytes.
 	f := newFakeClient()
 	r := newRenderer(f, "C1", 0)
-
-	// Queue a failure for the Edit call that happens after the first flush.
 	f.setFailNext("Edit", errors.New("rate limited"))
 
-	// Send enough text to trigger multiple flushes. The first flush Sends,
-	// subsequent flushes Edit. The failed Edit shouldn't cause overflow.
 	drain(t, r,
 		daemon.WireEvent{Type: daemon.WireText, Text: strings.Repeat("a", 1500)},
-		daemon.WireEvent{Type: daemon.WireText, Text: strings.Repeat("b", 1500)},
-		daemon.WireEvent{Type: daemon.WireText, Text: strings.Repeat("c", 1500)},
+		daemon.WireEvent{Type: daemon.WireText, Text: strings.Repeat("b", 100)},
+		daemon.WireEvent{Type: daemon.WireText, Text: strings.Repeat("c", 450)},
 		daemon.WireEvent{Type: daemon.WireTurnDone},
 	)
 
-	// All messages must stay under the limit, even with the failed edit.
-	for _, msg := range finalMessages(f, "C1") {
-		if len(msg.Content) > messageLimit {
-			t.Fatalf("message exceeds limit: %d bytes > %d", len(msg.Content), messageLimit)
+	for i, m := range finalMessages(f, "C1") {
+		if len(m.Content) > messageLimit {
+			t.Fatalf("message %d is %d bytes, over the %d limit", i, len(m.Content), messageLimit)
 		}
 	}
 }
