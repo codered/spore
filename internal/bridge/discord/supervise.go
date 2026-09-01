@@ -39,10 +39,13 @@ func Supervise(ctx context.Context, b *Bridge, log *slog.Logger) {
 			if backoff > maxBackoff {
 				backoff = maxBackoff
 			}
+			// Cancel the context created by the failed Start attempt before
+			// retrying, so each attempt does not leave an orphaned child
+			// context attached to the parent.
+			b.cancelContext()
 			continue
 		}
 		log.Info("discord bridge connected")
-		backoff = minBackoff
 		// Connected. discordgo reconnects and resumes the session itself, so
 		// there is nothing to poll here; wait for shutdown.
 		<-ctx.Done()

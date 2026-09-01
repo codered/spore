@@ -160,6 +160,16 @@ func (b *Bridge) Close() error {
 	return err
 }
 
+// cancelContext cancels the bridge's internal context. Called after a failed
+// Start attempt to clean up the child context before retrying. This does not
+// close the client or wait for goroutines — it only cancels the context,
+// which is safe even if no goroutines were ever started.
+func (b *Bridge) cancelContext() {
+	if b.cancel != nil {
+		b.cancel()
+	}
+}
+
 // handleMessage is the Discord client's onMessage callback. It runs on the
 // client's own goroutine (discordgo's, in production; the fake's deliver, in
 // tests), so everything it touches — the store, the turns interface, the

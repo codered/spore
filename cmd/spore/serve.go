@@ -98,15 +98,34 @@ func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []s
 		// silently serving without the surface you asked for is worse.
 		return err
 	}
+
+	bridgeDone := make(chan struct{})
 	if bridge != nil {
-		go discord.Supervise(ctx, bridge, slog.Default())
+		go func() {
+			defer close(bridgeDone)
+			discord.Supervise(ctx, bridge, slog.Default())
+		}()
 		if !detach {
 			fmt.Println("discord bridge enabled")
 		}
+	} else {
+		close(bridgeDone)
 	}
 
 	if !detach {
 		fmt.Printf("spore listening on http://%s\n", cfg.Daemon.Addr)
 	}
-	return srv.Run(ctx, cfg.Daemon.Addr)
+
+	err = srv.Run(ctx, cfg.Daemon.Addr)
+	// Cancel explicitly: Run can return without ctx being done (a listen
+	// error), and Supervise is waiting on exactly that signal. The deferred
+	// cancel fires too late — after this function has already returned and
+	// main has closed the store.
+	cancel()
+	select {
+	case <-bridgeDone:
+	case <-time.After(5 * time.Second):
+		slog.Warn("discord bridge did not stop within the shutdown grace period")
+	}
+	return err
 }
