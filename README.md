@@ -3,11 +3,12 @@
 A personal AI agent in a single Go binary: your providers, your tools, your
 policy. Built to run as an always-on daemon on your own machine.
 
-Status: **Plan 3 (daemon and web UI)** — everything in Plans 1 and 2, plus an
-HTTP + SSE API, multi-client sessions, an embedded web UI, and the scheduler.
-Tool calls resolve to allow, ask or deny on the tool and its arguments;
-approvals suspend the turn, persist to SQLite, and survive a restart. The
-Discord bridge, MCP, and Weaviate recall land in Plans 4–5.
+Status: **Plan 4a (Discord bridge)** — everything in Plans 1–3, plus the
+Discord bridge. Messages in Discord channels open threads and sessions; replies
+continue them. A DM is one rolling session. Approvals arrive as button presses.
+Sessions run under the `remote` trust profile, so you can hold them to stricter
+rules than the web UI. The pattern-button is absent for calls with no
+path-shaped argument to generalise to. MCP and Weaviate recall land in Plans 4b–5.
 
 ## Build
 
@@ -50,6 +51,38 @@ the Console workspace URL.
 Routing rules match a **call site** — `chat`, `compaction`, `title`, or
 `classify` — so mechanical work runs on a cheap local model while
 conversation runs on the good one.
+
+## Discord
+
+spore can be driven from Discord. Create an application and bot at
+<https://discord.com/developers/applications>, enable the **Message Content**
+privileged intent under Bot → Privileged Gateway Intents, and invite it to a
+server only you are in with the `bot` scope and the Send Messages, Create
+Public Threads, Send Messages in Threads, Read Message History and Embed Links
+permissions.
+
+    [bridge.discord]
+    enabled     = true
+    token       = "${DISCORD_BOT_TOKEN}"
+    guild_id    = "your server id"
+    channel_ids = ["the channel spore listens in"]
+    user_ids    = ["your user id"]
+    allow_dms   = true
+
+`guild_id`, `channel_ids` and `user_ids` are an allowlist, not a filter:
+anything not named is dropped without a reply. Turn on Discord's Developer
+Mode (Settings → Advanced) to copy ids.
+
+A message in an allowlisted channel opens a thread and a session; replies in
+that thread continue it. A DM is one rolling session, reset with `/new`.
+Approvals arrive as buttons.
+
+Discord sessions run under the `remote` trust profile, so you can hold them to
+a stricter ruleset than the local web UI:
+
+    [policy.profile.remote]
+    default = "ask"
+    allow   = ["fs_read", "fs_list", "fs_glob", "fs_grep"]
 
 ## Tools and policy
 
