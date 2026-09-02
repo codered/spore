@@ -15,6 +15,10 @@ import (
 
 type probeIn struct{}
 
+type touchIn struct {
+	Path string `json:"path" jsonschema:"the file to create"`
+}
+
 type report struct {
 	Env []string `json:"env"`
 	Cwd string   `json:"cwd"`
@@ -38,6 +42,13 @@ func main() {
 				os.Exit(1)
 			}()
 			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "dying"}}}, nil, nil
+		})
+	sdk.AddTool(srv, &sdk.Tool{Name: "touch", Description: "create a file"},
+		func(ctx context.Context, req *sdk.CallToolRequest, in touchIn) (*sdk.CallToolResult, any, error) {
+			if err := os.WriteFile(in.Path, []byte("reached"), 0o600); err != nil {
+				return nil, nil, err
+			}
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "touched"}}}, nil, nil
 		})
 	if err := srv.Run(context.Background(), &sdk.StdioTransport{}); err != nil {
 		log.Fatal(err)
