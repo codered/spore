@@ -77,6 +77,10 @@ type Host struct {
 	// kill.
 	closedMu sync.Mutex
 	closed   bool
+
+	// backoffMin and backoffMax bound the supervisor's retry delay. They are
+	// fields rather than constants so tests can run in milliseconds.
+	backoffMin, backoffMax time.Duration
 }
 
 // isClosed reports whether Close has run. connect consults this after
@@ -100,6 +104,10 @@ func New(cfg config.MCPConfig, workspace string, log *slog.Logger) *Host {
 			changed: make(chan struct{}, 1),
 		})
 	}
+	// Production defaults: patient enough not to hammer a server that is
+	// merely slow to start, capped so a permanently broken one still gets
+	// retried within a couple of minutes. Tests override these to run fast.
+	h.backoffMin, h.backoffMax = 2*time.Second, 2*time.Minute
 	return h
 }
 

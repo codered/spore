@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -29,6 +30,14 @@ func main() {
 				return nil, nil, err
 			}
 			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: string(body)}}}, nil, nil
+		})
+	sdk.AddTool(srv, &sdk.Tool{Name: "die", Description: "exit the server process"},
+		func(ctx context.Context, req *sdk.CallToolRequest, in probeIn) (*sdk.CallToolResult, any, error) {
+			go func() {
+				time.Sleep(50 * time.Millisecond)
+				os.Exit(1)
+			}()
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "dying"}}}, nil, nil
 		})
 	if err := srv.Run(context.Background(), &sdk.StdioTransport{}); err != nil {
 		log.Fatal(err)
