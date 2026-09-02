@@ -22,11 +22,12 @@ import (
 	"github.com/codered/spore/internal/tool/fs"
 )
 
-// newFullServer wires the real thing: real store, real registry, real fs
+// newFullServerWithPolicy wires the real thing: real store, real registry, real fs
 // builtins, real policy guard, real agent. Only the model is scripted. Every
 // other test in this package fakes at least one neighbour; this one fakes
 // none, which is the only way the seams between them get exercised.
-func newFullServer(t *testing.T, turns ...provider.ScriptTurn) (*Server, *httptest.Server, string) {
+// policyTOML should contain %WORKSPACE% as a placeholder for the workspace path.
+func newFullServerWithPolicy(t *testing.T, policyTOML string, turns ...provider.ScriptTurn) (*Server, *httptest.Server, string) {
 	t.Helper()
 	workspace := t.TempDir()
 	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
@@ -42,15 +43,10 @@ func newFullServer(t *testing.T, turns ...provider.ScriptTurn) (*Server, *httpte
 	// /etc/passwd straight through. This test exists to prove the real
 	// policy path holds, so it has to load config the way production does.
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(cfgPath, []byte(`
-default_model = "script/fake"
+	configContent := `default_model = "script/fake"
 
-[policy]
-workspace = "`+workspace+`"
-default = "deny"
-allow = ["fs_read", "fs_list"]
-ask = ["fs_write"]
-`), 0o600); err != nil {
+` + strings.ReplaceAll(policyTOML, "%WORKSPACE%", workspace)
+	if err := os.WriteFile(cfgPath, []byte(configContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.Load(cfgPath)
@@ -84,6 +80,17 @@ ask = ["fs_write"]
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return srv, ts, workspace
+}
+
+// newFullServer calls newFullServerWithPolicy with the default policy.
+func newFullServer(t *testing.T, turns ...provider.ScriptTurn) (*Server, *httptest.Server, string) {
+	t.Helper()
+	return newFullServerWithPolicy(t, `[policy]
+workspace = "%WORKSPACE%"
+default = "deny"
+allow = ["fs_read", "fs_list"]
+ask = ["fs_write"]
+`, turns...)
 }
 
 func attachStream(t *testing.T, ts *httptest.Server, sessionID string) *bufio.Reader {

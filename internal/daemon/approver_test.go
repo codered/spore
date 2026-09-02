@@ -24,7 +24,7 @@ func TestBrokerDeliversAnAnswerToTheWaitingAsk(t *testing.T) {
 	go func() {
 		ans, err := b.Ask(context.Background(), policy.Ask{
 			SessionID: "s1", Tool: "shell_exec", PendingID: 7,
-			Args: json.RawMessage(`{"cmd":"ls"}`), Rule: "shell_exec", Pattern: "shell_exec",
+			Args: json.RawMessage(`{"cmd":"ls"}`), Rule: "shell_exec", Pattern: "",
 		})
 		done <- result{ans, err}
 	}()

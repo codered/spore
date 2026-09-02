@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -227,13 +228,14 @@ func TestPatternScopeLearnsARule(t *testing.T) {
 }
 
 func TestPatternForNarrowsToTheDirectory(t *testing.T) {
-	got := PatternFor(Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"/ws/src/a.go"}`)})
-	if got != "fs_write(path matches /ws/src/**)" {
-		t.Errorf("PatternFor = %q", got)
+	got, ok := PatternFor(Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"/ws/src/a.go"}`)})
+	if got != "fs_write(path matches /ws/src/**)" || !ok {
+		t.Errorf("PatternFor = (%q, %v)", got, ok)
 	}
-	// With no path to generalise from, the pattern is the bare tool name.
-	if got := PatternFor(Call{Tool: "shell_exec", Args: json.RawMessage(`{"command":"ls"}`)}); got != "shell_exec" {
-		t.Errorf("PatternFor(shell) = %q, want the bare tool name", got)
+	// With no path to generalise from, the pattern degrades.
+	got, ok = PatternFor(Call{Tool: "shell_exec", Args: json.RawMessage(`{"command":"ls"}`)})
+	if got != "" || ok {
+		t.Errorf("PatternFor(shell) = (%q, %v), want (\"\", false)", got, ok)
 	}
 }
 
@@ -374,4 +376,105 @@ func TestNoDuplicateAuditRowsWhenApprovalRacesBetweenGuardAndBroker(t *testing.T
 	// The test is successful if ResolvePendingCall correctly reported that the
 	// suspension was not claimed. The guard's code is responsible for skipping
 	// the audit write when claimed=false, preventing duplicate rows.
+}
+
+func TestResolveDowngradesADegradedPatternAnswer(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sid, err := st.CreateSession(ctx, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	learned := []string{}
+	g := NewGuard(nil, engine(t, config.PolicyConfig{}), nil, st, func(d Decision, rule string) error {
+		learned = append(learned, string(d)+" "+rule)
+		return nil
+	})
+
+	id, err := st.AddPendingCall(ctx, store.PendingCall{
+		SessionID: sid, ToolUseID: "tu1", Tool: "shell_exec",
+		ArgsJSON: []byte(`{"cmd":"ls"}`), Profile: "remote", Rule: "shell_exec",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A client asks for ScopePattern on a call that has no pattern.
+	if err := g.Resolve(ctx, sid, id, Answer{Allow: true, Scope: ScopePattern}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(learned) != 0 {
+		t.Fatalf("a rule was learned for a call with no pattern: %v", learned)
+	}
+	// The audit row must say what actually happened, not what was asked for.
+	scope, err := lastApprovalScope(t, st, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope != string(ScopeOnce) {
+		t.Fatalf("audit scope = %q, want %q", scope, ScopeOnce)
+	}
+}
+
+// lastApprovalScope reads the scope of the newest audit row for a session.
+func lastApprovalScope(t *testing.T, st *store.Store, sessionID string) (string, error) {
+	t.Helper()
+	rows, err := st.Approvals(context.Background(), sessionID)
+	if err != nil {
+		return "", err
+	}
+	if len(rows) == 0 {
+		return "", fmt.Errorf("no approval rows for session %s", sessionID)
+	}
+	return rows[len(rows)-1].Scope, nil
+}
+
+func TestPatternForReportsDegradation(t *testing.T) {
+	cases := []struct {
+		name    string
+		call    Call
+		want    string
+		wantOK  bool
+	}{
+		{
+			name:   "a single path generalises to its directory",
+			call:   Call{Tool: "fs_read", Args: json.RawMessage(`{"path":"/w/src/main.go"}`)},
+			want:   "fs_read(path matches /w/src/**)",
+			wantOK: true,
+		},
+		{
+			name: "no path-shaped argument degrades",
+			// This is the case the whole task exists for: the only pattern
+			// derivable from a shell command is the bare tool name, which
+			// would allow every shell_exec there is.
+			call:   Call{Tool: "shell_exec", Args: json.RawMessage(`{"cmd":"ls -l"}`)},
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:   "two paths are ambiguous and degrade",
+			call:   Call{Tool: "fs_edit", Args: json.RawMessage(`{"from":"/w/a.go","to":"/w/b.go"}`)},
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:   "a bare filename has no directory to generalise to",
+			call:   Call{Tool: "fs_read", Args: json.RawMessage(`{"path":"notes.md"}`)},
+			want:   "",
+			wantOK: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := PatternFor(tc.call)
+			if got != tc.want || ok != tc.wantOK {
+				t.Fatalf("PatternFor = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/codered/spore/internal/agent"
+	"github.com/codered/spore/internal/bridge/discord"
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/daemon"
 	"github.com/codered/spore/internal/policy"
@@ -95,4 +96,22 @@ func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, error) {
 	}
 	srv.Attach(a, guard)
 	return srv, nil
+}
+
+// buildBridge constructs the Discord bridge, or reports (nil, nil) when it is
+// not configured. It must be built AFTER the server, because the bridge needs
+// the broker and guard the server owns.
+func buildBridge(cfg *config.Config, srv *daemon.Server) (*discord.Bridge, error) {
+	d := cfg.Bridge.Discord
+	if !d.Enabled {
+		return nil, nil
+	}
+	client, err := discord.NewGatewayClient(d.Token)
+	if err != nil {
+		return nil, err
+	}
+	return discord.New(discord.Options{
+		Cfg: d, Client: client, Turns: srv,
+		Store: srv.Store(), Broker: srv.Broker(), Guard: srv.Guard(),
+	})
 }

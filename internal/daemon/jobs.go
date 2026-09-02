@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/scheduler"
 	"github.com/codered/spore/internal/store"
 )
@@ -91,7 +92,7 @@ func (s *Server) StartJob(ctx context.Context, job store.Job) (string, error) {
 	if !s.hub.Begin(sessionID) {
 		return sessionID, errSessionBusy
 	}
-	if err := s.startTurn(sessionID, job.Prompt, "job"); err != nil {
+	if err := s.startTurn(sessionID, job.Prompt, "job", policy.ProfileLocal); err != nil {
 		s.hub.End(sessionID)
 		return sessionID, err
 	}

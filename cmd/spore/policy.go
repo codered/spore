@@ -24,8 +24,12 @@ func cmdPolicyCheck(cfg *config.Config, profile, toolName, argsJSON string) erro
 	res := engine.Evaluate(policy.Profile(profile), policy.Call{Tool: toolName, Args: json.RawMessage(argsJSON)})
 	fmt.Printf("%s\t%s\t%s\n", res.Decision, toolName, res.Rule)
 	if res.Decision == policy.DecisionAsk {
-		fmt.Printf("  \"always this pattern\" would write: %s\n", policy.PatternFor(
-			policy.Call{Tool: toolName, Args: json.RawMessage(argsJSON)}))
+		pattern, ok := policy.PatternFor(policy.Call{Tool: toolName, Args: json.RawMessage(argsJSON)})
+		if ok {
+			fmt.Printf("  \"always this pattern\" would write: %s\n", pattern)
+		} else {
+			fmt.Printf("  \"always this pattern\" is not offered (no pattern to generalise from)\n")
+		}
 	}
 	return nil
 }

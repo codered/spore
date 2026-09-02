@@ -31,6 +31,7 @@ type Config struct {
 	Web       WebConfig                 `toml:"web"`
 	Shell     ShellConfig               `toml:"shell"`
 	Daemon    DaemonConfig              `toml:"daemon"`
+	Bridge    BridgeConfig              `toml:"bridge"`
 }
 
 // ProviderConfig describes one upstream. Kind selects the adapter
@@ -125,6 +126,69 @@ type DaemonConfig struct {
 	Addr string `toml:"addr"`
 	// TickSeconds is how often the scheduler looks for due jobs.
 	TickSeconds int `toml:"tick_seconds"`
+}
+
+// BridgeConfig groups the chat bridges. Only Discord exists; Telegram is the
+// same interface implemented again and is deferred.
+type BridgeConfig struct {
+	Discord DiscordConfig `toml:"discord"`
+}
+
+// DiscordConfig is both the connection and the trust boundary. GuildID,
+// ChannelIDs and UserIDs are an allowlist, not a filter: the bridge is the
+// first surface someone other than the local human can reach, so anything
+// not named here is dropped. UserIDs applies to guild messages and DMs
+// alike — the two surfaces must not be able to drift apart.
+type DiscordConfig struct {
+	Enabled bool   `toml:"enabled"`
+	Token   string `toml:"token"`
+	// GuildID is the one server the bot serves. Membership of a private
+	// guild is the outer boundary; the user allowlist is the inner one.
+	GuildID string `toml:"guild_id"`
+	// ChannelIDs are the channels a session may be started from. A thread's
+	// parent channel is what is matched, so threads need no entry.
+	ChannelIDs []string `toml:"channel_ids"`
+	UserIDs    []string `toml:"user_ids"`
+	// AllowDMs opens the direct-message surface to the same user allowlist.
+	AllowDMs bool `toml:"allow_dms"`
+}
+
+// validateDiscord fails a half-filled bridge block at load. Every message
+// this returns names the exact key to fix, because the failure mode it
+// prevents — a bridge that starts and then silently ignores you — is
+// otherwise very hard to diagnose from the outside.
+func validateDiscord(d DiscordConfig) error {
+	if !d.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(d.Token) == "" {
+		return fmt.Errorf("bridge.discord.token is required when the bridge is enabled")
+	}
+	if len(d.UserIDs) == 0 {
+		return fmt.Errorf("bridge.discord.user_ids must name at least one Discord user ID; an empty allowlist admits nobody")
+	}
+	// An empty or whitespace-only entry would become a live allowlist key,
+	// silently admitting any message with an empty UserID. Fail at load
+	// rather than silently widening the trust boundary.
+	for i, u := range d.UserIDs {
+		if strings.TrimSpace(u) == "" {
+			return fmt.Errorf("bridge.discord.user_ids[%d] is empty; allowlist entries must not be blank", i)
+		}
+	}
+	if strings.TrimSpace(d.GuildID) == "" && !d.AllowDMs {
+		return fmt.Errorf("bridge.discord needs a surface: set bridge.discord.guild_id, or bridge.discord.allow_dms = true, or both")
+	}
+	if d.GuildID != "" && len(d.ChannelIDs) == 0 {
+		return fmt.Errorf("bridge.discord.channel_ids must name at least one channel when guild_id is set")
+	}
+	// Same check for channels: an empty entry would silently admit any thread
+	// or channel with a zero-value ID.
+	for i, c := range d.ChannelIDs {
+		if strings.TrimSpace(c) == "" {
+			return fmt.Errorf("bridge.discord.channel_ids[%d] is empty; allowlist entries must not be blank", i)
+		}
+	}
+	return nil
 }
 
 // baselineDeny is always in force. A user's deny rules extend it; nothing
@@ -255,6 +319,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Daemon.TickSeconds == 0 {
 		cfg.Daemon.TickSeconds = d.Daemon.TickSeconds
+	}
+	if err := validateDiscord(cfg.Bridge.Discord); err != nil {
+		return nil, err
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err

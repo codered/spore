@@ -177,10 +177,12 @@ func (s *Server) pendingApprovalEvents(ctx context.Context, sessionID string) []
 	}
 	out := make([]WireEvent, 0, len(pending))
 	for _, p := range pending {
+		// Ignore the ok flag: an empty pattern is exactly what the client
+		// needs to see to hide the option.
+		pattern, _ := policy.PatternFor(policy.Call{Tool: p.Tool, Args: p.ArgsJSON})
 		out = append(out, WireEvent{
 			Type: WireApproval, PendingID: p.ID, Tool: p.Tool,
-			Args: string(p.ArgsJSON), Rule: p.Rule,
-			Pattern: policy.PatternFor(policy.Call{Tool: p.Tool, Args: p.ArgsJSON}),
+			Args: string(p.ArgsJSON), Rule: p.Rule, Pattern: pattern,
 		})
 	}
 	return out

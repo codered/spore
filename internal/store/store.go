@@ -207,6 +207,17 @@ func (s *Store) Summary(ctx context.Context, sessionID string) (string, int, err
 	return text, through, nil
 }
 
+// Approval is an audit record of a user's approval decision.
+type Approval struct {
+	ID        int64
+	SessionID string
+	Tool      string
+	Args      []byte
+	Decision  string
+	Scope     string
+	CreatedAt time.Time
+}
+
 // PendingCall is a tool call whose turn is suspended awaiting approval.
 type PendingCall struct {
 	ID        int64
@@ -253,6 +264,27 @@ func (s *Store) PendingCalls(ctx context.Context, sessionID string) ([]PendingCa
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// PendingCallByID reads one suspension without claiming it. Resolve needs the
+// arguments before it claims, because the claim writes the audit row and the
+// scope on that row must already be correct.
+func (s *Store) PendingCallByID(ctx context.Context, id int64) (PendingCall, bool, error) {
+	var p PendingCall
+	var args, created string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, session_id, tool_use_id, tool, args, profile, rule, created_at
+		 FROM pending_calls WHERE id = ?`, id).
+		Scan(&p.ID, &p.SessionID, &p.ToolUseID, &p.Tool, &args, &p.Profile, &p.Rule, &created)
+	if err == sql.ErrNoRows {
+		return PendingCall{}, false, nil
+	}
+	if err != nil {
+		return PendingCall{}, false, fmt.Errorf("read pending call %d: %w", id, err)
+	}
+	p.ArgsJSON = []byte(args)
+	p.CreatedAt, _ = time.Parse(timeFormat, created)
+	return p, true, nil
 }
 
 // ResolvePendingCall closes a suspension with the decision that ended it:
@@ -333,6 +365,29 @@ func (s *Store) RecordApproval(ctx context.Context, sessionID, tool string, args
 	return nil
 }
 
+// Approvals returns all approval audit records for a session, oldest first.
+func (s *Store) Approvals(ctx context.Context, sessionID string) ([]Approval, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, session_id, tool, args, decision, scope, created_at
+		 FROM approvals WHERE session_id = ? ORDER BY id`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("read approvals: %w", err)
+	}
+	defer rows.Close()
+	var out []Approval
+	for rows.Next() {
+		var a Approval
+		var args, created string
+		if err := rows.Scan(&a.ID, &a.SessionID, &a.Tool, &args, &a.Decision, &a.Scope, &created); err != nil {
+			return nil, err
+		}
+		a.Args = []byte(args)
+		a.CreatedAt, _ = time.Parse(timeFormat, created)
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 // SessionDecision returns the most recent session-scoped answer for a tool in
 // this session, if any. "Always this session" is remembered per tool, not per
 // argument: the user answered about a capability, not about one path.
@@ -349,4 +404,61 @@ func (s *Store) SessionDecision(ctx context.Context, sessionID, tool string) (st
 		return "", false, fmt.Errorf("read session decision: %w", err)
 	}
 	return decision, true, nil
+}
+
+// BindExternal points a bridge's own identifier at a session. Rebinding an
+// identifier is legal and replaces the old target: the DM surface rebinds its
+// rolling session every time /new is used.
+func (s *Store) BindExternal(ctx context.Context, bridge, externalID, sessionID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO bridge_bindings (bridge, external_id, session_id, created_at)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(bridge, external_id) DO UPDATE SET session_id = excluded.session_id`,
+		bridge, externalID, sessionID, time.Now().UTC().Format(timeFormat))
+	if err != nil {
+		return fmt.Errorf("bind %s/%s: %w", bridge, externalID, err)
+	}
+	return nil
+}
+
+// SessionForExternal resolves a bridge identifier to its session.
+func (s *Store) SessionForExternal(ctx context.Context, bridge, externalID string) (string, bool, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT session_id FROM bridge_bindings WHERE bridge = ? AND external_id = ?`,
+		bridge, externalID).Scan(&id)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("resolve %s/%s: %w", bridge, externalID, err)
+	}
+	return id, true, nil
+}
+
+// MarkSeen records an inbound event id and reports whether this is the first
+// time it has been presented. The insert is the test: making the claim and
+// checking it one statement means two concurrent deliveries cannot both win.
+func (s *Store) MarkSeen(ctx context.Context, bridge, eventID string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO bridge_seen (bridge, event_id, created_at) VALUES (?, ?, ?)`,
+		bridge, eventID, time.Now().UTC().Format(timeFormat))
+	if err != nil {
+		return false, fmt.Errorf("mark seen %s/%s: %w", bridge, eventID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+// PruneSeen drops dedupe rows older than the window. The gateway only
+// redelivers recent events, so this table is a short memory, not a log.
+func (s *Store) PruneSeen(ctx context.Context, olderThan time.Duration) error {
+	cutoff := time.Now().UTC().Add(-olderThan).Format(timeFormat)
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM bridge_seen WHERE created_at <= ?`, cutoff); err != nil {
+		return fmt.Errorf("prune seen: %w", err)
+	}
+	return nil
 }
