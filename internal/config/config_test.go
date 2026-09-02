@@ -415,13 +415,11 @@ func TestDefaultDeniesMCPForRemote(t *testing.T) {
 	}
 }
 
-func TestOperatorCanOverrideTheRemoteMCPDeny(t *testing.T) {
-	path := writeConfig(t, "[policy.profile.remote]\ndeny = []\nallow = [\"fs_read\"]\n")
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if slices.Contains(cfg.Policy.Profiles["remote"].Deny, "mcp__*") {
-		t.Error("an explicit empty deny for the remote profile did not override the default")
-	}
-}
+// TestOperatorCanOverrideTheRemoteMCPDeny lives in mcp_policy_test.go
+// (package config_test) rather than here: asserting the override at the
+// config.Policy.Profiles level is not load-bearing, because TOML decode
+// builds Profiles["remote"] fresh from the file regardless of what
+// Default() put there — the assertion that matters is what an
+// internal/policy.Engine built from the result actually decides, and this
+// package cannot import internal/policy without an import cycle (policy
+// imports config).

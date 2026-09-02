@@ -2,6 +2,8 @@ package policy
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -140,6 +142,37 @@ func TestProfileOverridesAllowButNotDeny(t *testing.T) {
 		if got := e.Evaluate(p, Call{Tool: "fs_write", Args: dotenv}); got.Decision != DecisionDeny {
 			t.Errorf("profile %q .env write = %q, want deny", p, got.Decision)
 		}
+	}
+}
+
+// TestDenyOnlyProfileInheritsBaseAllowAndAsk pins the regression this fixes:
+// config.Default()'s "remote" profile declares only Deny (mcp__*), and
+// before NewEngine treated that as "inherit the base allow/ask" it made
+// Evaluate silently fall through to an empty allow/ask set for every
+// Discord call, turning fs_read (allowed by the base ruleset) into an ask.
+// This loads through config.Load on a real file rather than building
+// config.PolicyConfig by hand or calling config.Default() directly, because
+// Load is what applies config.Default() and appends baselineDeny — a policy
+// test that skips Load exercises a different, weaker policy than what a
+// real config.Load call ever produces.
+func TestDenyOnlyProfileInheritsBaseAllowAndAsk(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spore.toml")
+	if err := os.WriteFile(path, []byte("default_model = \"anthropic/claude-opus-5\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	e, err := NewEngine(cfg.Policy)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	if got := e.Evaluate(ProfileRemote, Call{Tool: "fs_read", Args: json.RawMessage(`{}`)}); got.Decision != DecisionAllow {
+		t.Errorf("remote fs_read = %q, want allow — a deny-only profile must inherit the base allow/ask, not lose it", got.Decision)
+	}
+	if got := e.Evaluate(ProfileRemote, Call{Tool: "mcp__whatever", Args: json.RawMessage(`{}`)}); got.Decision != DecisionDeny {
+		t.Errorf("remote mcp__whatever = %q, want deny — the profile's own deny rule must still apply", got.Decision)
 	}
 }
 
