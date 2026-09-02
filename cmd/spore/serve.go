@@ -86,6 +86,14 @@ func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []s
 	if err != nil {
 		return err
 	}
+	// Close is the guarantee, not the graceful path: Supervise's wait() below
+	// is what normally tears the host down, but every return between here and
+	// that join (buildBridge failing, a panic recovered upstream, and so on)
+	// must not leave a dialled MCP child (an npx process, say) running after
+	// this function returns. Close is idempotent — markDown no-ops without a
+	// session and killGroup guards a nil pid — so the deferred call is free
+	// on the graceful path where wait() has already closed everything.
+	defer mcpHost.Close()
 
 	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -99,8 +107,6 @@ func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []s
 		if !detach {
 			fmt.Printf("%d mcp server(s) configured\n", len(cfg.MCP.Servers))
 		}
-	} else {
-		defer mcpHost.Close()
 	}
 
 	sched := scheduler.New(st, srv, nil)
