@@ -67,11 +67,24 @@ func NewEngine(cfg config.PolicyConfig) (*Engine, error) {
 		// Deny is global: a profile's own deny rules extend the base set,
 		// they never replace it.
 		deny := append(append([]string{}, cfg.Deny...), p.Deny...)
+		allow, ask := p.Allow, p.Ask
+		// A profile that names neither allow nor ask is not asking for an
+		// empty ruleset — it inherits the base's, the same way its deny list
+		// is additive rather than a replacement. A profile that names either
+		// one keeps today's full-replacement semantics: once an operator
+		// writes any allow or ask rule for a profile, that list IS the
+		// intended ruleset and base rules are not silently mixed in. The
+		// alternative — copying the base allow/ask lists into the default
+		// "remote" profile in config.Default() — would duplicate two lists
+		// that will drift apart the moment one of them changes.
+		if len(allow) == 0 && len(ask) == 0 {
+			allow, ask = cfg.Allow, cfg.Ask
+		}
 		// Learned allow/ask rules are earned in one trust context and do not
 		// carry into another: an "always allow" answered at the terminal must
 		// not silently extend to the Telegram bridge. Learned DENY is global,
 		// because deny is absolute and only ever additive.
-		rs, err := buildRuleset(def, p.Allow, p.Ask, deny, config.LearnedPolicy{Deny: cfg.Learned.Deny})
+		rs, err := buildRuleset(def, allow, ask, deny, config.LearnedPolicy{Deny: cfg.Learned.Deny})
 		if err != nil {
 			return nil, fmt.Errorf("policy.profile.%s: %w", name, err)
 		}
