@@ -56,6 +56,45 @@ func TestChildEnvGivesOnlyWhatWasNamed(t *testing.T) {
 	}
 }
 
+func TestChildEnvDeduplicatesAndExplicitWins(t *testing.T) {
+	t.Setenv("PATH", "/host/bin:/host/sbin")
+	t.Setenv("SHARED_VAR", "inherited-value")
+
+	got := childEnv(config.MCPServer{
+		Env: map[string]string{
+			"PATH":       "/explicit/bin",
+			"SHARED_VAR": "explicit-value",
+		},
+		Inherit: []string{"SHARED_VAR"},
+	})
+
+	// Each key must appear exactly once, not duplicated.
+	pathCount := 0
+	sharedCount := 0
+	for _, kv := range got {
+		if strings.HasPrefix(kv, "PATH=") {
+			pathCount++
+		}
+		if strings.HasPrefix(kv, "SHARED_VAR=") {
+			sharedCount++
+		}
+	}
+	if pathCount != 1 {
+		t.Errorf("PATH appears %d times in %v, want exactly 1", pathCount, got)
+	}
+	if sharedCount != 1 {
+		t.Errorf("SHARED_VAR appears %d times in %v, want exactly 1", sharedCount, got)
+	}
+
+	// Explicit values must win over inherited values.
+	if !slices.Contains(got, "PATH=/explicit/bin") {
+		t.Errorf("childEnv = %v, want PATH=/explicit/bin (explicit override)", got)
+	}
+	if !slices.Contains(got, "SHARED_VAR=explicit-value") {
+		t.Errorf("childEnv = %v, want SHARED_VAR=explicit-value (explicit override)", got)
+	}
+}
+
 // The real subprocess test: start the fixture over stdio and ask it what it
 // actually got. This is the one that proves the allowlist and the pinned
 // working directory hold end to end rather than only in childEnv's unit test.

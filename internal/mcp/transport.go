@@ -13,33 +13,51 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"time"
 
 	"github.com/codered/spore/internal/config"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// childEnv builds a stdio server's environment from scratch: the explicit
-// env map, the names the operator listed in inherit, and PATH.
+// childEnv builds a stdio server's environment from scratch, with layers in
+// precedence order: PATH (always), inherited names (from Inherit), explicit values
+// (from Env). Explicit values overwrite inherited ones with the same key.
 //
-// PATH is always passed because without it a command like "npx" cannot
-// resolve, and it names no secrets. Everything else in spore's environment —
+// A map deduplicates the environment before serializing to []string, preventing
+// duplicate entries where an operator might override PATH or inherit a name they
+// also set explicitly. The returned slice is sorted by key for determinism.
+//
+// PATH is always passed because without it a command like "npx" cannot resolve,
+// and it names no secrets. Everything else in spore's environment —
 // ANTHROPIC_API_KEY and every other provider credential — is invisible to the
 // child unless the operator names it.
 func childEnv(s config.MCPServer) []string {
-	out := make([]string, 0, len(s.Env)+len(s.Inherit)+1)
+	env := make(map[string]string)
+	// PATH first: give it to the child unless Env overrides it.
 	if p, ok := os.LookupEnv("PATH"); ok {
-		out = append(out, "PATH="+p)
+		env["PATH"] = p
 	}
+	// Inherited values second.
 	for _, name := range s.Inherit {
 		if v, ok := os.LookupEnv(name); ok {
-			out = append(out, name+"="+v)
+			env[name] = v
 		}
 	}
-	// Explicit values last so they win over an inherited name of the same
-	// spelling.
+	// Explicit values last: these overwrite anything already in the map,
+	// so the operator can override PATH or any inherited name.
 	for k, v := range s.Env {
-		out = append(out, k+"="+v)
+		env[k] = v
+	}
+	// Serialize to a sorted slice for deterministic output and testability.
+	out := make([]string, 0, len(env))
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out = append(out, k+"="+env[k])
 	}
 	return out
 }
