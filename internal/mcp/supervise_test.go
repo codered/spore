@@ -3,20 +3,60 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/codered/spore/internal/config"
 )
 
+// redialDelay is how long slowRedialCommand's wrapper sleeps on every launch
+// after the first. It must comfortably outlast waitFor's poll interval so
+// the "down" state between markDown and the redial's swap is guaranteed
+// observable rather than merely likely to be sampled.
+const redialDelay = 200 * time.Millisecond
+
+// slowRedialCommand wraps bin in a shell script that execs it immediately on
+// its first invocation, then sleeps redialDelay before exec'ing it on every
+// later invocation (tracked with a marker file in a fresh temp dir).
+//
+// superviseOne redials a dead server through the same success path as its
+// very first connect: connect() either fails (and only then does backoff
+// apply) or it succeeds outright, and here it always succeeds, so
+// h.backoffMin/backoffMax never gate this redial — a local respawn of an
+// already-working binary is not a failure. Widening the observable
+// down-window therefore has to happen in the process being spawned, not in
+// the supervisor's retry timer: this wrapper is what turns "the window
+// happened to be wider than one poll tick" into "the window is provably at
+// least redialDelay wide," independent of how fast this machine can fork,
+// exec and complete an MCP handshake.
+func slowRedialCommand(t *testing.T, bin string) (command string, args []string) {
+	t.Helper()
+	marker := filepath.Join(t.TempDir(), "started")
+	// $0 is the conventional placeholder for a -c script's own name, $1 is
+	// the marker file, $2 is the real binary, $3 is the delay in seconds.
+	// Passing paths as positional parameters (rather than interpolating them
+	// into the script text) sidesteps shell-quoting concerns entirely.
+	script := `if [ -e "$1" ]; then sleep "$3"; else touch "$1"; fi; exec "$2"`
+	return "/bin/sh", []string{"-c", script, "sh", marker, bin, fmt.Sprintf("%f", redialDelay.Seconds())}
+}
+
 // A server that dies is redialled and its tools come back. This is the whole
 // point of a live registry: a flapping server heals without restarting spore.
 func TestSupervisorRedialsADeadServer(t *testing.T) {
 	bin := buildProbe(t)
+	cmd, args := slowRedialCommand(t, bin)
 	h := New(config.MCPConfig{Servers: []config.MCPServer{
-		{Name: "probe", Transport: "stdio", Command: bin},
+		{Name: "probe", Transport: "stdio", Command: cmd, Args: args},
 	}}, t.TempDir(), slog.New(slog.DiscardHandler))
+	// This no longer has to be small for the down-window's sake — the
+	// wrapper's redialDelay is what makes that window wide now — but it is
+	// left small because backoff only governs a genuine connect failure
+	// (e.g. the wrapper script itself misbehaving), and a real failure here
+	// should still be retried quickly rather than papered over by a slow
+	// backoff during a test.
 	h.backoffMin, h.backoffMax = 10*time.Millisecond, 50*time.Millisecond
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -86,12 +126,10 @@ func waitFor(t *testing.T, limit time.Duration, cond func() bool, msg string) {
 		if cond() {
 			return
 		}
-		// A local process redial (spawn + MCP handshake + one tools/list
-		// call) can complete in single-digit milliseconds on this hardware,
-		// so the "down" state between markDown and the redial's swap can be
-		// narrower than a 20ms tick: a coarser poll would reliably step over
-		// it and time out even though the supervisor behaved correctly.
-		time.Sleep(time.Millisecond)
+		// An ordinary poll tick. TestSupervisorRedialsADeadServer no longer
+		// depends on out-sampling a race here: slowRedialCommand makes its
+		// down-window provably wider than this on its own.
+		time.Sleep(15 * time.Millisecond)
 	}
 	t.Fatal(msg)
 }
