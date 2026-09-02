@@ -3,8 +3,10 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func write(t *testing.T, body string) string {
@@ -14,6 +16,15 @@ func write(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// writeConfig is write plus the default_model every config needs to pass
+// Validate; the MCP tests below care about MCP validation, not this baseline
+// requirement, so it is supplied for them the same way loadTestConfig
+// supplies it.
+func writeConfig(t *testing.T, body string) string {
+	t.Helper()
+	return write(t, "default_model = \"anthropic/claude-opus-5\"\n"+body)
 }
 
 func loadTestConfig(t *testing.T, toml string) *Config {
@@ -259,5 +270,158 @@ func TestDisabledDiscordBridgeSkipsValidation(t *testing.T) {
 	// A block left behind with enabled = false must not block startup.
 	if _, err := loadTestConfigErr(t, "[bridge.discord]\nenabled = false\n"); err != nil {
 		t.Fatalf("a disabled bridge should not be validated: %v", err)
+	}
+}
+
+func TestMCPServerValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{
+			name: "valid stdio server",
+			body: `
+[[mcp.server]]
+name = "notion"
+transport = "stdio"
+command = "npx"
+args = ["-y", "server"]
+env = { NOTION_TOKEN = "t" }
+inherit = ["HOME"]
+`,
+		},
+		{
+			name: "valid http server",
+			body: `
+[[mcp.server]]
+name = "remote-1"
+transport = "http"
+url = "https://example.com/mcp"
+`,
+		},
+		{
+			name:    "missing name",
+			body:    "[[mcp.server]]\ntransport = \"stdio\"\ncommand = \"x\"\n",
+			wantErr: "name",
+		},
+		{
+			name:    "name with illegal characters",
+			body:    "[[mcp.server]]\nname = \"No/tion\"\ntransport = \"stdio\"\ncommand = \"x\"\n",
+			wantErr: "name",
+		},
+		{
+			name:    "duplicate names",
+			body:    "[[mcp.server]]\nname = \"a\"\ntransport = \"stdio\"\ncommand = \"x\"\n[[mcp.server]]\nname = \"a\"\ntransport = \"stdio\"\ncommand = \"y\"\n",
+			wantErr: "duplicate",
+		},
+		{
+			name:    "unknown transport",
+			body:    "[[mcp.server]]\nname = \"a\"\ntransport = \"carrier-pigeon\"\n",
+			wantErr: "transport",
+		},
+		{
+			name:    "stdio without command",
+			body:    "[[mcp.server]]\nname = \"a\"\ntransport = \"stdio\"\n",
+			wantErr: "command",
+		},
+		{
+			name:    "stdio with url",
+			body:    "[[mcp.server]]\nname = \"a\"\ntransport = \"stdio\"\ncommand = \"x\"\nurl = \"https://example.com\"\n",
+			wantErr: "url",
+		},
+		{
+			name:    "http without url",
+			body:    "[[mcp.server]]\nname = \"a\"\ntransport = \"http\"\n",
+			wantErr: "url",
+		},
+		{
+			name:    "http with command",
+			body:    "[[mcp.server]]\nname = \"a\"\ntransport = \"http\"\nurl = \"https://example.com\"\ncommand = \"x\"\n",
+			wantErr: "command",
+		},
+		{
+			name:    "http url must be absolute",
+			body:    "[[mcp.server]]\nname = \"a\"\ntransport = \"http\"\nurl = \"/mcp\"\n",
+			wantErr: "url",
+		},
+		{
+			name:    "unparsable timeout",
+			body:    "[[mcp.server]]\nname = \"a\"\ntransport = \"stdio\"\ncommand = \"x\"\ntimeout = \"soon\"\n",
+			wantErr: "timeout",
+		},
+		{
+			name:    "inherit name is not an environment variable name",
+			body:    "[[mcp.server]]\nname = \"a\"\ntransport = \"stdio\"\ncommand = \"x\"\ninherit = [\"not a name\"]\n",
+			wantErr: "inherit",
+		},
+		{
+			name:    "empty env key",
+			body:    "[[mcp.server]]\nname = \"a\"\ntransport = \"stdio\"\ncommand = \"x\"\nenv = { \"\" = \"v\" }\n",
+			wantErr: "env",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfig(t, tc.body)
+			_, err := Load(path)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Load: %v, want no error", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Load error = %v, want one mentioning %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestMCPTimeoutDefaults(t *testing.T) {
+	path := writeConfig(t, "[[mcp.server]]\nname = \"a\"\ntransport = \"stdio\"\ncommand = \"x\"\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.MCP.Servers[0].CallTimeout(); got != 60*time.Second {
+		t.Errorf("CallTimeout() = %v, want 60s", got)
+	}
+
+	path = writeConfig(t, "[[mcp.server]]\nname = \"a\"\ntransport = \"stdio\"\ncommand = \"x\"\ntimeout = \"5s\"\n")
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.MCP.Servers[0].CallTimeout(); got != 5*time.Second {
+		t.Errorf("CallTimeout() = %v, want 5s", got)
+	}
+}
+
+// The remote trust profile must not reach an MCP server by default: a Discord
+// user is not the operator who declared it.
+func TestDefaultDeniesMCPForRemote(t *testing.T) {
+	path := writeConfig(t, "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	remote, ok := cfg.Policy.Profiles["remote"]
+	if !ok {
+		t.Fatal("no remote profile in the default policy")
+	}
+	if !slices.Contains(remote.Deny, "mcp__*") {
+		t.Errorf("remote profile deny = %v, want it to contain mcp__*", remote.Deny)
+	}
+}
+
+func TestOperatorCanOverrideTheRemoteMCPDeny(t *testing.T) {
+	path := writeConfig(t, "[policy.profile.remote]\ndeny = []\nallow = [\"fs_read\"]\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if slices.Contains(cfg.Policy.Profiles["remote"].Deny, "mcp__*") {
+		t.Error("an explicit empty deny for the remote profile did not override the default")
 	}
 }

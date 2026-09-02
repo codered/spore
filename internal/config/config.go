@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -32,6 +33,7 @@ type Config struct {
 	Shell     ShellConfig               `toml:"shell"`
 	Daemon    DaemonConfig              `toml:"daemon"`
 	Bridge    BridgeConfig              `toml:"bridge"`
+	MCP       MCPConfig                 `toml:"mcp"`
 }
 
 // ProviderConfig describes one upstream. Kind selects the adapter
@@ -153,6 +155,50 @@ type DiscordConfig struct {
 	AllowDMs bool `toml:"allow_dms"`
 }
 
+// MCPConfig declares the MCP servers spore hosts. Declaring a server here is
+// the authorization to run it — the same trust as declaring a provider API
+// key — so the file is the trust boundary and there is no sandbox. What the
+// child does not get is anything it was not given: see MCPServer.Env and
+// MCPServer.Inherit.
+type MCPConfig struct {
+	Servers []MCPServer `toml:"server"`
+}
+
+// MCPServer is one hosted server. Transport is "stdio" (Command/Args) or
+// "http" (URL); the two sets of fields are mutually exclusive.
+type MCPServer struct {
+	// Name is the namespace its tools are registered under, as
+	// mcp__<name>__<tool>.
+	Name      string   `toml:"name"`
+	Transport string   `toml:"transport"`
+	Command   string   `toml:"command"`
+	Args      []string `toml:"args"`
+	// Env is passed to the child verbatim. The child's environment is built
+	// from scratch, so nothing in spore's own environment — provider API keys
+	// above all — reaches it unless it is named in Inherit.
+	Env map[string]string `toml:"env"`
+	// Inherit names environment variables copied from spore's environment.
+	Inherit []string `toml:"inherit"`
+	URL     string   `toml:"url"`
+	// Timeout is a Go duration bounding one tool call. Defaults to 60s.
+	Timeout string `toml:"timeout"`
+}
+
+const defaultMCPCallTimeout = 60 * time.Second
+
+// CallTimeout is the parsed Timeout, or the default. Load has already
+// rejected an unparsable value, so this cannot fail at call time.
+func (s MCPServer) CallTimeout() time.Duration {
+	if s.Timeout == "" {
+		return defaultMCPCallTimeout
+	}
+	d, err := time.ParseDuration(s.Timeout)
+	if err != nil || d <= 0 {
+		return defaultMCPCallTimeout
+	}
+	return d
+}
+
 // validateDiscord fails a half-filled bridge block at load. Every message
 // this returns names the exact key to fix, because the failure mode it
 // prevents — a bridge that starts and then silently ignores you — is
@@ -191,6 +237,71 @@ func validateDiscord(d DiscordConfig) error {
 	return nil
 }
 
+var (
+	mcpNameRE = regexp.MustCompile(`\A[a-z0-9_-]{1,24}\z`)
+	envNameRE = regexp.MustCompile(`\A[A-Za-z_][A-Za-z0-9_]*\z`)
+)
+
+// validateMCP rejects a malformed server declaration at load, so a typo is a
+// startup error rather than a server that silently never appears.
+func validateMCP(c MCPConfig) error {
+	seen := map[string]bool{}
+	for i, s := range c.Servers {
+		where := fmt.Sprintf("mcp.server[%d]", i)
+		if !mcpNameRE.MatchString(s.Name) {
+			return fmt.Errorf("%s: name %q must match %s", where, s.Name, mcpNameRE)
+		}
+		if seen[s.Name] {
+			return fmt.Errorf("%s: duplicate server name %q", where, s.Name)
+		}
+		seen[s.Name] = true
+
+		switch s.Transport {
+		case "stdio":
+			if s.Command == "" {
+				return fmt.Errorf("%s: transport stdio needs a command", where)
+			}
+			if s.URL != "" {
+				return fmt.Errorf("%s: transport stdio takes no url", where)
+			}
+		case "http":
+			if s.URL == "" {
+				return fmt.Errorf("%s: transport http needs a url", where)
+			}
+			u, err := url.Parse(s.URL)
+			if err != nil || !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") {
+				return fmt.Errorf("%s: url %q must be an absolute http or https URL", where, s.URL)
+			}
+			if s.Command != "" || len(s.Args) > 0 || len(s.Env) > 0 || len(s.Inherit) > 0 {
+				return fmt.Errorf("%s: transport http takes no command, args, env or inherit", where)
+			}
+		default:
+			return fmt.Errorf("%s: unknown transport %q (want stdio or http)", where, s.Transport)
+		}
+
+		if s.Timeout != "" {
+			d, err := time.ParseDuration(s.Timeout)
+			if err != nil {
+				return fmt.Errorf("%s: timeout %q: %w", where, s.Timeout, err)
+			}
+			if d <= 0 {
+				return fmt.Errorf("%s: timeout %q must be positive", where, s.Timeout)
+			}
+		}
+		for _, name := range s.Inherit {
+			if !envNameRE.MatchString(name) {
+				return fmt.Errorf("%s: inherit %q is not an environment variable name", where, name)
+			}
+		}
+		for k := range s.Env {
+			if !envNameRE.MatchString(k) {
+				return fmt.Errorf("%s: env key %q is not an environment variable name", where, k)
+			}
+		}
+	}
+	return nil
+}
+
 // baselineDeny is always in force. A user's deny rules extend it; nothing
 // removes it. These are the categories no approval prompt should ever be
 // able to talk past.
@@ -221,7 +332,15 @@ func Default() *Config {
 			MaxOutput:       30_000,
 			Allow:           []string{"fs_read", "fs_list", "fs_glob", "fs_grep", "web_*", "schedule_list"},
 			Ask:             []string{"fs_write", "fs_edit", "shell_exec", "schedule_create", "schedule_cancel", "mcp__*"},
-			Profiles:        map[string]ProfilePolicy{},
+			// The remote profile denies MCP outright: a Discord user is not
+			// the operator who declared the server, and an MCP server is
+			// reached through credentials that operator supplied. This is an
+			// ordinary config line an operator may edit — it is deliberately
+			// NOT part of baselineDeny, which is reserved for the rules no
+			// approval may ever talk past.
+			Profiles: map[string]ProfilePolicy{
+				"remote": {Deny: []string{"mcp__*"}},
+			},
 		},
 		Web:    WebConfig{SearchProvider: "brave", UserAgent: "spore/0.1"},
 		Shell:  ShellConfig{TimeoutSeconds: 120},
@@ -321,6 +440,9 @@ func Load(path string) (*Config, error) {
 		cfg.Daemon.TickSeconds = d.Daemon.TickSeconds
 	}
 	if err := validateDiscord(cfg.Bridge.Discord); err != nil {
+		return nil, err
+	}
+	if err := validateMCP(cfg.MCP); err != nil {
 		return nil, err
 	}
 	if err := cfg.Validate(); err != nil {
