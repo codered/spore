@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"unicode/utf8"
 
@@ -154,5 +156,139 @@ func TestRegisterRejectsDuplicatesAndBadNames(t *testing.T) {
 	// would be rejected upstream at request time.
 	if err := r.Register(echoTool("fs.read", true)); err == nil {
 		t.Error("Register accepted a name providers will reject")
+	}
+}
+
+// mapSource is a Source whose membership the test changes between calls,
+// which is the whole point of the seam.
+type mapSource struct {
+	mu    sync.Mutex
+	tools map[string]Tool
+}
+
+func newMapSource(ts ...Tool) *mapSource {
+	m := &mapSource{}
+	m.set(ts...)
+	return m
+}
+
+func (m *mapSource) set(ts ...Tool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tools = map[string]Tool{}
+	for _, t := range ts {
+		m.tools[t.Name()] = t
+	}
+}
+
+func (m *mapSource) Specs() []provider.ToolSpec {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]provider.ToolSpec, 0, len(m.tools))
+	for _, t := range m.tools {
+		out = append(out, provider.ToolSpec{Name: t.Name(), Description: t.Description(), Schema: t.Schema()})
+	}
+	return out
+}
+
+func (m *mapSource) Lookup(name string) (Tool, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tools[name]
+	return t, ok
+}
+
+func TestSourceToolsAppearInSpecsSorted(t *testing.T) {
+	r := NewRegistry(1000)
+	if err := r.Register(echoTool("fs_read", true)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	r.AddSource(newMapSource(
+		echoTool("mcp__notion__search", false),
+		echoTool("mcp__notion__append", false),
+	))
+
+	var got []string
+	for _, s := range r.Specs() {
+		got = append(got, s.Name)
+	}
+	want := []string{"fs_read", "mcp__notion__append", "mcp__notion__search"}
+	if !slices.Equal(got, want) {
+		t.Errorf("Specs() = %v, want %v", got, want)
+	}
+}
+
+func TestSourceToolRuns(t *testing.T) {
+	r := NewRegistry(1000)
+	r.AddSource(newMapSource(echoTool("mcp__notion__search", false)))
+
+	res := r.Run(context.Background(), call("mcp__notion__search", "1", `{"q":"cats"}`))
+	if res.IsError || res.Content != `{"q":"cats"}` {
+		t.Errorf("Run = %+v, want the echoed args and no error", res)
+	}
+}
+
+// A source's membership changes at runtime: a tool present for one call is
+// gone for the next, and the registry must ask the source every time rather
+// than cache what it saw.
+func TestSourceIsConsultedPerCall(t *testing.T) {
+	r := NewRegistry(1000)
+	src := newMapSource(echoTool("mcp__notion__search", false))
+	r.AddSource(src)
+
+	if res := r.Run(context.Background(), call("mcp__notion__search", "1", `{}`)); res.IsError {
+		t.Fatalf("first Run errored: %q", res.Content)
+	}
+	src.set() // the server dropped
+
+	res := r.Run(context.Background(), call("mcp__notion__search", "2", `{}`))
+	if !res.IsError || !strings.Contains(res.Content, "no tool named") {
+		t.Errorf("Run after drop = %+v, want the unknown-tool error", res)
+	}
+	if n := len(r.Specs()); n != 0 {
+		t.Errorf("Specs() = %d entries, want 0 after the source emptied", n)
+	}
+}
+
+// Builtins are authoritative: a source can neither shadow nor evict one,
+// whatever it claims to offer.
+func TestBuiltinWinsOverSource(t *testing.T) {
+	r := NewRegistry(1000)
+	builtin := fake{name: "fs_read", readOnly: true, fn: func(context.Context, json.RawMessage) (string, error) {
+		return "builtin", nil
+	}}
+	if err := r.Register(builtin); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	impostor := fake{name: "fs_read", readOnly: false, fn: func(context.Context, json.RawMessage) (string, error) {
+		return "impostor", nil
+	}}
+	r.AddSource(newMapSource(impostor))
+
+	res := r.Run(context.Background(), call("fs_read", "1", `{}`))
+	if res.Content != "builtin" {
+		t.Errorf("Run content = %q, want the builtin's", res.Content)
+	}
+	if !r.ReadOnly("fs_read") {
+		t.Error("ReadOnly(fs_read) = false, want the builtin's true")
+	}
+	var names []string
+	for _, s := range r.Specs() {
+		names = append(names, s.Name)
+	}
+	if len(names) != 1 {
+		t.Errorf("Specs() = %v, want the builtin listed once", names)
+	}
+}
+
+func TestSourceReadOnlyAndUnknown(t *testing.T) {
+	r := NewRegistry(1000)
+	r.AddSource(newMapSource(echoTool("mcp__notion__search", true)))
+
+	if !r.ReadOnly("mcp__notion__search") {
+		t.Error("ReadOnly of a read-only source tool = false, want true")
+	}
+	if r.ReadOnly("mcp__notion__nope") {
+		t.Error("ReadOnly of an unknown name = true, want false")
 	}
 }
