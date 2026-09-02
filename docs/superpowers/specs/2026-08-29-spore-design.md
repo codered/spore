@@ -1,13 +1,14 @@
 # spore — design
 
-**Date:** 2026-08-29
-**Status:** approved (brainstorming dialogue), pending implementation plans
+**Date:** 2026-08-29 (amended 2026-08-31: Discord replaces Telegram as the
+first bridge, Plan 4 splits into 4a and 4b)
+**Status:** approved (brainstorming dialogue); Plans 1–3 implemented
 
 ## 1. What spore is
 
 spore is a personal AI agent: a single static Go binary that runs as an
 always-on daemon on your own machine, reachable from a local web UI and from a
-chat client (Telegram first). It owns its agent loop, tool dispatch, memory, and
+chat client (Discord first). It owns its agent loop, tool dispatch, memory, and
 model routing rather than delegating them to a framework.
 
 Inspiration: [picoclaw](https://github.com/sipeed/picoclaw) — one small Go
@@ -49,7 +50,7 @@ spore (binary)
 ├── internal/recall        Recall interface; sqlitefts and weaviate backends
 ├── internal/trace         OpenTelemetry + OpenInference span helpers
 ├── internal/daemon        HTTP + SSE API, supervision of bridges and scheduler
-├── internal/bridge        telegram/ (discord/ later) — supervised goroutines
+├── internal/bridge        discord/ (telegram/ later) — supervised goroutines
 └── web/                   UI assets, go:embed'd into the binary
 ```
 
@@ -274,6 +275,16 @@ deny  = [
   wins. Answers are *once*, *always this session*, or *always this pattern* —
   the last writes a rule into a marked section of the config file, keeping
   policy readable and editable rather than an opaque cache.
+- **A pattern is only offered when there is a pattern.** Deriving one needs a
+  path-shaped argument; without one it can only fall back to the bare tool
+  name, so "always allow this pattern" on a `shell_exec` prompt would write an
+  allow for *every* `shell_exec`, bounded only by the baseline deny list. When
+  the derivation degrades that way the answer is not offered — the request
+  carries an empty pattern and every client, terminal, browser and bridge
+  alike, hides the option. Presentation is not the enforcement: the guard
+  recomputes the pattern when an answer arrives and records a degraded one as
+  *once*, so a client cannot be talked into writing the blanket rule. Widening
+  policy that far stays a deliberate edit to the config file.
 - **Unanswered approvals deny** after a timeout and report back to the model, so
   a turn started from a phone cannot sit half-executed indefinitely.
 - **Trust profiles.** Clients carry a profile (`local`, `remote`) and rulesets
@@ -346,10 +357,47 @@ separate decision.
 
 ### Bridges
 
-Telegram first, chosen because long polling requires no public endpoint or TLS
-and therefore works from a machine behind NAT. One Telegram chat maps to one
-spore session; approvals are inline keyboard buttons. Discord is the same
+Discord first. The bot opens the gateway WebSocket outbound, so like Telegram's
+long polling it needs no public endpoint and no inbound TLS and works from a
+machine behind NAT — but unlike a Telegram bot, whose username is publicly
+searchable and which anyone may open a chat with, a Discord bot exists only in
+servers it has been invited to. Membership of a private guild is a boundary the
+Telegram design would have had to build for itself. Telegram is the same
 interface implemented again and is deferred.
+
+The bridge runs as a supervised goroutine inside the daemon and is a *client of
+the machinery the web UI already uses*, not a parallel path: it subscribes to
+the hub for session events, posts turns through the session manager, and
+answers approvals through `Guard.Resolve`. It does not implement
+`policy.Approver` itself. That is deliberate — `Guard.Resolve` carries the
+session-ownership check, so a `remote` session cannot answer a `local`
+session's approval. Every session the bridge opens runs under the `remote`
+trust profile, which nothing set before this plan.
+
+**Admission.** One `[bridge.discord]` block names the token, the guild, the
+admitted channels, and the admitted user IDs. A single `admit` function is the
+only place membership is decided, applied identically to guild messages, DMs,
+and button interactions, so the two surfaces cannot drift apart. Traffic that
+is not admitted is dropped and counted, never answered: an error reply would
+confirm the bot exists to whoever probed it.
+
+**Sessions.** A message in an admitted channel opens a session and a Discord
+thread named from the first line of the prompt; replies in that thread continue
+it. A DM is one rolling session per admitted user, reset with `/new`. The
+thread-to-session mapping is a store table keyed by Discord ID, so it survives
+a daemon restart — a thread you replied in yesterday is still that session
+tomorrow. The gateway redelivers events on resume, so inbound message IDs are
+deduplicated against that table.
+
+**Rendering.** Assistant output streams by editing one message on a throttle
+rather than posting per chunk, chunked at Discord's 2000-character limit; tool
+calls render as embeds; approvals are message components with an ephemeral
+response. Everything Discord-specific sits behind a narrow client interface —
+send, edit, create thread, respond to interaction — with one real
+implementation and a fake for tests, so no test needs the network.
+
+Out of scope for the first bridge: slash commands beyond `/new`, voice, and
+attachment handling.
 
 ### CLI
 
@@ -392,8 +440,8 @@ No live API calls in CI.
 
 ## 11. Implementation staging
 
-Five plans, each independently useful. Each plan is written only once its
-predecessor completes.
+Five stages, each independently useful; stage 4 is two plans. Each plan is
+written only once its predecessor completes.
 
 1. **Core** — store and schema, config, provider interface with `anthropic` and
    `openaicompat`, the agent loop, compaction, router, `spore once` and `chat`
@@ -403,7 +451,12 @@ predecessor completes.
    engine, approval suspend/resume persisted across a restart.
 3. **Daemon and web UI** — HTTP + SSE API, multi-client sessions, embedded UI,
    scheduler and background jobs.
-4. **MCP and Telegram** — MCP client host, namespaced tools, the bridge with the
-   `remote` trust profile and inline approvals.
+4. **Discord bridge** (4a) — the bridge with the `remote` trust profile,
+   admission, thread-per-session, and message-component approvals; then **MCP**
+   (4b) — MCP client host and namespaced tools. They share nothing but the tool
+   registry and the policy engine, both of which already exist, and the bridge
+   is the first surface an untrusted party can reach, so it earns a focused
+   review of its own rather than one that also has to weigh whether namespaced
+   MCP tools work.
 5. **Memory and recall** — fact files, FTS search, the `Recall` interface, the
    Weaviate backend with `recall setup`, and `trace setup` for Phoenix.

@@ -86,4 +86,27 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_due ON jobs(enabled, next_run);
+
+-- bridge_bindings maps a chat surface's own identifier — a Discord thread or
+-- DM channel id — to a spore session, so a thread you replied in yesterday is
+-- still that session after the daemon restarts. bridge namespaces the id,
+-- because two bridges may hand out the same-looking string.
+CREATE TABLE IF NOT EXISTS bridge_bindings (
+  bridge      TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  created_at  TEXT NOT NULL,
+  PRIMARY KEY (bridge, external_id)
+);
+
+-- bridge_seen deduplicates inbound events. A gateway that resumes redelivers,
+-- and running a turn twice for one message is worse than dropping one.
+CREATE TABLE IF NOT EXISTS bridge_seen (
+  bridge     TEXT NOT NULL,
+  event_id   TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (bridge, event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bridge_seen_age ON bridge_seen(created_at);
 `

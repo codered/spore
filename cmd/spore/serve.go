@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/codered/spore/internal/bridge/discord"
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/daemon"
 	"github.com/codered/spore/internal/scheduler"
@@ -90,8 +92,40 @@ func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []s
 	sched := scheduler.New(st, srv, nil)
 	go sched.Run(ctx, time.Duration(cfg.Daemon.TickSeconds)*time.Second)
 
+	bridge, err := buildBridge(cfg, srv)
+	if err != nil {
+		// A misconfigured bridge is a config error and should stop startup:
+		// silently serving without the surface you asked for is worse.
+		return err
+	}
+
+	bridgeDone := make(chan struct{})
+	if bridge != nil {
+		go func() {
+			defer close(bridgeDone)
+			discord.Supervise(ctx, bridge, slog.Default())
+		}()
+		if !detach {
+			fmt.Println("discord bridge enabled")
+		}
+	} else {
+		close(bridgeDone)
+	}
+
 	if !detach {
 		fmt.Printf("spore listening on http://%s\n", cfg.Daemon.Addr)
 	}
-	return srv.Run(ctx, cfg.Daemon.Addr)
+
+	err = srv.Run(ctx, cfg.Daemon.Addr)
+	// Cancel explicitly: Run can return without ctx being done (a listen
+	// error), and Supervise is waiting on exactly that signal. The deferred
+	// cancel fires too late — after this function has already returned and
+	// main has closed the store.
+	cancel()
+	select {
+	case <-bridgeDone:
+	case <-time.After(5 * time.Second):
+		slog.Warn("discord bridge did not stop within the shutdown grace period")
+	}
+	return err
 }

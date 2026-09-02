@@ -334,3 +334,109 @@ func TestSessionLookupByID(t *testing.T) {
 		t.Errorf("Nonexistent session ID should be empty, got %q", missing.ID)
 	}
 }
+
+func TestPendingCallByID(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	sid, err := st.CreateSession(ctx, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := st.AddPendingCall(ctx, PendingCall{
+		SessionID: sid, ToolUseID: "tu1", Tool: "shell_exec",
+		ArgsJSON: []byte(`{"cmd":"ls"}`), Profile: "remote", Rule: "shell_exec",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, found, err := st.PendingCallByID(ctx, id)
+	if err != nil || !found {
+		t.Fatalf("PendingCallByID = (_, %v, %v), want (_, true, nil)", found, err)
+	}
+	if got.Tool != "shell_exec" || string(got.ArgsJSON) != `{"cmd":"ls"}` {
+		t.Fatalf("got %+v, want tool shell_exec with its args", got)
+	}
+
+	if _, found, err := st.PendingCallByID(ctx, id+999); err != nil || found {
+		t.Fatalf("missing id: got (found=%v, err=%v), want (false, nil)", found, err)
+	}
+}
+
+func TestBridgeBindings(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	sid, err := st.CreateSession(ctx, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, found, err := st.SessionForExternal(ctx, "discord", "thread-1"); err != nil || found {
+		t.Fatalf("unbound thread: (found=%v, err=%v), want (false, nil)", found, err)
+	}
+	if err := st.BindExternal(ctx, "discord", "thread-1", sid); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := st.SessionForExternal(ctx, "discord", "thread-1")
+	if err != nil || !found || got != sid {
+		t.Fatalf("got (%q, %v, %v), want (%q, true, nil)", got, found, err, sid)
+	}
+
+	// Two bridges may use the same external id without colliding.
+	if _, found, _ := st.SessionForExternal(ctx, "telegram", "thread-1"); found {
+		t.Fatal("bindings leaked across bridges")
+	}
+
+	// Rebinding is idempotent, not an error: the DM surface rebinds its
+	// rolling session every time /new is used.
+	sid2, _ := st.CreateSession(ctx, "t2")
+	if err := st.BindExternal(ctx, "discord", "thread-1", sid2); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ = st.SessionForExternal(ctx, "discord", "thread-1")
+	if got != sid2 {
+		t.Fatalf("rebind: got %q, want %q", got, sid2)
+	}
+}
+
+func TestMarkSeenIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+
+	fresh, err := st.MarkSeen(ctx, "discord", "msg-1")
+	if err != nil || !fresh {
+		t.Fatalf("first sighting: (%v, %v), want (true, nil)", fresh, err)
+	}
+	// The gateway redelivers on resume. The second sighting must not run a
+	// turn, so it must report false.
+	fresh, err = st.MarkSeen(ctx, "discord", "msg-1")
+	if err != nil || fresh {
+		t.Fatalf("redelivery: (%v, %v), want (false, nil)", fresh, err)
+	}
+	fresh, _ = st.MarkSeen(ctx, "discord", "msg-2")
+	if !fresh {
+		t.Fatal("a different message id must be fresh")
+	}
+}
+
+func TestPruneSeen(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	if _, err := st.MarkSeen(ctx, "discord", "old"); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing is old enough to prune yet.
+	if err := st.PruneSeen(ctx, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if fresh, _ := st.MarkSeen(ctx, "discord", "old"); fresh {
+		t.Fatal("PruneSeen removed a row that was inside the window")
+	}
+	// Everything is older than zero.
+	if err := st.PruneSeen(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	if fresh, _ := st.MarkSeen(ctx, "discord", "old"); !fresh {
+		t.Fatal("PruneSeen did not remove a row outside the window")
+	}
+}
