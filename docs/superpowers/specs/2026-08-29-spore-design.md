@@ -271,9 +271,10 @@ evict one. There is deliberately no second `ToolRunner` beside the guard:
 every call, builtin or remote, goes down one path with policy on it.
 
 `mcp.Host` implements `Source` over a `map[server]*snapshot`, where a snapshot
-is one server's tools, state and last error. A reconnect builds a fresh
-snapshot and swaps the pointer under a mutex, so a server's tool set changes
-all at once and the model never sees a half-listed server. A server that is
+is one server's tools, state and last error. A reconnect — or a
+`tools/list_changed` notification, which is how the protocol announces the
+same thing without dropping the connection — builds a fresh snapshot and swaps
+the pointer under a mutex, so a server's tool set changes all at once and the model never sees a half-listed server. A server that is
 down has no snapshot, so its tools are absent from `Specs` and a call to one
 gets the registry's ordinary "no tool named X" error result. That is the whole
 degradation path: no stale adapters, no special case.
