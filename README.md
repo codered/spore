@@ -84,6 +84,37 @@ a stricter ruleset than the local web UI:
     default = "ask"
     allow   = ["fs_read", "fs_list", "fs_glob", "fs_grep"]
 
+## MCP servers
+
+spore hosts MCP servers declared in its config and offers their tools to the
+model as `mcp__<server>__<tool>`.
+
+    [[mcp.server]]
+    name      = "notion"
+    transport = "stdio"
+    command   = "npx"
+    args      = ["-y", "@notionhq/notion-mcp-server"]
+    env       = { NOTION_TOKEN = "${NOTION_TOKEN}" }
+    inherit   = ["HOME"]
+
+    [[mcp.server]]
+    name      = "docs"
+    transport = "http"
+    url       = "https://mcp.example.com/mcp"
+
+Declaring a server is the authorization to run it, so keep the file to servers
+you trust. The child process gets only what you list: `env` verbatim, the
+names in `inherit`, and `PATH`. Your provider API keys are not visible to it.
+Its working directory is `policy.workspace`.
+
+Tool calls are subject to the same policy as everything else — `mcp__*` is
+asked by default, and denied outright for the `remote` trust profile, so a
+Discord user cannot reach your servers. A server that fails to start is logged
+and retried; its tools are simply absent until it comes back.
+
+Run `spore mcp list` to see what each server contributed, and why a tool is
+missing.
+
 ## Tools and policy
 
 spore ships six filesystem tools (`fs_read`, `fs_write`, `fs_edit`,
