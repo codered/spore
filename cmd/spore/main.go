@@ -24,6 +24,7 @@ usage:
   spore session show <id>      print a session transcript
   spore policy check <tool> [json-args]
                                print the decision a tool call would get
+  spore mcp list               dial the configured MCP servers and print their tools
 
 flags:
   -config <path>   config file (default ~/.spore/config.toml)
@@ -107,6 +108,11 @@ func run(args []string) error {
 			jsonArgs = rest[i]
 		}
 		return cmdPolicyCheck(cfg, profile, args[2], jsonArgs)
+	case "mcp":
+		if len(args) < 2 || args[1] != "list" {
+			return fmt.Errorf("usage: spore mcp list")
+		}
+		return cmdMCPList(ctx, cfg)
 	default:
 		fmt.Print(usage)
 		return fmt.Errorf("unknown command %q", args[0])
