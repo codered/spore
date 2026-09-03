@@ -33,6 +33,12 @@ type Fact struct {
 // block's headings predictable and catches typos at write time.
 var Types = []string{"user", "feedback", "project", "reference"}
 
+// ErrReadDir is a sentinel error for directory-level read failures. Load returns
+// this wrapped with %w when it cannot read the directory (permission denied,
+// unmounted, etc.). Reload uses this to distinguish transient directory errors
+// from per-file errors, so it preserves cached facts on directory-level failures.
+var ErrReadDir = errors.New("read memory dir")
+
 // nameRE is deliberately narrower than "a legal filename": lowercase kebab
 // only. The model chooses this string, and it becomes a path, so anything
 // that could traverse, collide case-insensitively, or need quoting is out.
@@ -93,13 +99,16 @@ func Load(dir string) ([]Fact, []error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
-		return nil, []error{fmt.Errorf("read memory dir %s: %w", dir, err)}
+		return nil, []error{fmt.Errorf("%w %s: %v", ErrReadDir, dir, err)}
 	}
 	var facts []Fact
 	var errs []error
 	for _, e := range entries {
 		// No recursion: a scratch subdirectory must never become context.
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+		// Skip dotfiles: Write uses temporary files with dotfile names to remain
+		// invisible to Load, and any orphaned temp (e.g. if process dies mid-write)
+		// must not be loaded. This also guards against future temp file patterns.
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") || !strings.HasSuffix(e.Name(), ".md") {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
@@ -196,7 +205,7 @@ func Write(dir string, f Fact) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create memory dir: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".fact-*.md")
+	tmp, err := os.CreateTemp(dir, ".fact-*.tmp")
 	if err != nil {
 		return err
 	}

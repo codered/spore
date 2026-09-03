@@ -205,3 +205,54 @@ func TestCacheFactsIsACopy(t *testing.T) {
 		t.Fatal("caller mutated the cache's backing array")
 	}
 }
+
+// Orphaned temp files (from Write crashes) must not be loaded. This test proves
+// that dotfiles and files not ending in .md are skipped, protecting against
+// orphaned .fact-<random>.tmp and other transient files.
+func TestLoadIgnoresOrphanedTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	// Write an orphaned temp file with a valid rendered fact inside.
+	write(t, dir, ".fact-abc123.tmp", "---\nname: should-be-ignored\ndescription: d\ntype: user\n---\n\nbody\n")
+	// Write a dotfile ending in .md (another dotfile case).
+	write(t, dir, ".hidden.md", "---\nname: also-ignored\ndescription: d\ntype: user\n---\n\nbody\n")
+	// Load should see neither file.
+	facts, errs := Load(dir)
+	if len(facts) != 0 || len(errs) != 0 {
+		t.Fatalf("orphaned temp files must be ignored: facts=%+v, errs=%v", facts, errs)
+	}
+}
+
+// Cache.Reload must preserve cached facts when it hits a directory-level error
+// (e.g., permission denied, unmounted volume). Per-file errors follow the
+// degradation rule, but directory-level errors are transient and should not
+// silently blank the user's memory.
+func TestCachePreserveFactsOnDirectoryError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("skipping permission test as root")
+	}
+	dir := t.TempDir()
+	write(t, dir, "a.md", "---\nname: a\ndescription: d\ntype: user\n---\n\nb\n")
+	c := NewCache(dir)
+	if errs := c.Reload(); len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	if len(c.Facts()) != 1 {
+		t.Fatal("initial load should have 1 fact")
+	}
+	// Make the directory unreadable.
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700) // restore for cleanup
+	// Reload should hit a permission error but preserve the cached fact.
+	errs := c.Reload()
+	if len(errs) == 0 {
+		t.Fatal("Reload should report the permission error")
+	}
+	if len(c.Facts()) != 1 {
+		t.Fatal("Reload should preserve cached facts on directory-level error")
+	}
+	if c.Facts()[0].Name != "a" {
+		t.Fatalf("cached fact should still be present: %+v", c.Facts())
+	}
+}
