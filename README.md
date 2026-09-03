@@ -161,7 +161,8 @@ you and your projects, and a **keyword index** over everything spore has
 said and read.
 
 Facts live one-per-file under `<data_dir>/memory/*.md`, a plain Markdown file
-with TOML-ish frontmatter:
+with YAML-shaped frontmatter for three fixed keys, parsed by a small
+hand-written reader rather than a general YAML library:
 
     ---
     name: prefers-tabs
@@ -186,7 +187,8 @@ push the section over budget is not dropped: it falls back to a one-line
     [context]
     fact_budget = 2000
 
-`memory` (write, read and delete a fact) is `ask` by default, and denied
+`memory` (write and delete a fact — there is no read operation, since every
+fact is already inlined into the prompt) is `ask` by default, and denied
 outright to the `remote` trust profile: a fact written once shapes every
 later turn of every session, so a single prompt-injected instruction over
 Discord would otherwise plant permanent context. `recall_search` (read-only
@@ -201,7 +203,7 @@ Three CLI verbs give you, the operator, the same index unscoped:
     spore recall reindex            # rebuild from spore.db and the fact files
 
     $ spore recall search backoff
-    message  a1b2c3d4e5f60718293a4b5c  2026-08-30
+    message  482  2026-08-30
         ...tried exponential backoff and jitter before...
 
     $ spore recall status
