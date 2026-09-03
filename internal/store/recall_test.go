@@ -178,6 +178,41 @@ func TestReindexRebuildsAfterCorruption(t *testing.T) {
 	}
 }
 
+// ReindexAll is a second write path for the same trust boundary
+// TestToolResultBlocksAreNeverIndexed proves for AppendMessage. Only the
+// AppendMessage path had a test; a reviewer proved the gap by swapping
+// ReindexAll's call to indexableText for the raw blocks JSON and watching the
+// whole suite stay green. backfillRecall calls ReindexAll for its own work,
+// so this test covers that startup path too.
+func TestReindexAllNeverIndexesToolResultBlocks(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	sid, _ := st.CreateSession(ctx, "t")
+	if _, err := st.AppendMessage(ctx, Message{
+		SessionID: sid, Role: "tool",
+		BlocksJSON: blocks(t,
+			provider.Block{Type: provider.BlockText, Text: "legitimate reply text"},
+			provider.Block{Type: provider.BlockToolResult, ID: "1", Content: "poisonedmarker from a fetched page"},
+		),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Wipe the index and force ReindexAll to rebuild it from the messages
+	// table, the way `spore recall reindex` and a fresh-database backfill do.
+	if _, err := st.DB().Exec(`DELETE FROM recall_fts`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ReindexAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := countFTS(t, st, `recall_fts MATCH '"poisonedmarker"'`); n != 0 {
+		t.Fatalf("reindex made a tool_result block searchable: n=%d", n)
+	}
+	if n := countFTS(t, st, `recall_fts MATCH '"legitimate"'`); n != 1 {
+		t.Fatalf("reindex dropped the message's real text: n=%d", n)
+	}
+}
+
 // An existing database predates the index, so opening it must backfill.
 func TestOpenBackfillsAnExistingDatabase(t *testing.T) {
 	ctx := context.Background()
