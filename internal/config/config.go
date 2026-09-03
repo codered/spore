@@ -335,15 +335,18 @@ func Default() *Config {
 			ApprovalTimeout: "5m",
 			MaxOutput:       30_000,
 			Allow:           []string{"fs_read", "fs_list", "fs_glob", "fs_grep", "web_*", "schedule_list", "recall_search"},
-			Ask:             []string{"fs_write", "fs_edit", "shell_exec", "schedule_create", "schedule_cancel", "mcp__*"},
+			Ask:             []string{"fs_write", "fs_edit", "shell_exec", "schedule_create", "schedule_cancel", "mcp__*", "memory"},
 			// The remote profile denies MCP outright: a Discord user is not
 			// the operator who declared the server, and an MCP server is
-			// reached through credentials that operator supplied. This is an
-			// ordinary config line an operator may edit — it is deliberately
-			// NOT part of baselineDeny, which is reserved for the rules no
-			// approval may ever talk past.
+			// reached through credentials that operator supplied. It denies
+			// memory for the same shape of reason: a fact written once shapes
+			// every later turn in every session, so a single injection through
+			// a bridge would otherwise plant permanent context. Both are
+			// ordinary config lines an operator may edit -- they are
+			// deliberately NOT part of baselineDeny, which is reserved for the
+			// rules no approval may ever talk past.
 			Profiles: map[string]ProfilePolicy{
-				"remote": {Deny: []string{"mcp__*"}},
+				"remote": {Deny: []string{"mcp__*", "memory"}},
 			},
 		},
 		Web:    WebConfig{SearchProvider: "brave", UserAgent: "spore/0.1"},

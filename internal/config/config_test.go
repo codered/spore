@@ -439,3 +439,33 @@ func TestNegativeFactBudgetIsRejected(t *testing.T) {
 		t.Fatal("a negative fact_budget was accepted")
 	}
 }
+
+// A fact shapes every later turn in every session, so an admitted chat user
+// must never be able to write one.
+func TestDefaultDeniesMemoryToRemoteSessions(t *testing.T) {
+	remote, ok := Default().Policy.Profiles["remote"]
+	if !ok {
+		t.Fatal("no remote profile")
+	}
+	var found bool
+	for _, r := range remote.Deny {
+		if r == "memory" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("remote profile does not deny memory: %v", remote.Deny)
+	}
+}
+
+func TestDefaultAsksBeforeWritingAFact(t *testing.T) {
+	var found bool
+	for _, r := range Default().Policy.Ask {
+		if r == "memory" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("memory is not in the default ask list")
+	}
+}
