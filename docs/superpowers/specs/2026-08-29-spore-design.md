@@ -220,8 +220,7 @@ directory.
 ```go
 type Fact struct {
     Name, Description, Type, Body string
-    Path   string
-    Tokens int
+    Path string
 }
 
 func Load(dir string) ([]Fact, []error)   // sorted by name; per-file errors
@@ -229,7 +228,9 @@ func Write(dir string, f Fact) error      // atomic: temp file + rename
 func Delete(dir, name string) error
 ```
 
-`Load` returns partial results alongside per-file errors. Because a human edits
+A fact carries no token count: sizing belongs to the estimator in
+`internal/agent`, and a filesystem package must not depend on the agent to
+describe a file. `Load` returns partial results alongside per-file errors. Because a human edits
 these files by hand, a broken one degrades to a missing fact and a warning
 event, never to a failed turn. A missing directory means zero facts and is
 created on first write.
