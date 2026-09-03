@@ -110,6 +110,13 @@ func recallReindexCmd(ctx context.Context, cfg *config.Config, st *store.Store) 
 	if err != nil {
 		return err
 	}
+	// Facts are file-owned and ReindexAll leaves them alone, so a hand-deleted
+	// fact file has no row anywhere to clear it. Wipe the fact index before
+	// re-indexing what is still on disk, so the result matches the directory
+	// exactly instead of keeping rows for files that are gone.
+	if err := st.ClearFactIndex(ctx); err != nil {
+		return err
+	}
 	dir := filepath.Join(cfg.DataDir, "memory")
 	facts, errs := memory.Load(dir)
 	for _, e := range errs {

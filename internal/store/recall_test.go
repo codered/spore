@@ -178,6 +178,33 @@ func TestReindexRebuildsAfterCorruption(t *testing.T) {
 	}
 }
 
+// A fact's file is its source of truth, so deleting the file must be able to
+// make the fact unsearchable too. ReindexAll deliberately does not touch
+// fact rows (it does not know where the files live), so the caller that
+// re-indexes facts from disk needs a way to drop whatever the index
+// currently holds first.
+func TestClearFactIndexDropsOnlyFacts(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	sid, _ := st.CreateSession(ctx, "t")
+	if _, err := st.AppendMessage(ctx, Message{SessionID: sid, Role: "user",
+		BlocksJSON: blocks(t, provider.Block{Type: provider.BlockText, Text: "surviving message"})}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.IndexFact(ctx, "prefers-tabs", "tabs not spaces"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ClearFactIndex(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := countFTS(t, st, `kind = 'fact'`); n != 0 {
+		t.Fatalf("fact row survived ClearFactIndex: n=%d", n)
+	}
+	if n := countFTS(t, st, `kind = 'message'`); n != 1 {
+		t.Fatalf("ClearFactIndex touched non-fact rows: n=%d", n)
+	}
+}
+
 // ReindexAll is a second write path for the same trust boundary
 // TestToolResultBlocksAreNeverIndexed proves for AppendMessage. Only the
 // AppendMessage path had a test; a reviewer proved the gap by swapping

@@ -107,6 +107,14 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 		// never a failed startup.
 		slog.Default().Warn("skipping malformed fact", "error", err)
 	}
+	// Drop whatever facts the index still remembers before re-indexing the
+	// set just loaded from disk. Facts are file-owned and nothing else
+	// removes a row when a file is deleted by hand, so without this a fact
+	// deleted while spore was not running -- including a sensitive one --
+	// stays searchable across a restart forever.
+	if err := st.ClearFactIndex(context.Background()); err != nil {
+		slog.Default().Warn("clearing fact index failed", "error", err)
+	}
 	// Index what was just loaded so a fresh install can search facts before
 	// anything is written through the memory tool.
 	for _, f := range facts.Facts() {

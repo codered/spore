@@ -123,6 +123,33 @@ func TestRecallReindexRestoresBothSources(t *testing.T) {
 	}
 }
 
+// Spec 5 says the fact file is the source of truth and SQLite "never owns"
+// its text. Deleting the file by hand -- including a sensitive fact -- must
+// make it unsearchable once the index is repaired, not keep it retrievable
+// forever because nothing ever removes the orphaned row.
+func TestRecallReindexDropsAFactWhoseFileWasDeleted(t *testing.T) {
+	cfg := recallFixture(t)
+	captureStdout(t, func() error { return cmdRecall(context.Background(), cfg, []string{"reindex"}) })
+	out := captureStdout(t, func() error {
+		return cmdRecall(context.Background(), cfg, []string{"search", "Tabs"})
+	})
+	if !strings.Contains(out, "prefers-tabs") {
+		t.Fatalf("fixture fact was not indexed to begin with:\n%s", out)
+	}
+
+	if err := os.Remove(filepath.Join(cfg.DataDir, "memory", "prefers-tabs.md")); err != nil {
+		t.Fatal(err)
+	}
+	captureStdout(t, func() error { return cmdRecall(context.Background(), cfg, []string{"reindex"}) })
+
+	out = captureStdout(t, func() error {
+		return cmdRecall(context.Background(), cfg, []string{"search", "Tabs"})
+	})
+	if strings.Contains(out, "prefers-tabs") {
+		t.Fatalf("deleted fact is still searchable after reindex:\n%s", out)
+	}
+}
+
 func TestRecallStatusReportsCounts(t *testing.T) {
 	cfg := recallFixture(t)
 	captureStdout(t, func() error { return cmdRecall(context.Background(), cfg, []string{"reindex"}) })

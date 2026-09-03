@@ -93,6 +93,21 @@ func (s *Store) UnindexFact(ctx context.Context, name string) error {
 	return deleteIndex(ctx, s.db, kindFact, name)
 }
 
+// ClearFactIndex drops every indexed fact. Facts are file-owned, and nothing
+// removes a fact row when its file is deleted by hand outside the memory
+// tool -- there is no delete trigger, because the store cannot watch the
+// filesystem. A caller that is about to re-index every fact still on disk
+// (spore recall reindex, and the startup load in buildAgent) calls this
+// first, so the index afterward matches the directory exactly instead of
+// accumulating rows for files that no longer exist.
+func (s *Store) ClearFactIndex(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM recall_fts WHERE kind = ?`, kindFact)
+	if err != nil {
+		return fmt.Errorf("clear fact index: %w", err)
+	}
+	return nil
+}
+
 // ReindexAll rebuilds the message and summary rows from the source tables and
 // reports how many it wrote. Fact rows are left alone: they belong to files
 // this package cannot read, and their owner reindexes them. This is the repair
