@@ -11,15 +11,19 @@ import (
 )
 
 // fakeRecall records the query it was given, which is the only way to prove
-// scoping happened before the backend saw it.
+// scoping happened before the backend saw it. searchCalls counts Search
+// invocations so a test can prove the tool refused to call the backend at
+// all, not merely that it called it with an empty filter.
 type fakeRecall struct {
-	got  recall.Query
-	hits []recall.Hit
-	err  error
+	got         recall.Query
+	hits        []recall.Hit
+	err         error
+	searchCalls int
 }
 
 func (f *fakeRecall) Index(context.Context, []recall.Chunk) error { return nil }
 func (f *fakeRecall) Search(_ context.Context, q recall.Query) ([]recall.Hit, error) {
+	f.searchCalls++
 	f.got = q
 	return f.hits, f.err
 }
@@ -108,14 +112,23 @@ func TestRecallSearchRemoteProfileIsScoped(t *testing.T) {
 }
 
 // SessionFrom reports the least-trusted profile when nothing is attached, so a
-// caller that forgot WithSession must get the scoped behaviour, not the open one.
+// caller that forgot WithSession must get the scoped behaviour, not the open
+// one. Under the remote profile, SessionFrom also reports an empty session
+// id — and an empty id is not a wildcard: the sqlitefts backend treats "" as
+// "no session filter", so silently searching with it would search every
+// session's history. The tool must refuse outright rather than ever call the
+// backend with that combination.
 func TestRecallSearchWithNoSessionOnContextIsScoped(t *testing.T) {
 	f := &fakeRecall{}
-	if _, err := NewRecallSearch(f).Call(context.Background(), json.RawMessage(`{"query":"x"}`)); err != nil {
+	out, err := NewRecallSearch(f).Call(context.Background(), json.RawMessage(`{"query":"x"}`))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(f.got.Kinds) == 0 {
-		t.Fatal("a context with no session was treated as trusted")
+	if f.searchCalls != 0 {
+		t.Fatalf("backend was searched with no session attached: %+v", f.got)
+	}
+	if out != "no matches" {
+		t.Fatalf("out = %q, want the plain no-matches result", out)
 	}
 }
 

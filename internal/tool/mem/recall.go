@@ -61,6 +61,19 @@ func (t recallSearch) Call(ctx context.Context, args json.RawMessage) (string, e
 	// conversation and nothing else, and it may not read facts at all.
 	sessionID, profile := policy.SessionFrom(ctx)
 	if profile == policy.ProfileRemote {
+		// An empty session id is not "no filter" — the sqlitefts backend only
+		// applies its session_id predicate when SessionID is non-empty, so
+		// setting it to "" here would turn a remote call with no session
+		// attached into an UNSCOPED search across every session's messages
+		// and summaries: exactly the leak this tool exists to prevent. No
+		// caller does this today (the daemon always attaches a session
+		// before running a turn), but that is an operational fact, not a
+		// guarantee this function can lean on. Refuse instead of searching:
+		// return the same "no matches" a caller sees for a real empty
+		// result, not an error the model might read as worth retrying.
+		if sessionID == "" {
+			return "no matches", nil
+		}
 		q.SessionID = sessionID
 		q.Kinds = []string{recall.KindMessage, recall.KindSummary}
 	}
@@ -71,10 +84,20 @@ func (t recallSearch) Call(ctx context.Context, args json.RawMessage) (string, e
 		backend = "unknown"
 	}
 	ctx, span := trace.StartRetriever(ctx, backend, a.Query, q.K)
+	// EndRetriever closes the span on the success path below and records the
+	// hit list on it first; this defer only covers the paths that skip that
+	// call (the error return, or a panic unwinding through Search), so the
+	// span is always closed exactly once and never left open for a crashed
+	// call.
+	ended := false
+	defer func() {
+		if !ended {
+			span.End()
+		}
+	}()
 
 	hits, err := t.r.Search(ctx, q)
 	if err != nil {
-		span.End()
 		return "", fmt.Errorf("recall search failed: %w", err)
 	}
 	ids := make([]string, 0, len(hits))
@@ -84,6 +107,7 @@ func (t recallSearch) Call(ctx context.Context, args json.RawMessage) (string, e
 		scores = append(scores, h.Score)
 	}
 	trace.EndRetriever(span, ids, scores)
+	ended = true
 
 	if len(hits) == 0 {
 		return "no matches", nil
