@@ -114,13 +114,15 @@ func (t *mcpTool) Call(ctx context.Context, args json.RawMessage) (string, error
 
 	res, err := t.session.CallTool(ctx, &sdk.CallToolParams{Name: t.remoteName, Arguments: args})
 	if err != nil {
+		// Protocol-level error from the SDK, not server-authored content.
 		return "", fmt.Errorf("mcp server %q: %w", t.server, err)
 	}
 	text := renderContent(res.Content)
 	if res.IsError {
-		// A tool error the model should see and route around, not a turn
-		// failure: the registry turns this into an error result.
-		return "", fmt.Errorf("mcp server %q: %s", t.server, text)
+		// A tool error the model should see and route around, not a turn failure:
+		// the registry turns this into an error result. The server authored this
+		// text, so mark it as external data to prevent prompt injection.
+		return "", fmt.Errorf("mcp server %q: %s", t.server, untrustedPrefix(t.server)+text)
 	}
 	return untrustedPrefix(t.server) + text, nil
 }
