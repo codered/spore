@@ -28,6 +28,7 @@ import (
 	"github.com/codered/spore/internal/tool/schedule"
 	"github.com/codered/spore/internal/tool/shell"
 	"github.com/codered/spore/internal/tool/web"
+	"github.com/codered/spore/internal/workspace"
 )
 
 // buildTools assembles the registry, the policy engine and the guard that
@@ -136,6 +137,7 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	}
 	a := agent.New(st, reg, rt, cfg, tools)
 	a.Facts = facts
+	a.Env = workspace.NewDescriber(cfg.Policy.Workspace).Describe
 	return a, host, nil
 }
 

@@ -268,6 +268,26 @@ Missed runs are never backfilled.
     spore session list
     spore session show <id>
 
+`make install` puts the binary in `$(PREFIX)/bin`, `~/.local/bin` by default.
+
+### The chat interface
+
+On a terminal, `spore chat` runs a full-screen-free interface: the prompt
+stays at the bottom, finished replies scroll away above it in your normal
+scrollback, and assistant prose is rendered as markdown.
+
+| key | does |
+| --- | --- |
+| `enter` | send |
+| `ctrl+j` / `alt+enter` | newline in the message |
+| `↑` / `↓` | previous and next message you sent |
+| `y` `n` `s` `p` | answer an approval: once, deny, this session, always |
+| `ctrl+c` | quit (a turn already running finishes in the daemon) |
+
+Messages typed while a turn is running are queued and sent when it ends.
+With stdin or stdout redirected, `spore chat` falls back to a plain
+line-at-a-time loop, so pipes and scripts behave as they always did.
+
 ## Design
 
 `docs/superpowers/specs/2026-08-29-spore-design.md`
