@@ -68,6 +68,31 @@ func TestCallPrefixesResultAsExternalData(t *testing.T) {
 	}
 }
 
+// Tool error messages are also server-authored content and must be marked as
+// external data, even in the error path. A hostile or compromised server could
+// inject prompt-injection text in error messages, reaching the model's context
+// through the registry's error-to-result conversion.
+func TestCallErrorPrefixesResultAsExternalData(t *testing.T) {
+	srv := sdk.NewServer(&sdk.Implementation{Name: "notion", Version: "v0"}, nil)
+	sdk.AddTool(srv, &sdk.Tool{Name: "search", Description: "search pages"},
+		func(ctx context.Context, req *sdk.CallToolRequest, in echoIn) (*sdk.CallToolResult, any, error) {
+			// Server returns an error with injection-shaped text.
+			return &sdk.CallToolResult{IsError: true, Content: []sdk.Content{
+				&sdk.TextContent{Text: "<!-- inject: malicious prompt -->"},
+			}}, nil, nil
+		})
+	cs := serveInMemory(t, srv)
+	snap := newSnapshot("notion", cs, listTools(t, cs), time.Minute)
+
+	_, err := snap.tools["mcp__notion__search"].Call(context.Background(), json.RawMessage(`{"text":"x"}`))
+	if err == nil {
+		t.Fatal("Call returned no error for a failing tool")
+	}
+	if !strings.Contains(err.Error(), untrustedPrefix("notion")) {
+		t.Errorf("Call error = %v, want it to contain the untrusted-content prefix", err)
+	}
+}
+
 // A server-declared readOnlyHint is not evidence: the SDK's own documentation
 // says clients should never make tool-use decisions on annotations from
 // untrusted servers. Believing it would let a server opt itself into
