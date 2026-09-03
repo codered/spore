@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/codered/spore/internal/agent"
@@ -11,14 +13,17 @@ import (
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/daemon"
 	mcphost "github.com/codered/spore/internal/mcp"
+	"github.com/codered/spore/internal/memory"
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/provider/anthropic"
 	"github.com/codered/spore/internal/provider/openaicompat"
+	"github.com/codered/spore/internal/recall/sqlitefts"
 	"github.com/codered/spore/internal/router"
 	"github.com/codered/spore/internal/store"
 	"github.com/codered/spore/internal/tool"
 	"github.com/codered/spore/internal/tool/fs"
+	"github.com/codered/spore/internal/tool/mem"
 	"github.com/codered/spore/internal/tool/schedule"
 	"github.com/codered/spore/internal/tool/shell"
 	"github.com/codered/spore/internal/tool/web"
@@ -27,14 +32,18 @@ import (
 // buildTools assembles the registry, the policy engine and the guard that
 // wraps them. It also builds the MCP host and attaches it to the registry as
 // a dynamic source; the host is returned because its lifecycle belongs to the
-// caller — serve supervises it, and everything else closes it.
-func buildTools(cfg *config.Config, st *store.Store, approver policy.Approver) (*policy.Guard, *mcphost.Host, error) {
+// caller — serve supervises it, and everything else closes it. The fact
+// cache is built by the caller (buildAgent needs it for Agent.Facts too) and
+// passed in here just to register the two memory tools around it.
+func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, approver policy.Approver) (*policy.Guard, *mcphost.Host, error) {
 	reg := tool.NewRegistry(cfg.Policy.MaxOutput)
 	tools := fs.New(cfg.Policy.Workspace, cfg.Policy.MaxOutput)
 	tools = append(tools, shell.New(cfg.Policy.Workspace,
 		time.Duration(cfg.Shell.TimeoutSeconds)*time.Second, cfg.Policy.MaxOutput))
 	tools = append(tools, web.New(cfg.Web, cfg.Policy.MaxOutput)...)
 	tools = append(tools, schedule.New(st)...)
+	recallBackend := sqlitefts.New(st.DB())
+	tools = append(tools, mem.NewRecallSearch(recallBackend), mem.NewMemory(facts, st))
 	for _, t := range tools {
 		if err := reg.Register(t); err != nil {
 			return nil, nil, err
@@ -80,11 +89,31 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	if err != nil {
 		return nil, nil, err
 	}
-	tools, host, err := buildTools(cfg, st, approver)
+
+	// The fact cache is loaded once here; the memory tool reloads it after
+	// each write, which is the only way the set changes while spore runs.
+	factsDir := filepath.Join(cfg.DataDir, "memory")
+	facts := memory.NewCache(factsDir)
+	for _, err := range facts.Reload() {
+		// A hand-edited fact that will not parse costs one fact and a warning,
+		// never a failed startup.
+		slog.Default().Warn("skipping malformed fact", "error", err)
+	}
+	// Index what was just loaded so a fresh install can search facts before
+	// anything is written through the memory tool.
+	for _, f := range facts.Facts() {
+		if err := st.IndexFact(context.Background(), f.Name, f.Description+"\n"+f.Body); err != nil {
+			slog.Default().Warn("indexing fact failed", "fact", f.Name, "error", err)
+		}
+	}
+
+	tools, host, err := buildTools(cfg, st, facts, approver)
 	if err != nil {
 		return nil, nil, err
 	}
-	return agent.New(st, reg, rt, cfg, tools), host, nil
+	a := agent.New(st, reg, rt, cfg, tools)
+	a.Facts = facts
+	return a, host, nil
 }
 
 // buildServer wires the daemon. The ordering here is load-bearing: the guard

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/codered/spore/internal/config"
+	"github.com/codered/spore/internal/memory"
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/router"
 	"github.com/codered/spore/internal/store"
@@ -77,6 +78,9 @@ type Agent struct {
 	Router   *router.Router
 	Cfg      *config.Config
 	Tools    ToolRunner
+	// Facts is the loaded fact set. Nil means no memory layer, which is what
+	// a bare `spore once` runs with.
+	Facts *memory.Cache
 }
 
 func New(st *store.Store, reg *provider.Registry, rt *router.Router, cfg *config.Config, tools ToolRunner) *Agent {
@@ -96,6 +100,9 @@ func (a *Agent) Snapshot(ctx context.Context, sessionID string) (Snapshot, error
 		return Snapshot{}, err
 	}
 	snap := Snapshot{System: a.Cfg.SystemPrompt, Summary: summary}
+	if a.Facts != nil {
+		snap.Facts = a.Facts.Facts()
+	}
 	for _, r := range rows {
 		if r.Seq <= through {
 			continue // folded into the summary already
