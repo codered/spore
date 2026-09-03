@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/codered/spore/internal/config"
+	"github.com/codered/spore/internal/memory"
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/router"
 	"github.com/codered/spore/internal/store"
@@ -56,6 +57,14 @@ func harness(t *testing.T, script *provider.Script, tools ToolRunner) (*Agent, *
 		t.Fatal(err)
 	}
 	return New(st, reg, rt, cfg, tools), st
+}
+
+// newTestAgent builds an agent with no scripted turns and no tools, for tests
+// that only need Store and Cfg (e.g. Snapshot) and never call Run.
+func newTestAgent(t *testing.T) *Agent {
+	t.Helper()
+	a, _ := harness(t, provider.NewScript(), nil)
+	return a
 }
 
 func collect(t *testing.T, ch <-chan Event) []Event {
@@ -477,5 +486,45 @@ func TestCancelledTurnDoesNotOrphanToolUse(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestSnapshotIncludesFactsFromTheCache(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	if err := memory.Write(dir, memory.Fact{Name: "a-fact", Description: "d", Type: "user", Body: "remembered"}); err != nil {
+		t.Fatal(err)
+	}
+	cache := memory.NewCache(dir)
+	cache.Reload()
+
+	// Build an agent the way the surrounding tests in this file do, then
+	// attach the cache.
+	a := newTestAgent(t)
+	a.Facts = cache
+
+	sid, err := a.Store.CreateSession(ctx, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := a.Snapshot(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Facts) != 1 || snap.Facts[0].Body != "remembered" {
+		t.Fatalf("facts not loaded into the snapshot: %+v", snap.Facts)
+	}
+}
+
+func TestSnapshotWithNoFactCacheIsEmpty(t *testing.T) {
+	ctx := context.Background()
+	a := newTestAgent(t)
+	sid, _ := a.Store.CreateSession(ctx, "t")
+	snap, err := a.Snapshot(ctx, sid)
+	if err != nil {
+		t.Fatalf("a nil fact cache must not be an error: %v", err)
+	}
+	if len(snap.Facts) != 0 {
+		t.Fatal("facts appeared with no cache attached")
 	}
 }

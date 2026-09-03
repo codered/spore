@@ -1,13 +1,29 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codered/spore/internal/config"
+	"github.com/codered/spore/internal/memory"
+	"github.com/codered/spore/internal/policy"
+	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/store"
 )
+
+// allowApprover is the simplest Approver stub: every ask is approved once,
+// with no scope persisted beyond the single call. It exists only so the
+// end-to-end wiring test below can get past the "memory" tool's `ask`
+// policy without a terminal attached.
+type allowApprover struct{}
+
+func (allowApprover) Ask(context.Context, policy.Ask) (policy.Answer, error) {
+	return policy.Answer{Allow: true, Scope: policy.ScopeOnce}, nil
+}
 
 func TestBuildAgentRegistersConfiguredProviders(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
@@ -49,5 +65,233 @@ func TestBuildAgentRejectsUnknownProviderKind(t *testing.T) {
 
 	if _, _, err := buildAgent(cfg, st, terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout}); err == nil {
 		t.Fatal("buildAgent accepted an unknown provider kind")
+	}
+}
+
+// The two memory builtins must actually reach the registry, and the policy
+// engine must judge them the way the defaults say. This is built through
+// config.Load on a real file because Default() carries no baseline deny.
+func TestMemoryToolsAreRegisteredAndGated(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(`
+default_model = "p/m"
+data_dir = "`+dir+`"
+
+[providers.p]
+kind = "anthropic"
+api_key = "x"
+
+[policy]
+workspace = "`+dir+`"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	facts := memory.NewCache(filepath.Join(dir, "memory"))
+	facts.Reload()
+
+	guard, host, err := buildTools(cfg, st, facts, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host != nil {
+		defer host.Close()
+	}
+	specs := guard.Specs()
+	var haveRecall, haveMemory bool
+	for _, s := range specs {
+		switch s.Name {
+		case "recall_search":
+			haveRecall = true
+		case "memory":
+			haveMemory = true
+		}
+	}
+	if !haveRecall || !haveMemory {
+		t.Fatalf("memory builtins missing from the registry: %+v", specs)
+	}
+
+	engine, err := policy.NewEngine(cfg.Policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decide := func(p policy.Profile, name string) policy.Decision {
+		return engine.Evaluate(p, policy.Call{Tool: name, Args: json.RawMessage(`{}`)}).Decision
+	}
+	if d := decide(policy.ProfileRemote, "memory"); d != policy.DecisionDeny {
+		t.Fatalf("remote memory decision = %v, want deny", d)
+	}
+	if d := decide(policy.ProfileLocal, "memory"); d != policy.DecisionAsk {
+		t.Fatalf("local memory decision = %v, want ask", d)
+	}
+	if d := decide(policy.ProfileLocal, "recall_search"); d != policy.DecisionAllow {
+		t.Fatalf("local recall_search decision = %v, want allow", d)
+	}
+}
+
+// The whole feature rests on buildAgent handing ONE *memory.Cache instance to
+// both the memory tool and Agent.Facts. This test proves that end to end
+// through the real construction path, not by attaching a cache by hand: it
+// writes a fact through the actual "memory" tool the agent's guard runs, then
+// asserts the very next Snapshot sees it. If a future change gave the tool
+// and the agent two different cache instances, the write would still land on
+// disk and the tool would still report success — the fact just would not
+// reach the model until a process restart — and every other test in this
+// package or internal/agent would keep passing, because none of them go
+// through buildAgent's own construction of the cache.
+func TestFactWrittenThroughMemoryToolReachesNextSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(`
+default_model = "p/m"
+data_dir = "`+dir+`"
+
+[providers.p]
+kind = "anthropic"
+api_key = "x"
+
+[policy]
+workspace = "`+dir+`"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	a, host, err := buildAgent(cfg, st, allowApprover{})
+	if err != nil {
+		t.Fatalf("buildAgent: %v", err)
+	}
+	if host != nil {
+		defer host.Close()
+	}
+
+	ctx := context.Background()
+	sid, err := a.Store.CreateSession(ctx, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// "memory" is `ask` under the local profile in the default policy, so the
+	// call needs a session and profile on the context the way a real turn's
+	// dispatch would attach one, and it needs the allowApprover above to get
+	// past the ask.
+	runCtx := policy.WithSession(ctx, sid, policy.ProfileLocal)
+	call := provider.Block{
+		Type: provider.BlockToolUse,
+		ID:   "call-1",
+		Name: "memory",
+		Input: json.RawMessage(`{"op":"write","name":"prefers-tabs","description":"formatting preference",` +
+			`"type":"user","body":"written through the memory tool"}`),
+	}
+	res := a.Tools.Run(runCtx, call)
+	if res.IsError {
+		t.Fatalf("memory tool call failed: %s", res.Content)
+	}
+
+	snap, err := a.Snapshot(ctx, sid)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	var found bool
+	for _, f := range snap.Facts {
+		if f.Name == "prefers-tabs" && f.Body == "written through the memory tool" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("fact written through the memory tool did not reach the next Snapshot: %+v", snap.Facts)
+	}
+}
+
+// An unreadable fact directory (permission denied, an unmounted volume) is
+// not evidence the facts are gone, so startup must neither fail nor wipe the
+// index that a previous, successful load already populated.
+func TestBuildAgentLeavesFactIndexAloneWhenFactDirIsUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores permission bits, so the directory would still be readable")
+	}
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "memory"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "memory", "prefers-tabs.md"),
+		[]byte("---\nname: prefers-tabs\ndescription: formatting\ntype: user\n---\n\nTabs, always.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(`
+default_model = "p/m"
+data_dir = "`+dir+`"
+
+[providers.p]
+kind = "anthropic"
+api_key = "x"
+
+[policy]
+workspace = "`+dir+`"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// First startup: the directory is readable, so the fact gets indexed
+	// the ordinary way.
+	_, host, err := buildAgent(cfg, st, allowApprover{})
+	if err != nil {
+		t.Fatalf("buildAgent: %v", err)
+	}
+	if host != nil {
+		host.Close()
+	}
+
+	memDir := filepath.Join(dir, "memory")
+	if err := os.Chmod(memDir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	// Restore permissions so t.TempDir()'s own cleanup can remove the
+	// directory; this Cleanup was registered after t.TempDir()'s, so it
+	// runs first (Cleanup is LIFO).
+	t.Cleanup(func() { os.Chmod(memDir, 0o700) })
+
+	// Second startup: the directory is unreadable. Spore must still start.
+	_, host2, err := buildAgent(cfg, st, allowApprover{})
+	if err != nil {
+		t.Fatalf("buildAgent failed to start with an unreadable fact directory: %v", err)
+	}
+	if host2 != nil {
+		defer host2.Close()
+	}
+
+	out := captureStdout(t, func() error {
+		return cmdRecall(context.Background(), cfg, []string{"search", "Tabs"})
+	})
+	if !strings.Contains(out, "prefers-tabs") {
+		t.Fatalf("fact index was cleared even though the fact directory could not be read:\n%s", out)
 	}
 }

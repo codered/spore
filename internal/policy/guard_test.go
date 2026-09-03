@@ -436,10 +436,10 @@ func lastApprovalScope(t *testing.T, st *store.Store, sessionID string) (string,
 
 func TestPatternForReportsDegradation(t *testing.T) {
 	cases := []struct {
-		name    string
-		call    Call
-		want    string
-		wantOK  bool
+		name   string
+		call   Call
+		want   string
+		wantOK bool
 	}{
 		{
 			name:   "a single path generalises to its directory",

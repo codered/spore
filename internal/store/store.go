@@ -7,8 +7,10 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -41,6 +43,8 @@ type Message struct {
 // plain time.RFC3339.
 const timeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
+func nowString() string { return time.Now().UTC().Format(timeFormat) }
+
 func Open(path string) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -61,6 +65,15 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schemaSQL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
+	}
+	// A backfill failure is deliberately not fatal here, unlike the schema and
+	// open errors above it. cmdRecall opens the store the same way everything
+	// else does, so a fatal error here would mean a corrupt recall index makes
+	// spore unstartable, including the "spore recall reindex" command that is
+	// the only way to repair it. Degrade instead: search comes back empty
+	// until the index is rebuilt, but every turn still runs.
+	if err := backfillRecall(db); err != nil {
+		slog.Default().Warn("recall index backfill failed, search will be empty until it is repaired", "error", err)
 	}
 	return &Store{db: db}, nil
 }
@@ -155,6 +168,13 @@ func (s *Store) AppendMessage(ctx context.Context, m Message) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	// The index write shares this transaction on purpose. An FTS insert into
+	// the same database fails only for reasons -- disk full, corruption --
+	// that would fail the message write too, so there is no case where losing
+	// the archive buys a working index.
+	if err := insertIndex(ctx, tx, kindMessage, strconv.FormatInt(id, 10), m.SessionID, now, indexableText(m.BlocksJSON)); err != nil {
+		return 0, err
+	}
 	return id, tx.Commit()
 }
 
@@ -182,14 +202,27 @@ func (s *Store) Messages(ctx context.Context, sessionID string) ([]Message, erro
 }
 
 func (s *Store) SetSummary(ctx context.Context, sessionID, summary string, throughSeq int) error {
-	_, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := nowString()
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO summaries (session_id, text, through_seq, created_at) VALUES (?, ?, ?, ?)
 		 ON CONFLICT(session_id) DO UPDATE SET text = excluded.text, through_seq = excluded.through_seq, created_at = excluded.created_at`,
-		sessionID, summary, throughSeq, time.Now().UTC().Format(timeFormat))
-	if err != nil {
+		sessionID, summary, throughSeq, now); err != nil {
 		return fmt.Errorf("set summary: %w", err)
 	}
-	return nil
+	// A session has one summary, so the index has one row for it: replace
+	// rather than append, or a compacted session accumulates stale text.
+	if err := deleteIndex(ctx, tx, kindSummary, sessionID); err != nil {
+		return err
+	}
+	if err := insertIndex(ctx, tx, kindSummary, sessionID, sessionID, now, summary); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Summary returns ("", 0, nil) when the session has never been compacted.

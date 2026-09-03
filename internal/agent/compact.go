@@ -25,7 +25,7 @@ func (a *Agent) MaybeCompact(ctx context.Context, sessionID string) error {
 		return err
 	}
 	budget := int(float64(a.Cfg.Context.MaxTokens) * a.Cfg.Context.CompactAt)
-	if SnapshotTokens(snap) <= budget {
+	if SnapshotTokens(snap, a.Cfg.Context) <= budget {
 		return nil
 	}
 

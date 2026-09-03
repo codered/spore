@@ -61,6 +61,10 @@ type ContextConfig struct {
 	MaxTokens  int     `toml:"max_tokens"`
 	CompactAt  float64 `toml:"compact_at"`
 	KeepRecent int     `toml:"keep_recent"`
+	// FactBudget caps the estimated tokens of inlined fact bodies. Facts past
+	// the budget still appear, as one name-and-description line each, so the
+	// model always knows they exist.
+	FactBudget int `toml:"fact_budget"`
 }
 
 type TraceConfig struct {
@@ -323,23 +327,26 @@ func Default() *Config {
 			"Never name or speculate about the underlying model or provider that powers you.",
 		DataDir:   filepath.Join(home, ".spore"),
 		Providers: map[string]ProviderConfig{},
-		Context:   ContextConfig{MaxTokens: 180_000, CompactAt: 0.75, KeepRecent: 12},
+		Context:   ContextConfig{MaxTokens: 180_000, CompactAt: 0.75, KeepRecent: 12, FactBudget: 2000},
 		Trace:     TraceConfig{Endpoint: "http://localhost:6006/v1/traces", SampleRate: 1.0},
 		Policy: PolicyConfig{
 			Workspace:       home,
 			Default:         "ask",
 			ApprovalTimeout: "5m",
 			MaxOutput:       30_000,
-			Allow:           []string{"fs_read", "fs_list", "fs_glob", "fs_grep", "web_*", "schedule_list"},
-			Ask:             []string{"fs_write", "fs_edit", "shell_exec", "schedule_create", "schedule_cancel", "mcp__*"},
+			Allow:           []string{"fs_read", "fs_list", "fs_glob", "fs_grep", "web_*", "schedule_list", "recall_search"},
+			Ask:             []string{"fs_write", "fs_edit", "shell_exec", "schedule_create", "schedule_cancel", "mcp__*", "memory"},
 			// The remote profile denies MCP outright: a Discord user is not
 			// the operator who declared the server, and an MCP server is
-			// reached through credentials that operator supplied. This is an
-			// ordinary config line an operator may edit — it is deliberately
-			// NOT part of baselineDeny, which is reserved for the rules no
-			// approval may ever talk past.
+			// reached through credentials that operator supplied. It denies
+			// memory for the same shape of reason: a fact written once shapes
+			// every later turn in every session, so a single injection through
+			// a bridge would otherwise plant permanent context. Both are
+			// ordinary config lines an operator may edit -- they are
+			// deliberately NOT part of baselineDeny, which is reserved for the
+			// rules no approval may ever talk past.
 			Profiles: map[string]ProfilePolicy{
-				"remote": {Deny: []string{"mcp__*"}},
+				"remote": {Deny: []string{"mcp__*", "memory"}},
 			},
 		},
 		Web:    WebConfig{SearchProvider: "brave", UserAgent: "spore/0.1"},
@@ -477,6 +484,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt >= 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)
+	}
+	if c.Context.FactBudget < 0 {
+		return fmt.Errorf("context.fact_budget must not be negative")
 	}
 	switch c.Policy.Default {
 	case "allow", "ask", "deny":

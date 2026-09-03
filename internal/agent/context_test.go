@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/codered/spore/internal/config"
+	"github.com/codered/spore/internal/memory"
 	"github.com/codered/spore/internal/provider"
 )
 
@@ -14,17 +15,22 @@ func userMsg(text string) provider.Message {
 
 func TestAssembleOrdersSystemFactsSummaryThenTail(t *testing.T) {
 	snap := Snapshot{
-		System:   "you are spore",
-		Facts:    []string{"the user prefers Go", "the user is in London"},
+		System: "you are spore",
+		Facts: []memory.Fact{
+			{Name: "user-prefers-go", Description: "the user prefers Go", Type: "user", Body: "Uses Go for most projects."},
+			{Name: "user-in-london", Description: "the user is in London", Type: "user", Body: "Based in London, UK."},
+		},
 		Summary:  "earlier: the user set up spore",
 		Messages: []provider.Message{userMsg("first"), userMsg("second")},
 	}
-	req := Assemble(snap, config.ContextConfig{MaxTokens: 1000, CompactAt: 0.75, KeepRecent: 10})
+	// Use large budget to inline the facts, testing the inline rendering path.
+	req := Assemble(snap, config.ContextConfig{MaxTokens: 1000, CompactAt: 0.75, KeepRecent: 10, FactBudget: 1000})
 
 	if !strings.HasPrefix(req.System, "you are spore") {
 		t.Errorf("System does not start with the system prompt: %q", req.System)
 	}
-	factsAt := strings.Index(req.System, "the user prefers Go")
+	// With FactBudget large enough, facts are inlined and their body text appears.
+	factsAt := strings.Index(req.System, "Uses Go for most projects.")
 	summaryAt := strings.Index(req.System, "earlier: the user set up spore")
 	if factsAt < 0 || summaryAt < 0 || factsAt > summaryAt {
 		t.Errorf("facts must precede the summary; system = %q", req.System)
@@ -102,5 +108,119 @@ func TestEstimateTokensGrowsWithLength(t *testing.T) {
 	long := EstimateTokens(strings.Repeat("hello ", 100))
 	if short < 1 || long <= short {
 		t.Errorf("EstimateTokens: short=%d long=%d", short, long)
+	}
+}
+
+func fact(name, desc, body string) memory.Fact {
+	return memory.Fact{Name: name, Description: desc, Type: "user", Body: body}
+}
+
+func TestAssembleInlinesFactsUnderBudget(t *testing.T) {
+	snap := Snapshot{
+		System: "sys",
+		Facts:  []memory.Fact{fact("alpha", "first", "Alpha body."), fact("beta", "second", "Beta body.")},
+	}
+	req := Assemble(snap, config.ContextConfig{FactBudget: 1000})
+	for _, want := range []string{"### alpha", "Alpha body.", "### beta", "Beta body."} {
+		if !strings.Contains(req.System, want) {
+			t.Fatalf("system block missing %q:\n%s", want, req.System)
+		}
+	}
+	if strings.Contains(req.System, "recall_search") {
+		t.Fatalf("no overflow expected, but the overflow heading is present:\n%s", req.System)
+	}
+}
+
+func TestAssembleOverflowsToDescriptions(t *testing.T) {
+	big := strings.Repeat("x ", 2000) // ~1000 tokens
+	snap := Snapshot{
+		System:  "sys",
+		Facts:   []memory.Fact{fact("aaa", "small one", "tiny"), fact("zzz", "the big one", big)},
+		Summary: "earlier events",
+	}
+	req := Assemble(snap, config.ContextConfig{FactBudget: 100})
+	if !strings.Contains(req.System, "tiny") {
+		t.Fatalf("the fact that fits was not inlined:\n%s", req.System)
+	}
+	if strings.Contains(req.System, big) {
+		t.Fatal("the oversized fact body was inlined despite the budget")
+	}
+	if !strings.Contains(req.System, "- zzz: the big one") {
+		t.Fatalf("overflow fact missing its description line:\n%s", req.System)
+	}
+	if !strings.Contains(req.System, "recall_search") {
+		t.Fatalf("overflow section must tell the model how to retrieve a body:\n%s", req.System)
+	}
+	// Verify overflow facts precede the summary, just as inlined facts do.
+	overflowAt := strings.Index(req.System, "- zzz: the big one")
+	summaryAt := strings.Index(req.System, "earlier events")
+	if overflowAt < 0 || summaryAt < 0 || overflowAt > summaryAt {
+		t.Errorf("overflow facts must precede the summary; system = %q", req.System)
+	}
+}
+
+// A fact too large to inline must not evict the smaller facts that follow it.
+func TestAssembleKeepsInliningAfterAnOverflow(t *testing.T) {
+	big := strings.Repeat("x ", 2000)
+	snap := Snapshot{Facts: []memory.Fact{
+		fact("aaa", "d", "first small"),
+		fact("mmm", "d", big),
+		fact("zzz", "d", "last small"),
+	}}
+	req := Assemble(snap, config.ContextConfig{FactBudget: 100})
+	if !strings.Contains(req.System, "last small") {
+		t.Fatalf("a later small fact was dropped by an earlier oversized one:\n%s", req.System)
+	}
+}
+
+func TestAssembleZeroBudgetSendsEverythingToOverflow(t *testing.T) {
+	snap := Snapshot{Facts: []memory.Fact{fact("aaa", "described", "body text")}}
+	req := Assemble(snap, config.ContextConfig{FactBudget: 0})
+	if strings.Contains(req.System, "body text") {
+		t.Fatal("a zero budget inlined a body")
+	}
+	if !strings.Contains(req.System, "- aaa: described") {
+		t.Fatal("a zero budget dropped the fact entirely instead of listing it")
+	}
+}
+
+// The system block is the prompt-cache prefix. Two assemblies of the same
+// snapshot must be byte-identical to allow prompt caching. This test proves
+// the absence of call-parity nondeterminism. Name ordering is guaranteed by
+// memory.Load sorting the facts (see internal/memory), not by this test.
+func TestAssembleIsByteStableAcrossCalls(t *testing.T) {
+	snap := Snapshot{System: "sys", Facts: []memory.Fact{
+		fact("beta", "b", "B"), fact("alpha", "a", "A"), fact("gamma", "g", "G"),
+	}}
+	cfg := config.ContextConfig{FactBudget: 1000}
+	if a, b := Assemble(snap, cfg).System, Assemble(snap, cfg).System; a != b {
+		t.Fatalf("system block not stable:\n%q\n%q", a, b)
+	}
+}
+
+func TestAssembleNoFactsNoSection(t *testing.T) {
+	req := Assemble(Snapshot{System: "sys"}, config.ContextConfig{FactBudget: 1000})
+	if req.System != "sys" {
+		t.Fatalf("empty fact set added a section: %q", req.System)
+	}
+}
+
+// SnapshotTokens must estimate using the same rendering code as Assemble,
+// so the estimate stays synchronized with the actual output. This test fails
+// if the two diverge.
+func TestSnapshotTokensMatchesAssembleOutput(t *testing.T) {
+	big := strings.Repeat("x ", 2000) // ~1000 tokens
+	snap := Snapshot{
+		System:   "system text",
+		Facts:    []memory.Fact{fact("small", "s", "tiny"), fact("large", "l", big)},
+		Summary:  "summary text",
+		Messages: []provider.Message{userMsg("m1"), userMsg("m2")},
+	}
+	cfg := config.ContextConfig{FactBudget: 100}
+	estimate := SnapshotTokens(snap, cfg)
+	actual := EstimateTokens(Assemble(snap, cfg).System)
+	// Allow small margin for rounding, but they should be close.
+	if estimate < actual-10 || estimate > actual+10 {
+		t.Errorf("SnapshotTokens estimate diverged from actual: estimate=%d, actual=%d", estimate, actual)
 	}
 }
