@@ -78,6 +78,10 @@ type Agent struct {
 	Router   *router.Router
 	Cfg      *config.Config
 	Tools    ToolRunner
+	// Env renders the environment section of the system prompt: the working
+	// directory and its files. Nil means no environment section, which is
+	// what a test that builds an Agent with New gets.
+	Env func() string
 	// Facts is the loaded fact set. Nil means no memory layer attached; every
 	// production construction path (buildAgent) sets it, so nil in practice
 	// means a test built the Agent directly with New and never attached one.
@@ -102,6 +106,9 @@ func (a *Agent) Snapshot(ctx context.Context, sessionID string) (Snapshot, error
 		return Snapshot{}, err
 	}
 	snap := Snapshot{System: a.Cfg.SystemPrompt, Summary: summary}
+	if a.Env != nil {
+		snap.Environment = a.Env()
+	}
 	if a.Facts != nil {
 		snap.Facts = a.Facts.Facts()
 	}
