@@ -150,6 +150,45 @@ func TestRecallReindexDropsAFactWhoseFileWasDeleted(t *testing.T) {
 	}
 }
 
+// A directory that cannot be read is not evidence the facts are gone -- it
+// might be a transient permission problem or an unmounted volume -- so a
+// reindex that hits it must leave the existing index rows untouched and
+// report failure, rather than clearing the fact index and re-indexing
+// nothing.
+func TestRecallReindexLeavesIndexAloneWhenFactDirIsUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores permission bits, so the directory would still be readable")
+	}
+	cfg := recallFixture(t)
+	captureStdout(t, func() error { return cmdRecall(context.Background(), cfg, []string{"reindex"}) })
+	out := captureStdout(t, func() error {
+		return cmdRecall(context.Background(), cfg, []string{"search", "Tabs"})
+	})
+	if !strings.Contains(out, "prefers-tabs") {
+		t.Fatalf("fixture fact was not indexed to begin with:\n%s", out)
+	}
+
+	memDir := filepath.Join(cfg.DataDir, "memory")
+	if err := os.Chmod(memDir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	// Restore permissions so t.TempDir()'s own cleanup can remove the
+	// directory; this Cleanup was registered after the fixture's, so it
+	// runs first (Cleanup is LIFO).
+	t.Cleanup(func() { os.Chmod(memDir, 0o700) })
+
+	if err := cmdRecall(context.Background(), cfg, []string{"reindex"}); err == nil {
+		t.Fatal("reindex with an unreadable fact directory returned no error")
+	}
+
+	out = captureStdout(t, func() error {
+		return cmdRecall(context.Background(), cfg, []string{"search", "Tabs"})
+	})
+	if !strings.Contains(out, "prefers-tabs") {
+		t.Fatalf("previously indexed fact did not survive a reindex that hit an unreadable directory:\n%s", out)
+	}
+}
+
 func TestRecallStatusReportsCounts(t *testing.T) {
 	cfg := recallFixture(t)
 	captureStdout(t, func() error { return cmdRecall(context.Background(), cfg, []string{"reindex"}) })

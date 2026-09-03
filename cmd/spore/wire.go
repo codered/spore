@@ -95,31 +95,38 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	// each write, which is the only way the set changes while spore runs.
 	factsDir := filepath.Join(cfg.DataDir, "memory")
 	facts := memory.NewCache(factsDir)
+	dirUnreadable := false
 	for _, err := range facts.Reload() {
 		if errors.Is(err, memory.ErrReadDir) {
 			// The whole reload failed (permission denied, an unmounted volume);
 			// nothing was skipped, and Reload deliberately kept the previously
-			// cached set rather than blanking it.
-			slog.Default().Warn("fact directory unreadable, keeping previously loaded facts", "error", err)
+			// cached set rather than blanking it. The index gets the same
+			// treatment below: an unreadable directory is not evidence the
+			// facts are gone, so it must not be treated as "the directory is
+			// empty" and clear rows that are still valid on disk.
+			dirUnreadable = true
+			slog.Default().Warn("fact directory unreadable, leaving fact index as it is", "error", err)
 			continue
 		}
 		// A hand-edited fact that will not parse costs one fact and a warning,
 		// never a failed startup.
 		slog.Default().Warn("skipping malformed fact", "error", err)
 	}
-	// Drop whatever facts the index still remembers before re-indexing the
-	// set just loaded from disk. Facts are file-owned and nothing else
-	// removes a row when a file is deleted by hand, so without this a fact
-	// deleted while spore was not running -- including a sensitive one --
-	// stays searchable across a restart forever.
-	if err := st.ClearFactIndex(context.Background()); err != nil {
-		slog.Default().Warn("clearing fact index failed", "error", err)
-	}
-	// Index what was just loaded so a fresh install can search facts before
-	// anything is written through the memory tool.
-	for _, f := range facts.Facts() {
-		if err := st.IndexFact(context.Background(), f.Name, f.Description+"\n"+f.Body); err != nil {
-			slog.Default().Warn("indexing fact failed", "fact", f.Name, "error", err)
+	if !dirUnreadable {
+		// Drop whatever facts the index still remembers before re-indexing the
+		// set just loaded from disk. Facts are file-owned and nothing else
+		// removes a row when a file is deleted by hand, so without this a fact
+		// deleted while spore was not running -- including a sensitive one --
+		// stays searchable across a restart forever.
+		if err := st.ClearFactIndex(context.Background()); err != nil {
+			slog.Default().Warn("clearing fact index failed", "error", err)
+		}
+		// Index what was just loaded so a fresh install can search facts before
+		// anything is written through the memory tool.
+		for _, f := range facts.Facts() {
+			if err := st.IndexFact(context.Background(), f.Name, f.Description+"\n"+f.Body); err != nil {
+				slog.Default().Warn("indexing fact failed", "fact", f.Name, "error", err)
+			}
 		}
 	}
 

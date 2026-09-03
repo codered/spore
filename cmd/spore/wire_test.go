@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codered/spore/internal/config"
@@ -217,5 +218,80 @@ workspace = "`+dir+`"
 	}
 	if !found {
 		t.Fatalf("fact written through the memory tool did not reach the next Snapshot: %+v", snap.Facts)
+	}
+}
+
+// An unreadable fact directory (permission denied, an unmounted volume) is
+// not evidence the facts are gone, so startup must neither fail nor wipe the
+// index that a previous, successful load already populated.
+func TestBuildAgentLeavesFactIndexAloneWhenFactDirIsUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores permission bits, so the directory would still be readable")
+	}
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "memory"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "memory", "prefers-tabs.md"),
+		[]byte("---\nname: prefers-tabs\ndescription: formatting\ntype: user\n---\n\nTabs, always.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(`
+default_model = "p/m"
+data_dir = "`+dir+`"
+
+[providers.p]
+kind = "anthropic"
+api_key = "x"
+
+[policy]
+workspace = "`+dir+`"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// First startup: the directory is readable, so the fact gets indexed
+	// the ordinary way.
+	_, host, err := buildAgent(cfg, st, allowApprover{})
+	if err != nil {
+		t.Fatalf("buildAgent: %v", err)
+	}
+	if host != nil {
+		host.Close()
+	}
+
+	memDir := filepath.Join(dir, "memory")
+	if err := os.Chmod(memDir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	// Restore permissions so t.TempDir()'s own cleanup can remove the
+	// directory; this Cleanup was registered after t.TempDir()'s, so it
+	// runs first (Cleanup is LIFO).
+	t.Cleanup(func() { os.Chmod(memDir, 0o700) })
+
+	// Second startup: the directory is unreadable. Spore must still start.
+	_, host2, err := buildAgent(cfg, st, allowApprover{})
+	if err != nil {
+		t.Fatalf("buildAgent failed to start with an unreadable fact directory: %v", err)
+	}
+	if host2 != nil {
+		defer host2.Close()
+	}
+
+	out := captureStdout(t, func() error {
+		return cmdRecall(context.Background(), cfg, []string{"search", "Tabs"})
+	})
+	if !strings.Contains(out, "prefers-tabs") {
+		t.Fatalf("fact index was cleared even though the fact directory could not be read:\n%s", out)
 	}
 }

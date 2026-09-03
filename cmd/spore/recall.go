@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -110,17 +111,27 @@ func recallReindexCmd(ctx context.Context, cfg *config.Config, st *store.Store) 
 	if err != nil {
 		return err
 	}
+	dir := filepath.Join(cfg.DataDir, "memory")
+	facts, errs := memory.Load(dir)
+	for _, e := range errs {
+		if errors.Is(e, memory.ErrReadDir) {
+			// The directory could not be read at all (permission denied, an
+			// unmounted volume). That is not evidence the facts are gone, so
+			// it must not be treated as "the directory is empty": clearing
+			// the index here would erase every indexed fact and re-index
+			// nothing. Leave the index untouched and fail loudly instead of
+			// reporting a reindex that silently dropped everything.
+			fmt.Fprintf(os.Stderr, "fact index left unchanged: cannot read fact directory %s: %v\n", dir, e)
+			return e
+		}
+		fmt.Fprintf(os.Stderr, "skipping malformed fact: %v\n", e)
+	}
 	// Facts are file-owned and ReindexAll leaves them alone, so a hand-deleted
 	// fact file has no row anywhere to clear it. Wipe the fact index before
 	// re-indexing what is still on disk, so the result matches the directory
 	// exactly instead of keeping rows for files that are gone.
 	if err := st.ClearFactIndex(ctx); err != nil {
 		return err
-	}
-	dir := filepath.Join(cfg.DataDir, "memory")
-	facts, errs := memory.Load(dir)
-	for _, e := range errs {
-		fmt.Fprintf(os.Stderr, "skipping malformed fact: %v\n", e)
 	}
 	for _, f := range facts {
 		if err := st.IndexFact(ctx, f.Name, f.Description+"\n"+f.Body); err != nil {
