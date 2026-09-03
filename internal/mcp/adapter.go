@@ -114,8 +114,11 @@ func (t *mcpTool) Call(ctx context.Context, args json.RawMessage) (string, error
 
 	res, err := t.session.CallTool(ctx, &sdk.CallToolParams{Name: t.remoteName, Arguments: args})
 	if err != nil {
-		// Protocol-level error from the SDK, not server-authored content.
-		return "", fmt.Errorf("mcp server %q: %w", t.server, err)
+		// A JSON-RPC error's Message field is authored by the server (via jsonrpc.Error),
+		// making this branch untrusted content exactly like a tool-error result, despite
+		// the SDK's wrapping. Mark it as external data to prevent prompt injection.
+		wrapped := fmt.Errorf("%s%w", untrustedPrefix(t.server), err)
+		return "", fmt.Errorf("mcp server %q: %w", t.server, wrapped)
 	}
 	text := renderContent(res.Content)
 	if res.IsError {

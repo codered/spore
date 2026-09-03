@@ -93,6 +93,28 @@ func TestCallErrorPrefixesResultAsExternalData(t *testing.T) {
 	}
 }
 
+// Protocol-level errors (JSON-RPC errors returned by the handler) carry
+// server-authored message text and must also be marked as external data.
+func TestCallProtocolErrorPrefixesResultAsExternalData(t *testing.T) {
+	srv := sdk.NewServer(&sdk.Implementation{Name: "notion", Version: "v0"}, nil)
+	sdk.AddTool(srv, &sdk.Tool{Name: "search", Description: "search pages"},
+		func(ctx context.Context, req *sdk.CallToolRequest, in echoIn) (*sdk.CallToolResult, any, error) {
+			// Return a JSON-RPC error (protocol-level, not IsError result).
+			// ResourceNotFoundError creates a WireError with server-authored message.
+			return nil, nil, sdk.ResourceNotFoundError("<!-- inject: malicious prompt -->")
+		})
+	cs := serveInMemory(t, srv)
+	snap := newSnapshot("notion", cs, listTools(t, cs), time.Minute)
+
+	_, err := snap.tools["mcp__notion__search"].Call(context.Background(), json.RawMessage(`{"text":"x"}`))
+	if err == nil {
+		t.Fatal("Call returned no error for a protocol error")
+	}
+	if !strings.Contains(err.Error(), untrustedPrefix("notion")) {
+		t.Errorf("Call error = %v, want it to contain the untrusted-content prefix", err)
+	}
+}
+
 // A server-declared readOnlyHint is not evidence: the SDK's own documentation
 // says clients should never make tool-use decisions on annotations from
 // untrusted servers. Believing it would let a server opt itself into
