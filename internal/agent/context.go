@@ -37,21 +37,64 @@ func messageTokens(m provider.Message) int {
 }
 
 // SnapshotTokens estimates the assembled size of a snapshot.
-func SnapshotTokens(snap Snapshot) int {
+// It estimates the fact section using the same rendering code as Assemble
+// to ensure the estimate stays synchronized with the actual output.
+func SnapshotTokens(snap Snapshot, cfg config.ContextConfig) int {
 	n := EstimateTokens(snap.System) + EstimateTokens(snap.Summary)
-	for _, f := range snap.Facts {
-		n += factTokens(f)
-	}
+	n += EstimateTokens(factsSection(snap.Facts, cfg.FactBudget))
 	for _, m := range snap.Messages {
 		n += messageTokens(m)
 	}
 	return n
 }
 
-// factTokens sizes a fact as it will actually be rendered, heading included,
-// so the budget measures what the request will cost rather than the file.
-func factTokens(f memory.Fact) int {
-	return EstimateTokens(f.Name) + EstimateTokens(f.Description) + EstimateTokens(f.Body) + 4
+// factInlineCost estimates the token cost of a fact if it were inlined:
+// the heading, name, and body only. Used to decide whether the inline form fits
+// the budget, so it counts only what an inline fact actually emits.
+func factInlineCost(f memory.Fact) int {
+	return EstimateTokens(f.Name) + EstimateTokens(f.Body) + 4
+}
+
+// factsSection renders the "## What you know about the user" section,
+// applying the budget to inline facts and overflowing those that don't fit.
+// Returns the rendered section (without the leading fact heading if facts is empty).
+// Both Assemble and SnapshotTokens call this to ensure the token estimate
+// matches the rendered text.
+func factsSection(facts []memory.Fact, budget int) string {
+	if len(facts) == 0 {
+		return ""
+	}
+	var section strings.Builder
+	section.WriteString("\n\n## What you know about the user\n")
+	var overflow []memory.Fact
+	used := 0
+	for _, f := range facts {
+		// An oversized fact overflows on its own account and does not
+		// evict the smaller facts after it, so one long file cannot empty
+		// the section.
+		cost := factInlineCost(f)
+		if used+cost > budget {
+			overflow = append(overflow, f)
+			continue
+		}
+		used += cost
+		section.WriteString("\n### ")
+		section.WriteString(f.Name)
+		section.WriteString("\n")
+		section.WriteString(f.Body)
+		section.WriteString("\n")
+	}
+	if len(overflow) > 0 {
+		section.WriteString("\nThese facts did not fit. Retrieve one by name with recall_search:\n")
+		for _, f := range overflow {
+			section.WriteString("- ")
+			section.WriteString(f.Name)
+			section.WriteString(": ")
+			section.WriteString(f.Description)
+			section.WriteString("\n")
+		}
+	}
+	return section.String()
 }
 
 // Assemble builds the request in the spec's fixed order: system prompt,
@@ -62,37 +105,7 @@ func factTokens(f memory.Fact) int {
 func Assemble(snap Snapshot, cfg config.ContextConfig) provider.Request {
 	var sys strings.Builder
 	sys.WriteString(snap.System)
-	if len(snap.Facts) > 0 {
-		sys.WriteString("\n\n## What you know about the user\n")
-		var overflow []memory.Fact
-		used := 0
-		for _, f := range snap.Facts {
-			// An oversized fact overflows on its own account and does not
-			// evict the smaller facts after it, so one long file cannot empty
-			// the section.
-			cost := factTokens(f)
-			if used+cost > cfg.FactBudget {
-				overflow = append(overflow, f)
-				continue
-			}
-			used += cost
-			sys.WriteString("\n### ")
-			sys.WriteString(f.Name)
-			sys.WriteString("\n")
-			sys.WriteString(f.Body)
-			sys.WriteString("\n")
-		}
-		if len(overflow) > 0 {
-			sys.WriteString("\nThese facts did not fit. Retrieve one by name with recall_search:\n")
-			for _, f := range overflow {
-				sys.WriteString("- ")
-				sys.WriteString(f.Name)
-				sys.WriteString(": ")
-				sys.WriteString(f.Description)
-				sys.WriteString("\n")
-			}
-		}
-	}
+	sys.WriteString(factsSection(snap.Facts, cfg.FactBudget))
 	if snap.Summary != "" {
 		sys.WriteString("\n\n## Earlier in this conversation\n")
 		sys.WriteString(snap.Summary)
