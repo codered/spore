@@ -334,7 +334,7 @@ func Default() *Config {
 			Default:         "ask",
 			ApprovalTimeout: "5m",
 			MaxOutput:       30_000,
-			Allow:           []string{"fs_read", "fs_list", "fs_glob", "fs_grep", "web_*", "schedule_list"},
+			Allow:           []string{"fs_read", "fs_list", "fs_glob", "fs_grep", "web_*", "schedule_list", "recall_search"},
 			Ask:             []string{"fs_write", "fs_edit", "shell_exec", "schedule_create", "schedule_cancel", "mcp__*"},
 			// The remote profile denies MCP outright: a Discord user is not
 			// the operator who declared the server, and an MCP server is
