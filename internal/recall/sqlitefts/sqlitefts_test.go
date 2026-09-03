@@ -160,126 +160,136 @@ func TestStatusCountsByKind(t *testing.T) {
 	}
 }
 
-// failOnExecN wraps a sql.DB and fails on the Nth ExecContext call.
-// It does NOT implement BeginTx, so it forces the non-transactional fallback.
-type failOnExecN struct {
-	db    *sql.DB
-	count int
-	n     int
+// countingTxQueryer wraps a real *sql.DB and counts BeginTx calls. It exists
+// to answer one question the fallback tests below cannot: does Index open a
+// transaction for the whole batch, or one per chunk? A transaction-per-chunk
+// loop would still "use a transaction" and would still pass every other test
+// in this file, while quietly giving up batch atomicity.
+type countingTxQueryer struct {
+	db       *sql.DB
+	beginTxN int
 }
 
-func (f *failOnExecN) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	return f.db.QueryContext(ctx, query, args...)
+func (q *countingTxQueryer) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return q.db.QueryContext(ctx, query, args...)
 }
 
-func (f *failOnExecN) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	f.count++
-	if f.count == f.n {
-		return nil, sql.ErrConnDone
-	}
-	return f.db.ExecContext(ctx, query, args...)
+func (q *countingTxQueryer) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return q.db.ExecContext(ctx, query, args...)
 }
 
-// failOnExecWithTx is like failOnExecN but DOES implement BeginTx to force
-// the transactional path.
-type failOnExecWithTx struct {
-	db    *sql.DB
-	count int
-	n     int
+func (q *countingTxQueryer) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
+	q.beginTxN++
+	return q.db.BeginTx(ctx, opts)
 }
 
-func (f *failOnExecWithTx) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	return f.db.QueryContext(ctx, query, args...)
-}
-
-func (f *failOnExecWithTx) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	f.count++
-	if f.count == f.n {
-		return nil, sql.ErrConnDone
-	}
-	return f.db.ExecContext(ctx, query, args...)
-}
-
-func (f *failOnExecWithTx) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
-	return f.db.BeginTx(ctx, opts)
-}
-
-// TestIndexBatchTransactionalVerification verifies that when a Queryer
-// implements BeginTx (like real sql.DB), batches are processed via the
-// transactional code path. This test passes when the transactional code is
-// working correctly.
-//
-// VERIFICATION: To confirm transactions provide atomicity, manually run this:
-// 1. Edit sqlitefts.go: change "if !hasTx {" to "if true { _ = tb"
-// 2. Run: go test -tags sqlite_fts5 -count=1 ./internal/recall/sqlitefts -run TestIndexBatchTransactionalVerification
-// 3. It should FAIL (no atomicity without transactions)
-// 4. Revert the edit
-// 5. Test passes (atomicity with transactions)
-func TestIndexBatchTransactionalVerification(t *testing.T) {
-	realDB := newDB(t)
-	// Use a Queryer that implements BeginTx to force the transactional path
-	wrapper := &failOnExecWithTx{db: realDB, n: 100} // n > total execs, won't fail
+// TestIndexUsesATransaction pins the one property that matters about Index's
+// transactional path: the whole batch shares a single transaction. It fails
+// if Index is changed to skip the transaction (BeginTx is never called), and
+// it fails just as surely if Index is "fixed" into a transaction-per-chunk
+// loop (BeginTx is called more than once) — that would still look
+// transactional while defeating the all-or-nothing guarantee the batch
+// depends on. FTS5 accepts essentially any text, so there is no query that
+// makes a chunk fail mid-batch to prove rollback directly; call-counting is
+// the deterministic alternative.
+func TestIndexUsesATransaction(t *testing.T) {
+	wrapper := &countingTxQueryer{db: newDB(t)}
 	b := New(wrapper)
 
-	// Index a batch of chunks.
 	batch := []recall.Chunk{
 		chunk(recall.KindMessage, "m1", "s", "message one"),
 		chunk(recall.KindMessage, "m2", "s", "message two"),
+		chunk(recall.KindFact, "f1", "", "message three"),
 	}
-	err := b.Index(context.Background(), batch)
-	if err != nil {
+	if err := b.Index(context.Background(), batch); err != nil {
 		t.Fatalf("Index batch failed: %v", err)
 	}
 
-	// Verify both chunks were indexed (batch succeeded).
 	hits, err := b.Search(context.Background(), recall.Query{Text: "message"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hits) != 2 {
-		t.Fatalf("expected 2 hits, got %d (batch was not fully indexed)", len(hits))
+	if len(hits) != 3 {
+		t.Fatalf("expected 3 hits, got %d (batch did not land): %+v", len(hits), hits)
+	}
+
+	if wrapper.beginTxN != 1 {
+		t.Fatalf("BeginTx called %d times for one batch, want exactly 1", wrapper.beginTxN)
 	}
 }
 
-// TestIndexBatchTransactional verifies that when a Queryer does NOT implement
-// BeginTx (fallback path), a failure mid-batch leaves partial results behind.
-func TestIndexBatchTransactional(t *testing.T) {
-	realDB := newDB(t)
+// fallbackQueryer wraps a real *sql.DB but deliberately does not implement
+// BeginTx, forcing Index down its non-transactional fallback. failAfter, when
+// nonzero, makes the Nth ExecContext call fail, so the test can show the
+// fallback's defining trait: a mid-batch failure leaves earlier writes in
+// place instead of rolling them back.
+type fallbackQueryer struct {
+	db        *sql.DB
+	failAfter int
+	execN     int
+}
 
-	// Use a wrapper that does NOT implement BeginTx, forcing the fallback.
-	wrapper := &failOnExecN{db: realDB, n: 3}
-	b := New(wrapper)
+func (q *fallbackQueryer) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return q.db.QueryContext(ctx, query, args...)
+}
 
-	// First index call.
-	err := b.Index(context.Background(), []recall.Chunk{
-		chunk(recall.KindMessage, "safe", "s1", "safe text"),
-	})
+func (q *fallbackQueryer) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	q.execN++
+	if q.failAfter != 0 && q.execN == q.failAfter {
+		return nil, sql.ErrConnDone
+	}
+	return q.db.ExecContext(ctx, query, args...)
+}
+
+// TestIndexFallbackPath covers the Queryer-without-BeginTx path. This path is
+// NOT atomic: it is not a cheaper way to get the same guarantee as
+// TestIndexUsesATransaction, it is a different, weaker contract, and the two
+// must never be mistaken for each other.
+func TestIndexFallbackPath(t *testing.T) {
+	db := newDB(t)
+
+	// A normal batch still lands correctly on the fallback path.
+	b := New(&fallbackQueryer{db: db})
+	if err := b.Index(context.Background(), []recall.Chunk{
+		chunk(recall.KindMessage, "1", "s", "text one"),
+		chunk(recall.KindMessage, "2", "s", "text two"),
+	}); err != nil {
+		t.Fatalf("Index failed in fallback path: %v", err)
+	}
+	hits, err := b.Search(context.Background(), recall.Query{Text: "text"})
 	if err != nil {
-		t.Fatalf("initial index failed: %v", err)
+		t.Fatal(err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("expected 2 hits, got %d", len(hits))
 	}
 
-	wrapper.count = 0
-
-	// Second batch fails after 2 successful operations (DELETE + INSERT "safe").
-	err = b.Index(context.Background(), []recall.Chunk{
+	// A failure mid-batch proves the fallback is not atomic: the chunk whose
+	// DELETE+INSERT already ran stays updated even though the batch as a
+	// whole returned an error.
+	wrapper := &fallbackQueryer{db: db}
+	bSafe := New(wrapper)
+	if err := bSafe.Index(context.Background(), []recall.Chunk{
+		chunk(recall.KindMessage, "safe", "s1", "safe text"),
+	}); err != nil {
+		t.Fatalf("initial index failed: %v", err)
+	}
+	wrapper.execN = 0
+	wrapper.failAfter = 3 // fail on "other"'s DELETE, after "safe"'s DELETE+INSERT succeed
+	err = bSafe.Index(context.Background(), []recall.Chunk{
 		chunk(recall.KindMessage, "safe", "s1", "updated safe text"),
 		chunk(recall.KindMessage, "other", "s1", "other text"),
 	})
-
 	if err == nil {
-		t.Fatal("expected error on 3rd exec")
+		t.Fatal("expected an error from the forced failure")
 	}
 
-	// In fallback (non-transactional) mode: "safe" is updated because its
-	// DELETE and INSERT succeeded before the failure on call 3.
-	rows, err := realDB.QueryContext(context.Background(),
-		`SELECT text FROM recall_fts WHERE kind = ? AND ref_id = ?`,
-		recall.KindMessage, "safe")
+	rows, err := db.QueryContext(context.Background(),
+		`SELECT text FROM recall_fts WHERE kind = ? AND ref_id = ?`, recall.KindMessage, "safe")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-
 	if !rows.Next() {
 		t.Fatal("safe chunk missing")
 	}
@@ -287,49 +297,8 @@ func TestIndexBatchTransactional(t *testing.T) {
 	if err := rows.Scan(&text); err != nil {
 		t.Fatal(err)
 	}
-
-	// In fallback mode, safe should be updated because its operations completed
-	// before the failure.
 	if text != "updated safe text" {
-		t.Fatalf("fallback path broken: expected safe='updated safe text', got %q", text)
-	}
-}
-
-// TestIndexFallbackPath verifies that a Queryer without BeginTx support still
-// works for indexing, even though it won't get batch atomicity.
-type noTxQueryer struct {
-	db *sql.DB
-}
-
-func (q *noTxQueryer) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	return q.db.QueryContext(ctx, query, args...)
-}
-
-func (q *noTxQueryer) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	return q.db.ExecContext(ctx, query, args...)
-}
-
-func TestIndexFallbackPath(t *testing.T) {
-	db := newDB(t)
-	// Wrap the DB in a type that doesn't implement BeginTx, forcing the fallback path.
-	b := New(&noTxQueryer{db: db})
-
-	err := b.Index(context.Background(), []recall.Chunk{
-		chunk(recall.KindMessage, "1", "s", "text one"),
-		chunk(recall.KindMessage, "2", "s", "text two"),
-	})
-
-	if err != nil {
-		t.Fatalf("Index failed in fallback path: %v", err)
-	}
-
-	// Verify both chunks were indexed.
-	hits, err := b.Search(context.Background(), recall.Query{Text: "text"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(hits) != 2 {
-		t.Fatalf("expected 2 hits, got %d", len(hits))
+		t.Fatalf("fallback path is supposed to leave partial writes in place: got %q", text)
 	}
 }
 
