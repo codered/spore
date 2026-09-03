@@ -28,6 +28,8 @@ usage:
   spore recall search <query>  keyword-search the message/summary/fact index
   spore recall status          report index counts and backend health
   spore recall reindex         rebuild the index from SQLite and fact files
+  spore recall setup           provision the vector store and backfill it
+  spore recall teardown        stop the vector store and return to keyword search
 
 flags:
   -config <path>   config file (default ~/.spore/config.toml)

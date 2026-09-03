@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -153,5 +154,75 @@ func TestLearnRuleIsSafeUnderConcurrentCallers(t *testing.T) {
 	}
 	if len(cfg.Policy.Learned.Allow) != n {
 		t.Errorf("learned %d rules, want %d — a concurrent write dropped one", len(cfg.Policy.Learned.Allow), n)
+	}
+}
+
+func TestSetRecallBackendWritesAndReloads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("default_model = \"x/y\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetRecallBackend(path, RecallWeaviate); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Recall.Backend != RecallWeaviate {
+		t.Errorf("backend %q after the write, want %q", cfg.Recall.Backend, RecallWeaviate)
+	}
+	// Setup must not eat the rest of the file.
+	if cfg.DefaultModel != "x/y" {
+		t.Errorf("default_model = %q, want it preserved", cfg.DefaultModel)
+	}
+
+	// Running setup twice must not leave two [recall] sections: duplicates
+	// make the file fail to load, turning a successful setup into a broken
+	// install.
+	if err := SetRecallBackend(path, RecallSQLiteFTS); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(path)
+	if n := strings.Count(string(body), "[recall]"); n != 1 {
+		t.Errorf("file has %d [recall] sections, want 1:\n%s", n, body)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("the file no longer loads: %v", err)
+	}
+	if cfg.Recall.Backend != RecallSQLiteFTS {
+		t.Errorf("backend %q, want the second write to have taken", cfg.Recall.Backend)
+	}
+}
+
+func TestSetRecallBackendKeepsAnExistingSectionsOtherKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	body := "default_model = \"x/y\"\n\n[recall]\nurl = \"http://box:8080\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetRecallBackend(path, RecallWeaviate); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Recall.URL != "http://box:8080" {
+		t.Errorf("url = %q, want it preserved", cfg.Recall.URL)
+	}
+	if cfg.Recall.Backend != RecallWeaviate {
+		t.Errorf("backend = %q, want it set", cfg.Recall.Backend)
+	}
+}
+
+func TestSetRecallBackendRejectsAnUnknownBackend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("default_model = \"x/y\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetRecallBackend(path, "pinecone"); err == nil {
+		t.Fatal("an unknown backend was written into the config")
 	}
 }
