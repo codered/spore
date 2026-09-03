@@ -12,10 +12,14 @@ import (
 // value is what makes Assemble a pure function and therefore testable with no
 // store and no network.
 type Snapshot struct {
-	System   string
-	Facts    []memory.Fact
-	Summary  string
-	Messages []provider.Message
+	System string
+	// Environment describes the working directory and its files. It is
+	// rebuilt per turn rather than stored, because it describes the machine
+	// as it is now, not as it was when the session started.
+	Environment string
+	Facts       []memory.Fact
+	Summary     string
+	Messages    []provider.Message
 }
 
 // EstimateTokens approximates tokens as bytes/4. It is deliberately crude:
@@ -40,7 +44,7 @@ func messageTokens(m provider.Message) int {
 // It estimates the fact section using the same rendering code as Assemble
 // to ensure the estimate stays synchronized with the actual output.
 func SnapshotTokens(snap Snapshot, cfg config.ContextConfig) int {
-	n := EstimateTokens(snap.System) + EstimateTokens(snap.Summary)
+	n := EstimateTokens(snap.System) + EstimateTokens(snap.Environment) + EstimateTokens(snap.Summary)
 	n += EstimateTokens(factsSection(snap.Facts, cfg.FactBudget))
 	for _, m := range snap.Messages {
 		n += messageTokens(m)
@@ -98,13 +102,14 @@ func factsSection(facts []memory.Fact, budget int) string {
 }
 
 // Assemble builds the request in the spec's fixed order: system prompt,
-// memory facts, compaction summary, then the live message tail. Facts and the
+// environment, memory facts, compaction summary, then the live message tail. Facts and the
 // summary ride in the system block so they stay pinned regardless of message
 // count. The assembled request includes every live message; compaction is
 // responsible for keeping the live tail within the token budget.
 func Assemble(snap Snapshot, cfg config.ContextConfig) provider.Request {
 	var sys strings.Builder
 	sys.WriteString(snap.System)
+	sys.WriteString(snap.Environment)
 	sys.WriteString(factsSection(snap.Facts, cfg.FactBudget))
 	if snap.Summary != "" {
 		sys.WriteString("\n\n## Earlier in this conversation\n")

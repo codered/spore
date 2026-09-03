@@ -224,3 +224,30 @@ func TestSnapshotTokensMatchesAssembleOutput(t *testing.T) {
 		t.Errorf("SnapshotTokens estimate diverged from actual: estimate=%d, actual=%d", estimate, actual)
 	}
 }
+
+func TestAssemblePlacesEnvironmentAfterTheSystemPrompt(t *testing.T) {
+	req := Assemble(Snapshot{
+		System:      "you are spore",
+		Environment: "\n\n## Environment\n\nWorking directory: /w\n",
+		Facts:       []memory.Fact{{Name: "n", Body: "b"}},
+	}, config.ContextConfig{FactBudget: 1000})
+
+	sysIdx := strings.Index(req.System, "you are spore")
+	envIdx := strings.Index(req.System, "Working directory: /w")
+	factIdx := strings.Index(req.System, "What you know about the user")
+	if sysIdx < 0 || envIdx < 0 || factIdx < 0 {
+		t.Fatalf("missing a section in system block:\n%s", req.System)
+	}
+	if !(sysIdx < envIdx && envIdx < factIdx) {
+		t.Errorf("wrong section order (system %d, env %d, facts %d):\n%s", sysIdx, envIdx, factIdx, req.System)
+	}
+}
+
+func TestSnapshotTokensCountsEnvironment(t *testing.T) {
+	cfg := config.ContextConfig{FactBudget: 1000}
+	bare := SnapshotTokens(Snapshot{System: "s"}, cfg)
+	withEnv := SnapshotTokens(Snapshot{System: "s", Environment: strings.Repeat("x", 400)}, cfg)
+	if withEnv <= bare {
+		t.Errorf("environment not counted: %d <= %d", withEnv, bare)
+	}
+}

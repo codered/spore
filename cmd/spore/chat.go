@@ -6,10 +6,17 @@ import (
 	"os"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mattn/go-isatty"
+
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/daemon"
+	"github.com/codered/spore/internal/policy"
 )
 
+// cmdChat opens an interactive session. On a terminal it runs the full
+// interface; with input or output redirected it falls back to the plain
+// line-at-a-time loop, which is what scripts and tests drive.
 func cmdChat(ctx context.Context, cfg *config.Config, sessionID string) error {
 	c, err := ensureDaemon(ctx, cfg)
 	if err != nil {
@@ -20,6 +27,69 @@ func cmdChat(ctx context.Context, cfg *config.Config, sessionID string) error {
 			return err
 		}
 	}
+	if interactiveTerminal() {
+		return chatTUI(ctx, cfg, c, sessionID)
+	}
+	return chatPlain(ctx, cfg, c, sessionID)
+}
+
+// interactiveTerminal reports whether both ends of the CLI are a terminal.
+// The full interface needs to read keys and to repaint, so it must not be
+// started when either end is a pipe.
+func interactiveTerminal() bool {
+	return isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
+}
+
+// chatTUI runs the Bubble Tea interface. It owns the stream and the program;
+// every state change reaches the model as a message, so the model stays the
+// single-threaded owner of what is on screen.
+func chatTUI(ctx context.Context, cfg *config.Config, c *client, sessionID string) error {
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	ui := newChatUI(sessionID, fmt.Sprintf("http://%s/#%s", cfg.Daemon.Addr, sessionID), cfg.ShowCost)
+	ui.send = func(text string) error { return c.send(streamCtx, sessionID, text) }
+	ui.resolve = func(pendingID int64, ans policy.Answer) error {
+		return c.resolve(streamCtx, sessionID, pendingID, ans)
+	}
+
+	p := tea.NewProgram(ui)
+
+	// Attach before running the program, and wait for the connection: an
+	// event published between attaching and the first repaint would
+	// otherwise be lost, and for a short reply that can be the whole turn.
+	connected := make(chan struct{})
+	errc := make(chan error, 1)
+	go func() {
+		errc <- c.streamFrom(streamCtx, sessionID, connected, func(ev daemon.WireEvent) error {
+			p.Send(streamMsg{ev})
+			return nil
+		})
+	}()
+	select {
+	case <-connected:
+	case err := <-errc:
+		return fmt.Errorf("attach to the session: %w", err)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	// The stream outliving the program is normal (the user quit); the
+	// program outliving the stream is not, so its end becomes a message.
+	go func() { p.Send(streamEndMsg{err: <-errc}) }()
+
+	if _, err := p.Run(); err != nil {
+		return err
+	}
+	if ui.fatal != nil {
+		return fmt.Errorf("lost the event stream: %w", ui.fatal)
+	}
+	return nil
+}
+
+// chatPlain is the line-oriented loop used when stdin or stdout is not a
+// terminal. It has no line editing and no styling on purpose: it must behave
+// exactly like a pipe consumer.
+func chatPlain(ctx context.Context, cfg *config.Config, c *client, sessionID string) error {
 	fmt.Printf("session %s — ctrl-d to exit\n", sessionID)
 	fmt.Printf("web UI: http://%s/#%s\n", cfg.Daemon.Addr, sessionID)
 
