@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/codered/spore/internal/config"
+	"github.com/codered/spore/internal/memory"
 	"github.com/codered/spore/internal/provider"
 )
 
@@ -12,7 +13,7 @@ import (
 // store and no network.
 type Snapshot struct {
 	System   string
-	Facts    []string
+	Facts    []memory.Fact
 	Summary  string
 	Messages []provider.Message
 }
@@ -39,12 +40,18 @@ func messageTokens(m provider.Message) int {
 func SnapshotTokens(snap Snapshot) int {
 	n := EstimateTokens(snap.System) + EstimateTokens(snap.Summary)
 	for _, f := range snap.Facts {
-		n += EstimateTokens(f)
+		n += factTokens(f)
 	}
 	for _, m := range snap.Messages {
 		n += messageTokens(m)
 	}
 	return n
+}
+
+// factTokens sizes a fact as it will actually be rendered, heading included,
+// so the budget measures what the request will cost rather than the file.
+func factTokens(f memory.Fact) int {
+	return EstimateTokens(f.Name) + EstimateTokens(f.Description) + EstimateTokens(f.Body) + 4
 }
 
 // Assemble builds the request in the spec's fixed order: system prompt,
@@ -57,10 +64,33 @@ func Assemble(snap Snapshot, cfg config.ContextConfig) provider.Request {
 	sys.WriteString(snap.System)
 	if len(snap.Facts) > 0 {
 		sys.WriteString("\n\n## What you know about the user\n")
+		var overflow []memory.Fact
+		used := 0
 		for _, f := range snap.Facts {
-			sys.WriteString("- ")
-			sys.WriteString(f)
+			// An oversized fact overflows on its own account and does not
+			// evict the smaller facts after it, so one long file cannot empty
+			// the section.
+			cost := factTokens(f)
+			if used+cost > cfg.FactBudget {
+				overflow = append(overflow, f)
+				continue
+			}
+			used += cost
+			sys.WriteString("\n### ")
+			sys.WriteString(f.Name)
 			sys.WriteString("\n")
+			sys.WriteString(f.Body)
+			sys.WriteString("\n")
+		}
+		if len(overflow) > 0 {
+			sys.WriteString("\nThese facts did not fit. Retrieve one by name with recall_search:\n")
+			for _, f := range overflow {
+				sys.WriteString("- ")
+				sys.WriteString(f.Name)
+				sys.WriteString(": ")
+				sys.WriteString(f.Description)
+				sys.WriteString("\n")
+			}
 		}
 	}
 	if snap.Summary != "" {

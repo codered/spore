@@ -84,7 +84,8 @@ func New(st *store.Store, reg *provider.Registry, rt *router.Router, cfg *config
 }
 
 // Snapshot reads the session's persisted state into the value context
-// assembly consumes. Facts stay empty until Plan 5 adds the memory layer.
+// assembly consumes. Facts come from the fact cache when one is attached;
+// a nil cache means no facts, which is what `spore once` runs with.
 func (a *Agent) Snapshot(ctx context.Context, sessionID string) (Snapshot, error) {
 	rows, err := a.Store.Messages(ctx, sessionID)
 	if err != nil {

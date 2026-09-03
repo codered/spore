@@ -423,3 +423,19 @@ func TestDefaultDeniesMCPForRemote(t *testing.T) {
 // internal/policy.Engine built from the result actually decides, and this
 // package cannot import internal/policy without an import cycle (policy
 // imports config).
+
+func TestDefaultFactBudget(t *testing.T) {
+	if got := Default().Context.FactBudget; got != 2000 {
+		t.Fatalf("fact_budget default = %d, want 2000", got)
+	}
+}
+
+func TestNegativeFactBudgetIsRejected(t *testing.T) {
+	c := Default()
+	c.DefaultModel = "m"
+	c.Providers = map[string]ProviderConfig{"p": {Kind: "anthropic"}}
+	c.Context.FactBudget = -1
+	if err := c.Validate(); err == nil {
+		t.Fatal("a negative fact_budget was accepted")
+	}
+}

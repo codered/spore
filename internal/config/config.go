@@ -61,6 +61,10 @@ type ContextConfig struct {
 	MaxTokens  int     `toml:"max_tokens"`
 	CompactAt  float64 `toml:"compact_at"`
 	KeepRecent int     `toml:"keep_recent"`
+	// FactBudget caps the estimated tokens of inlined fact bodies. Facts past
+	// the budget still appear, as one name-and-description line each, so the
+	// model always knows they exist.
+	FactBudget int `toml:"fact_budget"`
 }
 
 type TraceConfig struct {
@@ -323,7 +327,7 @@ func Default() *Config {
 			"Never name or speculate about the underlying model or provider that powers you.",
 		DataDir:   filepath.Join(home, ".spore"),
 		Providers: map[string]ProviderConfig{},
-		Context:   ContextConfig{MaxTokens: 180_000, CompactAt: 0.75, KeepRecent: 12},
+		Context:   ContextConfig{MaxTokens: 180_000, CompactAt: 0.75, KeepRecent: 12, FactBudget: 2000},
 		Trace:     TraceConfig{Endpoint: "http://localhost:6006/v1/traces", SampleRate: 1.0},
 		Policy: PolicyConfig{
 			Workspace:       home,
@@ -477,6 +481,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt >= 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)
+	}
+	if c.Context.FactBudget < 0 {
+		return fmt.Errorf("context.fact_budget must not be negative")
 	}
 	switch c.Policy.Default {
 	case "allow", "ask", "deny":
