@@ -30,6 +30,16 @@ type Tool interface {
 	Call(ctx context.Context, args json.RawMessage) (string, error)
 }
 
+// Source is a dynamic set of tools whose membership changes while spore runs.
+// A source is consulted on every lookup rather than copied into the registry,
+// because an MCP server's tool list changes when it drops and is redialled.
+// Builtins are always consulted first: a source can neither shadow nor evict
+// one.
+type Source interface {
+	Specs() []provider.ToolSpec
+	Lookup(name string) (Tool, bool)
+}
+
 // nameRE is the intersection of the Anthropic and OpenAI tool-name rules.
 var nameRE = regexp.MustCompile(`\A[a-zA-Z0-9_-]{1,64}\z`)
 
@@ -38,6 +48,8 @@ const truncationNote = "\n\n[truncated: output exceeded the tool output budget]"
 type Registry struct {
 	mu    sync.RWMutex
 	tools map[string]Tool
+	// sources are dynamic tool sets consulted after the builtin map.
+	sources []Source
 	// maxOutput caps one result in bytes before truncation.
 	maxOutput int
 }
@@ -63,14 +75,58 @@ func (r *Registry) Register(t Tool) error {
 	return nil
 }
 
-// Specs returns every tool's schema, sorted by name so the serialised prompt
-// prefix is stable between turns and stays cacheable upstream.
+// AddSource attaches a dynamic tool set. Sources are consulted in the order
+// they were added, after the builtins.
+func (r *Registry) AddSource(s Source) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sources = append(r.sources, s)
+}
+
+// lookup resolves a name against the builtins first, then each source. It
+// snapshots the source slice under the lock and queries outside it, so a
+// source's own locking can never deadlock against the registry's.
+func (r *Registry) lookup(name string) (Tool, bool) {
+	r.mu.RLock()
+	t, ok := r.tools[name]
+	srcs := r.sources
+	r.mu.RUnlock()
+	if ok {
+		return t, true
+	}
+	for _, s := range srcs {
+		if t, ok := s.Lookup(name); ok {
+			return t, ok
+		}
+	}
+	return nil, false
+}
+
+// Specs returns every tool's schema, builtin and sourced, sorted by name so
+// the serialised prompt prefix is stable between turns and stays cacheable
+// upstream. A source whose membership changed since the last turn changes
+// this list, and that invalidates the upstream cache — the accepted price of
+// a tool set that can change while spore runs.
 func (r *Registry) Specs() []provider.ToolSpec {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	out := make([]provider.ToolSpec, 0, len(r.tools))
 	for _, t := range r.tools {
 		out = append(out, provider.ToolSpec{Name: t.Name(), Description: t.Description(), Schema: t.Schema()})
+	}
+	builtin := make(map[string]bool, len(r.tools))
+	for name := range r.tools {
+		builtin[name] = true
+	}
+	srcs := r.sources
+	r.mu.RUnlock()
+
+	for _, s := range srcs {
+		for _, spec := range s.Specs() {
+			if builtin[spec.Name] {
+				continue // a source may not shadow a builtin
+			}
+			out = append(out, spec)
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -90,9 +146,7 @@ func (r *Registry) Names() []string {
 // ReadOnly reports false for tools it does not know, so an unknown name can
 // never join a concurrent batch.
 func (r *Registry) ReadOnly(name string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	t, ok := r.tools[name]
+	t, ok := r.lookup(name)
 	return ok && t.ReadOnly()
 }
 
@@ -116,9 +170,7 @@ func ErrResult(id string, err error) provider.Block {
 // should see is returned as an error result so the agent can pick another
 // path instead of losing the turn.
 func (r *Registry) Run(ctx context.Context, call provider.Block) (out provider.Block) {
-	r.mu.RLock()
-	t, ok := r.tools[call.Name]
-	r.mu.RUnlock()
+	t, ok := r.lookup(call.Name)
 	if !ok {
 		return ErrResult(call.ID, fmt.Errorf("no tool named %q is registered", call.Name))
 	}

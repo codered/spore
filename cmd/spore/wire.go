@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/codered/spore/internal/bridge/discord"
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/daemon"
+	mcphost "github.com/codered/spore/internal/mcp"
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/provider/anthropic"
@@ -23,9 +25,10 @@ import (
 )
 
 // buildTools assembles the registry, the policy engine and the guard that
-// wraps them. The approver is a parameter because the CLI asks on a terminal
-// and the daemon asks over SSE; everything else about the leash is identical.
-func buildTools(cfg *config.Config, st *store.Store, approver policy.Approver) (*policy.Guard, error) {
+// wraps them. It also builds the MCP host and attaches it to the registry as
+// a dynamic source; the host is returned because its lifecycle belongs to the
+// caller — serve supervises it, and everything else closes it.
+func buildTools(cfg *config.Config, st *store.Store, approver policy.Approver) (*policy.Guard, *mcphost.Host, error) {
 	reg := tool.NewRegistry(cfg.Policy.MaxOutput)
 	tools := fs.New(cfg.Policy.Workspace, cfg.Policy.MaxOutput)
 	tools = append(tools, shell.New(cfg.Policy.Workspace,
@@ -34,22 +37,26 @@ func buildTools(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	tools = append(tools, schedule.New(st)...)
 	for _, t := range tools {
 		if err := reg.Register(t); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+	}
+	host := mcphost.New(cfg.MCP, cfg.Policy.Workspace, slog.Default())
+	if host.Configured() {
+		reg.AddSource(host)
 	}
 	engine, err := policy.NewEngine(cfg.Policy)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	learn := func(d policy.Decision, rule string) error {
 		return config.LearnRule(cfg.Path, string(d), rule)
 	}
-	return policy.NewGuard(reg, engine, approver, st, learn), nil
+	return policy.NewGuard(reg, engine, approver, st, learn), host, nil
 }
 
 // buildAgent turns configuration into a wired agent. Plan 1 registers no
 // tools, so the agent runs text-only turns; Plan 2 passes a real ToolRunner.
-func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (*agent.Agent, error) {
+func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (*agent.Agent, *mcphost.Host, error) {
 	reg := provider.NewRegistry()
 	for name, pc := range cfg.Providers {
 		price := provider.ProviderPrice{In: pc.PriceIn, Out: pc.PriceOut}
@@ -62,40 +69,40 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 			reg.Register(name, anthropic.New(pc.BaseURL, pc.APIKey, ws, nil), price)
 		case "openai", "openai-compatible":
 			if pc.BaseURL == "" {
-				return nil, fmt.Errorf("provider %q: base_url is required for kind %q", name, pc.Kind)
+				return nil, nil, fmt.Errorf("provider %q: base_url is required for kind %q", name, pc.Kind)
 			}
 			reg.Register(name, openaicompat.New(pc.BaseURL, pc.APIKey, nil), price)
 		default:
-			return nil, fmt.Errorf("provider %q: unknown kind %q (want anthropic or openai)", name, pc.Kind)
+			return nil, nil, fmt.Errorf("provider %q: unknown kind %q (want anthropic or openai)", name, pc.Kind)
 		}
 	}
 	rt, err := router.New(cfg.Routes, cfg.DefaultModel)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	tools, err := buildTools(cfg, st, approver)
+	tools, host, err := buildTools(cfg, st, approver)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return agent.New(st, reg, rt, cfg, tools), nil
+	return agent.New(st, reg, rt, cfg, tools), host, nil
 }
 
 // buildServer wires the daemon. The ordering here is load-bearing: the guard
 // needs the daemon's approver, and the daemon needs the guard, so the server
 // is constructed first with no agent, and the agent is attached once its
 // tools have been built around the server's broker.
-func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, error) {
+func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, *mcphost.Host, error) {
 	srv := daemon.New(daemon.Options{Store: st, Cfg: cfg})
-	a, err := buildAgent(cfg, st, srv.Approver())
+	a, host, err := buildAgent(cfg, st, srv.Approver())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	guard, ok := a.Tools.(*policy.Guard)
 	if !ok {
-		return nil, fmt.Errorf("internal: agent tools are %T, want *policy.Guard", a.Tools)
+		return nil, nil, fmt.Errorf("internal: agent tools are %T, want *policy.Guard", a.Tools)
 	}
 	srv.Attach(a, guard)
-	return srv, nil
+	return srv, host, nil
 }
 
 // buildBridge constructs the Discord bridge, or reports (nil, nil) when it is

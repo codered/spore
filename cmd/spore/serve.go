@@ -13,6 +13,7 @@ import (
 	"github.com/codered/spore/internal/bridge/discord"
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/daemon"
+	mcphost "github.com/codered/spore/internal/mcp"
 	"github.com/codered/spore/internal/scheduler"
 	"github.com/codered/spore/internal/store"
 )
@@ -81,13 +82,32 @@ func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []s
 	}
 	defer daemon.ReleasePidFile(pidPath)
 
-	srv, err := buildServer(cfg, st)
+	srv, mcpHost, err := buildServer(cfg, st)
 	if err != nil {
 		return err
 	}
+	// Close is the guarantee, not the graceful path: Supervise's wait() below
+	// is what normally tears the host down, but every return between here and
+	// that join (buildBridge failing, a panic recovered upstream, and so on)
+	// must not leave a dialled MCP child (an npx process, say) running after
+	// this function returns. Close is idempotent — markDown no-ops without a
+	// session and killGroup guards a nil pid — so the deferred call is free
+	// on the graceful path where wait() has already closed everything.
+	defer mcpHost.Close()
 
 	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	// MCP servers are supervised like the bridge: dialled in the background,
+	// retried when they fail, and joined at shutdown so no child outlives the
+	// daemon.
+	mcpWait := func() {}
+	if mcpHost.Configured() {
+		mcpWait = mcphost.Supervise(ctx, mcpHost)
+		if !detach {
+			fmt.Printf("%d mcp server(s) configured\n", len(cfg.MCP.Servers))
+		}
+	}
 
 	sched := scheduler.New(st, srv, nil)
 	go sched.Run(ctx, time.Duration(cfg.Daemon.TickSeconds)*time.Second)
@@ -126,6 +146,15 @@ func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []s
 	case <-bridgeDone:
 	case <-time.After(5 * time.Second):
 		slog.Warn("discord bridge did not stop within the shutdown grace period")
+	}
+
+	mcpDone := make(chan struct{})
+	go func() { mcpWait(); close(mcpDone) }()
+	select {
+	case <-mcpDone:
+	case <-time.After(10 * time.Second):
+		slog.Warn("mcp servers did not stop within the shutdown grace period")
+		mcpHost.Close()
 	}
 	return err
 }

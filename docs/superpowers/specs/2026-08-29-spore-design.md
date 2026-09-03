@@ -1,8 +1,9 @@
 # spore — design
 
 **Date:** 2026-08-29 (amended 2026-08-31: Discord replaces Telegram as the
-first bridge, Plan 4 splits into 4a and 4b)
-**Status:** approved (brainstorming dialogue); Plans 1–3 implemented
+first bridge, Plan 4 splits into 4a and 4b; amended 2026-09-02: the MCP client
+host is designed in full, section 6)
+**Status:** approved (brainstorming dialogue); Plans 1–4a implemented
 
 ## 1. What spore is
 
@@ -244,10 +245,103 @@ later drop-ins.
 
 ### MCP
 
-The official Go MCP SDK hosts client connections to servers declared in config
-(stdio or HTTP). Their tools merge into the registry namespaced
+The official Go MCP SDK (`github.com/modelcontextprotocol/go-sdk`, pinned)
+hosts client connections to servers declared in config, over stdio or
+streamable HTTP. Their tools merge into the registry namespaced
 `mcp__<server>__<tool>`. A server that fails to start is logged and skipped,
 never fatal. This is the integration path for mycelium.
+
+**The host is a source the registry consults, not a second registry.** An MCP
+server's tool set changes while spore runs — a server drops, is redialled, and
+re-lists — so the registry gains one seam:
+
+```go
+// Source is a dynamic set of tools whose membership changes at runtime.
+type Source interface {
+    Specs() []provider.ToolSpec
+    Lookup(name string) (Tool, bool)
+}
+func (r *Registry) AddSource(s Source)
+```
+
+`Run` looks in the builtin map first and then in sources; `Specs` concatenates
+and sorts as before; `ReadOnly` consults both and still answers false for a
+name it cannot find. Builtins keep priority, so a source can never shadow or
+evict one. There is deliberately no second `ToolRunner` beside the guard:
+every call, builtin or remote, goes down one path with policy on it.
+
+`mcp.Host` implements `Source` over a `map[server]*snapshot`, where a snapshot
+is one server's tools, state and last error. A reconnect — or a
+`tools/list_changed` notification, which is how the protocol announces the
+same thing without dropping the connection — builds a fresh snapshot and swaps
+the pointer under a mutex, so a server's tool set changes all at once and the model never sees a half-listed server. A server that is
+down has no snapshot, so its tools are absent from `Specs` and a call to one
+gets the registry's ordinary "no tool named X" error result. That is the whole
+degradation path: no stale adapters, no special case.
+
+**Configuration and the child process.** Servers are declared as an
+array of tables, validated at load:
+
+```toml
+[[mcp.server]]
+name      = "notion"          # ^[a-z0-9_-]{1,24}$, unique
+transport = "stdio"           # or "http"
+command   = "npx"             # stdio only
+args      = ["-y", "@notionhq/notion-mcp-server"]
+env       = { NOTION_TOKEN = "…" }   # explicit values
+inherit   = ["HOME"]                 # names copied from spore's environment
+url       = ""                # http only
+timeout   = "60s"             # bounds one call
+```
+
+Declaring a server in the config file *is* the authorization to run it — the
+same trust as declaring a provider API key — so there is no sandbox. What
+there is, is a child that gets nothing it was not given: the subprocess
+environment is built from scratch out of `env`, the names listed in `inherit`,
+and `PATH` (without which `npx` cannot resolve, and which leaks nothing).
+Provider keys in spore's own environment are invisible to it by default. The
+working directory is pinned to `policy.workspace`. Shutdown cancels the
+context, closes the session, and kills the process group after a grace period,
+so a wedged server cannot outlive the daemon.
+
+**Results are external data.** Every result is prefixed with one line naming
+the server and marking the content as data rather than instructions — a prefix
+and not a fence, because the registry truncates at a byte budget and a closing
+fence is exactly what a long result would lose. `ReadOnly` always reports
+false for an MCP tool: the protocol has a `readOnlyHint` annotation, but it is
+supplied by the very server being leashed, and believing it would let a server
+opt itself into concurrent dispatch. The cost of ignoring it is that MCP calls
+run serially.
+
+**Policy needs no new mechanism.** `mcp__*` is already a tool glob in the rule
+grammar. The default config asks on `mcp__*` in the base ruleset and denies it
+under `[policy.profile.remote]`, so a Discord user cannot reach a server a
+local operator can. Both are ordinary lines an operator may edit — they are
+not part of the baseline deny set `Load` appends, which stays reserved for the
+rules no approval may ever talk past.
+
+**Lifecycle.** Servers are dialled concurrently at startup with a bounded
+timeout; a failure is logged and the daemon starts anyway. One supervisor
+goroutine per server redials with capped backoff on the shape `discord`
+already established, and every supervisor is joined on shutdown. A tool set
+that changes mid-session changes the serialised tool prefix and so invalidates
+the upstream prompt cache on the next turn: that is the accepted price of a
+live registry, since a stale tool list is worse than a cache miss, and the
+host logs when a swap actually changes the name set so a flapping server is
+visible in the cost data. A call already in flight holds its own session; if
+the server dies the SDK error becomes an ordinary tool error the model can
+route around. No turn fails because of MCP.
+
+**Skipping is per tool.** A tool whose namespaced name would fail the
+registry's name rule — longer than 64 characters, or outside
+`[A-Za-z0-9_-]` — is logged with its reason and left out of the snapshot, as
+is a name the same server has already listed. The rest of that server's tools
+are still offered; the model simply never sees the one that was dropped.
+
+`spore mcp list` dials the configured servers and prints each one's transport,
+state, tool count and last error, then the registered name and description of
+every tool it contributed. It shares its construction with `serve`, so what it
+prints is what the daemon sees.
 
 ### Policy engine
 
@@ -435,6 +529,14 @@ The seams are chosen so the interesting parts test offline:
 - Providers get contract tests against recorded HTTP fixtures.
 - One end-to-end test boots the daemon with the fake provider and drives it over
   HTTP.
+- MCP tests run a **real server in-process** over the SDK's in-memory
+  transports, so listing, calling, per-tool skipping, the snapshot swap and the
+  untrusted prefix are all exercised against the real protocol rather than a
+  mock of the SDK. Two go further: one real stdio subprocess, from a fixture
+  server the test compiles, proving the environment allowlist and the pinned
+  working directory actually hold; and one through the guard proving that
+  `deny mcp__*` under the `remote` profile stops a call before it reaches the
+  server.
 
 No live API calls in CI.
 
@@ -451,7 +553,7 @@ written only once its predecessor completes.
    engine, approval suspend/resume persisted across a restart.
 3. **Daemon and web UI** — HTTP + SSE API, multi-client sessions, embedded UI,
    scheduler and background jobs.
-4. **Discord bridge** (4a) — the bridge with the `remote` trust profile,
+4. **Discord bridge** (4a, shipped) — the bridge with the `remote` trust profile,
    admission, thread-per-session, and message-component approvals; then **MCP**
    (4b) — MCP client host and namespaced tools. They share nothing but the tool
    registry and the policy engine, both of which already exist, and the bridge
