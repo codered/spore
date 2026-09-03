@@ -111,6 +111,30 @@ func TestRecallSearchRemoteProfileIsScoped(t *testing.T) {
 	}
 }
 
+// The check is a negative match on the one trusted profile (local), not a
+// positive match on the untrusted one (remote). policy.Engine accepts
+// arbitrary profile names from config, so a profile this tool has never seen
+// must default to scoped, not to the open branch a `== ProfileRemote` check
+// would send it down the day a third profile exists.
+func TestRecallSearchUnknownProfileIsScopedLikeRemote(t *testing.T) {
+	f := &fakeRecall{}
+	ctx := policy.WithSession(context.Background(), "guest-sess", policy.Profile("guest"))
+	if _, err := NewRecallSearch(f).Call(ctx, json.RawMessage(`{"query":"x"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if f.got.SessionID != "guest-sess" {
+		t.Fatalf("unknown-profile search not pinned to its own session: %+v", f.got)
+	}
+	for _, k := range f.got.Kinds {
+		if k == recall.KindFact {
+			t.Fatal("unknown-profile search may read facts")
+		}
+	}
+	if len(f.got.Kinds) == 0 {
+		t.Fatal("unknown-profile search did not restrict kinds at all")
+	}
+}
+
 // SessionFrom reports the least-trusted profile when nothing is attached, so a
 // caller that forgot WithSession must get the scoped behaviour, not the open
 // one. Under the remote profile, SessionFrom also reports an empty session
