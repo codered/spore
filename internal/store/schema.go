@@ -134,4 +134,15 @@ END;
 CREATE TRIGGER IF NOT EXISTS recall_fts_summaries_ad AFTER DELETE ON summaries BEGIN
   DELETE FROM recall_fts WHERE kind = 'summary' AND ref_id = old.session_id;
 END;
+
+-- recall_sync is the watermark for a mirror backend. A vector store cannot
+-- join the transaction that writes recall_fts -- an HTTP call inside an open
+-- write transaction is how a database gets wedged -- so it is brought forward
+-- afterwards from the last rowid it saw. One row per backend, because two
+-- mirrors would otherwise fight over one cursor.
+CREATE TABLE IF NOT EXISTS recall_sync (
+  backend    TEXT PRIMARY KEY,
+  cursor     INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
 `
