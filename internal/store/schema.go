@@ -109,4 +109,29 @@ CREATE TABLE IF NOT EXISTS bridge_seen (
 );
 
 CREATE INDEX IF NOT EXISTS idx_bridge_seen_age ON bridge_seen(created_at);
+
+-- recall_fts is the keyword index behind spore recall and the recall_search
+-- tool. Content lives in this table, so 'rebuild' is a no-op here: repairing
+-- the index means deleting and reinserting from the source tables.
+--
+-- ref_id is TEXT for every kind: a message id cast to text, a session id for a
+-- summary, a fact name for a fact.
+CREATE VIRTUAL TABLE IF NOT EXISTS recall_fts USING fts5(
+  text,
+  kind       UNINDEXED,
+  ref_id     UNINDEXED,
+  session_id UNINDEXED,
+  created_at UNINDEXED
+);
+
+-- Deletion is the one sync path a trigger can own, because it needs no
+-- knowledge of the block format. Insertion happens in Go, where the block
+-- types are real types rather than JSON to be re-parsed in SQL.
+CREATE TRIGGER IF NOT EXISTS recall_fts_messages_ad AFTER DELETE ON messages BEGIN
+  DELETE FROM recall_fts WHERE kind = 'message' AND ref_id = CAST(old.id AS TEXT);
+END;
+
+CREATE TRIGGER IF NOT EXISTS recall_fts_summaries_ad AFTER DELETE ON summaries BEGIN
+  DELETE FROM recall_fts WHERE kind = 'summary' AND ref_id = old.session_id;
+END;
 `

@@ -25,6 +25,9 @@ usage:
   spore policy check <tool> [json-args]
                                print the decision a tool call would get
   spore mcp list               dial the configured MCP servers and print their tools
+  spore recall search <query>  keyword-search the message/summary/fact index
+  spore recall status          report index counts and backend health
+  spore recall reindex         rebuild the index from SQLite and fact files
 
 flags:
   -config <path>   config file (default ~/.spore/config.toml)
@@ -113,6 +116,8 @@ func run(args []string) error {
 			return fmt.Errorf("usage: spore mcp list")
 		}
 		return cmdMCPList(ctx, cfg)
+	case "recall":
+		return cmdRecall(ctx, cfg, args[1:])
 	default:
 		fmt.Print(usage)
 		return fmt.Errorf("unknown command %q", args[0])

@@ -21,22 +21,25 @@ type Span = oteltrace.Span
 
 // OpenInference attribute keys.
 const (
-	attrSpanKind       = "openinference.span.kind"
-	attrModelName      = "llm.model_name"
-	attrTokensIn       = "llm.token_count.prompt"
-	attrTokensOut      = "llm.token_count.completion"
-	attrInput          = "input.value"
-	attrOutput         = "output.value"
-	attrToolName       = "tool.name"
-	attrToolParams     = "tool.parameters"
-	attrCallSite       = "spore.call_site"
-	attrCostUSD        = "spore.cost_usd"
-	attrSessionID      = "session.id"
-	attrClient         = "spore.client"
-	attrPolicyDecision = "spore.policy.decision"
-	attrPolicyRule     = "spore.policy.rule"
-	attrToolIsError    = "spore.tool.is_error"
-	attrToolResultLen  = "spore.tool.result_bytes"
+	attrSpanKind         = "openinference.span.kind"
+	attrModelName        = "llm.model_name"
+	attrTokensIn         = "llm.token_count.prompt"
+	attrTokensOut        = "llm.token_count.completion"
+	attrInput            = "input.value"
+	attrOutput           = "output.value"
+	attrToolName         = "tool.name"
+	attrToolParams       = "tool.parameters"
+	attrCallSite         = "spore.call_site"
+	attrCostUSD          = "spore.cost_usd"
+	attrSessionID        = "session.id"
+	attrClient           = "spore.client"
+	attrPolicyDecision   = "spore.policy.decision"
+	attrPolicyRule       = "spore.policy.rule"
+	attrToolIsError      = "spore.tool.is_error"
+	attrToolResultLen    = "spore.tool.result_bytes"
+	attrRetrievalBackend = "spore.recall.backend"
+	attrRetrievalK       = "spore.recall.k"
+	attrRetrievalHits    = "spore.recall.hits"
 )
 
 var redact atomic.Bool
@@ -135,4 +138,30 @@ func RecordToolResult(span Span, content string, isErr, truncated bool) {
 	if !redact.Load() {
 		span.SetAttributes(attribute.String(attrOutput, content))
 	}
+}
+
+// StartRetriever opens the retriever span Phoenix renders natively. The query
+// is prompt-shaped text, so it is dropped when redacting; the shape of the
+// search is kept either way.
+func StartRetriever(ctx context.Context, backend, query string, k int) (context.Context, Span) {
+	kv := []attribute.KeyValue{
+		attribute.String(attrSpanKind, "RETRIEVER"),
+		attribute.String(attrRetrievalBackend, backend),
+		attribute.Int(attrRetrievalK, k),
+	}
+	if !redact.Load() {
+		kv = append(kv, attribute.String(attrInput, query))
+	}
+	return tracer().Start(ctx, "recall.search", oteltrace.WithAttributes(kv...))
+}
+
+// EndRetriever records which documents came back. Ids and scores are index
+// metadata rather than content, so they survive redaction.
+func EndRetriever(span Span, ids []string, scores []float64) {
+	span.SetAttributes(
+		attribute.Int(attrRetrievalHits, len(ids)),
+		attribute.StringSlice("retrieval.documents.ids", ids),
+		attribute.Float64Slice("retrieval.documents.scores", scores),
+	)
+	span.End()
 }

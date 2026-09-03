@@ -154,6 +154,71 @@ Check a ruleset without running anything:
 
     spore policy check fs_write '{"path":"/etc/hosts"}'
 
+## Memory and recall
+
+spore keeps two kinds of long-term memory: **facts**, hand-written notes about
+you and your projects, and a **keyword index** over everything spore has
+said and read.
+
+Facts live one-per-file under `<data_dir>/memory/*.md`, a plain Markdown file
+with YAML-shaped frontmatter for three fixed keys, parsed by a small
+hand-written reader rather than a general YAML library:
+
+    ---
+    name: prefers-tabs
+    description: How the user wants Go code formatted
+    type: user
+    ---
+
+    Gofmt defaults, tabs, no line-length limit.
+
+`name`, `description` and `type` are required; `type` is one of `user`,
+`feedback`, `project` or `reference`. The file is the source of truth — spore
+never stores a fact anywhere else — so you can write, edit or delete one by
+hand, and put the directory under version control if you want history. The
+model can also write facts through the `memory` tool.
+
+Every fact is inlined into the system prompt on every turn, up to
+`[context] fact_budget` estimated tokens (default 2000). A fact that would
+push the section over budget is not dropped: it falls back to a one-line
+`name: description` entry, and the model can pull the full body back with
+`recall_search`.
+
+    [context]
+    fact_budget = 2000
+
+`memory` (write and delete a fact — there is no read operation, since every
+fact is already inlined into the prompt) is `ask` by default, and denied
+outright to the `remote` trust profile: a fact written once shapes every
+later turn of every session, so a single prompt-injected instruction over
+Discord would otherwise plant permanent context. `recall_search` (read-only
+keyword search) is allowed by default; for a `remote` session it is
+additionally confined in the tool itself, not by policy, to that session's
+own messages and summaries, with facts excluded entirely.
+
+Three CLI verbs give you, the operator, the same index unscoped:
+
+    spore recall search <query>     # keyword search over messages, summaries and facts
+    spore recall status             # backend name and indexed counts per kind
+    spore recall reindex            # rebuild from spore.db and the fact files
+
+    $ spore recall search backoff
+    message  482  2026-08-30
+        ...tried exponential backoff and jitter before...
+
+    $ spore recall status
+    backend: sqlitefts
+    KIND     INDEXED
+    fact     3
+    message  482
+    summary  11
+
+    $ spore recall reindex
+    reindexed 482 messages and summaries, 3 facts
+
+Recall is keyword-only (SQLite FTS5) in this release. Semantic search arrives
+alongside the Weaviate backend, set up with `spore recall setup`.
+
 ## Running as a daemon
 
     spore serve                  # HTTP API, web UI and scheduler on 127.0.0.1:7777
