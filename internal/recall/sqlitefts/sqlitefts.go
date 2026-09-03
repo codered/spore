@@ -21,6 +21,13 @@ type Queryer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
+// txBeginner is an optional extension of Queryer for backends that support
+// transactions. *sql.DB satisfies this; bare in-memory databases and test
+// doubles may not.
+type txBeginner interface {
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
+}
+
 type Backend struct{ db Queryer }
 
 func New(db Queryer) *Backend { return &Backend{db: db} }
@@ -31,10 +38,40 @@ const timeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
 // Index writes chunks directly. The store already indexes messages and
 // summaries inside their own transactions; this path exists for facts and for
-// tests, and replaces any row with the same kind and id.
+// tests, and replaces any row with the same kind and id. If the Queryer
+// supports transactions, the batch is all-or-nothing; if not, a Queryer that
+// cannot begin a transaction is a test double or a future non-SQL adapter.
 func (b *Backend) Index(ctx context.Context, chunks []recall.Chunk) error {
+	tb, hasTx := b.db.(txBeginner)
+	if !hasTx {
+		// Fallback for test doubles and future adapters that don't support
+		// transactions. Process each chunk independently.
+		for _, c := range chunks {
+			if _, err := b.db.ExecContext(ctx,
+				`DELETE FROM recall_fts WHERE kind = ? AND ref_id = ?`, c.Kind, c.ID); err != nil {
+				return fmt.Errorf("replace %s %s: %w", c.Kind, c.ID, err)
+			}
+			created := c.CreatedAt
+			if created.IsZero() {
+				created = time.Now().UTC()
+			}
+			if _, err := b.db.ExecContext(ctx,
+				`INSERT INTO recall_fts (text, kind, ref_id, session_id, created_at) VALUES (?, ?, ?, ?, ?)`,
+				c.Text, c.Kind, c.ID, c.SessionID, created.UTC().Format(timeFormat)); err != nil {
+				return fmt.Errorf("index %s %s: %w", c.Kind, c.ID, err)
+			}
+		}
+		return nil
+	}
+
+	tx, err := tb.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin index transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	for _, c := range chunks {
-		if _, err := b.db.ExecContext(ctx,
+		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM recall_fts WHERE kind = ? AND ref_id = ?`, c.Kind, c.ID); err != nil {
 			return fmt.Errorf("replace %s %s: %w", c.Kind, c.ID, err)
 		}
@@ -42,11 +79,15 @@ func (b *Backend) Index(ctx context.Context, chunks []recall.Chunk) error {
 		if created.IsZero() {
 			created = time.Now().UTC()
 		}
-		if _, err := b.db.ExecContext(ctx,
+		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO recall_fts (text, kind, ref_id, session_id, created_at) VALUES (?, ?, ?, ?, ?)`,
 			c.Text, c.Kind, c.ID, c.SessionID, created.UTC().Format(timeFormat)); err != nil {
 			return fmt.Errorf("index %s %s: %w", c.Kind, c.ID, err)
 		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit index transaction: %w", err)
 	}
 	return nil
 }

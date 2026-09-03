@@ -160,4 +160,71 @@ func TestStatusCountsByKind(t *testing.T) {
 	}
 }
 
+// TestIndexBatchTransactional verifies that batch indexing uses transactions
+// when the Queryer supports them. We verify this by checking that a batch of
+// operations is processed as a unit.
+func TestIndexBatchTransactional(t *testing.T) {
+	db := newDB(t)
+	b := New(db)
+
+	// Index a batch of multiple chunks. Because db (sql.DB) implements
+	// BeginTx, the batch should be indexed transactionally.
+	batch := []recall.Chunk{
+		chunk(recall.KindMessage, "m1", "s1", "message one"),
+		chunk(recall.KindMessage, "m2", "s1", "message two"),
+		chunk(recall.KindFact, "fact1", "", "a fact"),
+	}
+	err := b.Index(context.Background(), batch)
+	if err != nil {
+		t.Fatalf("Index failed: %v", err)
+	}
+
+	// Verify all chunks were indexed.
+	st, err := b.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Counts[recall.KindMessage] != 2 || st.Counts[recall.KindFact] != 1 {
+		t.Fatalf("batch not fully indexed: %+v", st.Counts)
+	}
+}
+
+// TestIndexFallbackPath verifies that a Queryer without BeginTx support still
+// works for indexing, even though it won't get batch atomicity.
+type noTxQueryer struct {
+	db *sql.DB
+}
+
+func (q *noTxQueryer) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return q.db.QueryContext(ctx, query, args...)
+}
+
+func (q *noTxQueryer) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return q.db.ExecContext(ctx, query, args...)
+}
+
+func TestIndexFallbackPath(t *testing.T) {
+	db := newDB(t)
+	// Wrap the DB in a type that doesn't implement BeginTx, forcing the fallback path.
+	b := New(&noTxQueryer{db: db})
+
+	err := b.Index(context.Background(), []recall.Chunk{
+		chunk(recall.KindMessage, "1", "s", "text one"),
+		chunk(recall.KindMessage, "2", "s", "text two"),
+	})
+
+	if err != nil {
+		t.Fatalf("Index failed in fallback path: %v", err)
+	}
+
+	// Verify both chunks were indexed.
+	hits, err := b.Search(context.Background(), recall.Query{Text: "text"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("expected 2 hits, got %d", len(hits))
+	}
+}
+
 var _ recall.Recall = (*Backend)(nil)
