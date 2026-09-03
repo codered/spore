@@ -2,8 +2,9 @@
 
 **Date:** 2026-08-29 (amended 2026-08-31: Discord replaces Telegram as the
 first bridge, Plan 4 splits into 4a and 4b; amended 2026-09-02: the MCP client
-host is designed in full, section 6)
-**Status:** approved (brainstorming dialogue); Plans 1–4a implemented
+host is designed in full, section 6; amended 2026-09-03: memory and recall are
+designed in full and Plan 5 splits into 5a and 5b, sections 5 and 11)
+**Status:** approved (brainstorming dialogue); Plans 1–4b implemented
 
 ## 1. What spore is
 
@@ -47,7 +48,8 @@ spore (binary)
 ├── internal/tool          registry + builtins: fs, shell, web, schedule, memory, recall
 ├── internal/mcp           MCP client host (stdio + HTTP servers)
 ├── internal/policy        approval rules, pattern matching, decision persistence
-├── internal/store         SQLite: sessions, messages, summaries, facts, jobs, approvals
+├── internal/store         SQLite: sessions, messages, summaries, jobs, approvals
+├── internal/memory        fact files: parse, validate, atomic write, delete
 ├── internal/recall        Recall interface; sqlitefts and weaviate backends
 ├── internal/trace         OpenTelemetry + OpenInference span helpers
 ├── internal/daemon        HTTP + SSE API, supervision of bridges and scheduler
@@ -58,7 +60,7 @@ spore (binary)
 ### Turn data flow
 
 A client posts a message to the session API → the agent core loads session
-history plus memory facts (and recalled snippets, if recall is enabled) → the
+history plus memory facts → the
 router picks a model for the call site → the provider streams a response → tool
 calls are dispatched through the registry, each checked by the policy engine
 (which may suspend the turn awaiting approval) → results append to the
@@ -98,7 +100,11 @@ load session → assemble context → route → provider call (streaming)
 Fixed order, each part with a token budget:
 
 1. System prompt (from config).
-2. Memory facts (fact files; plus recalled snippets when recall is enabled).
+2. Memory facts — fact bodies in name order while under the fact budget, then
+   name-and-description lines for the overflow. Recalled snippets never appear
+   here: recall is reached through the `recall_search` tool, so retrieval is
+   visible in the transcript, costs nothing on a turn that does not need it,
+   and is gated by the policy engine like any other call.
 3. Compaction summary, if the session has one.
 4. The live message tail.
 
@@ -169,52 +175,190 @@ The call-site discipline is what makes per-session cost attribution possible.
 
 ## 5. Memory
 
-Three layers with distinct jobs.
+Three layers with distinct jobs. Plan 5 splits along the line between the two
+that need nothing but the binary and the one that provisions a service: **5a**
+is facts, search and the `sqlitefts` backend; **5b** is Weaviate and Phoenix.
 
 ### Sessions — SQLite, always on
 
 One file at `~/.spore/spore.db`. Tables: `sessions`, `messages` (role, content
-blocks as JSON, token counts, call site, model, cost), `summaries`, `facts`,
-`jobs`, `approvals`. Every message ever exchanged is retained; this is the
-archive behind `spore session list|show|resume|export`. FTS5 over message text
-provides keyword search across all history with no vector store present.
+blocks as JSON, token counts, call site, model, cost), `summaries`, `jobs`,
+`approvals`, `pending_calls`, `bridge_bindings`. Every message ever exchanged is
+retained; this is the archive behind `spore session list|show|resume|export`.
+FTS5 over the curated corpus provides keyword search across all history with no
+vector store present.
+
+There is no `facts` table. Facts are files, and the file is the only source of
+truth; SQLite indexes their text for search but never owns it.
 
 Build discipline: FTS5 requires `-tags sqlite_fts5` on every build and test.
 
 ### Facts — files, human-editable
 
-`~/.spore/memory/*.md`, one fact per file with YAML frontmatter (`name`,
-`description`, `type`). Loaded and budgeted during context assembly. spore
-writes them via the `memory` tool; the user edits them directly in an editor or
-git. The file is the source of truth.
+`<data_dir>/memory/*.md`, one fact per file: YAML frontmatter then a markdown
+body.
 
-### Recall — optional, Weaviate
+```markdown
+---
+name: prefers-tabs
+description: How the user wants Go code formatted
+type: user
+---
+
+Gofmt defaults, tabs, no line-length limit.
+```
+
+`name`, `description` and `type` are required; `type` is one of `user`,
+`feedback`, `project`, `reference`. Only `*.md` directly in the directory is
+read — no recursion, so a scratch subdirectory never becomes context. The file
+is always `<name>.md`, so the frontmatter name cannot disagree with the
+filename, and a crafted name cannot steer a write or a delete out of the
+directory.
+
+`internal/memory` owns this layer and touches nothing else — no SQL, no store:
 
 ```go
+type Fact struct {
+    Name, Description, Type, Body string
+    Path   string
+    Tokens int
+}
+
+func Load(dir string) ([]Fact, []error)   // sorted by name; per-file errors
+func Write(dir string, f Fact) error      // atomic: temp file + rename
+func Delete(dir, name string) error
+```
+
+`Load` returns partial results alongside per-file errors. Because a human edits
+these files by hand, a broken one degrades to a missing fact and a warning
+event, never to a failed turn. A missing directory means zero facts and is
+created on first write.
+
+**Assembly and budget.** `Snapshot.Facts` carries `[]memory.Fact`, and
+`Assemble` walks it in name order, inlining full bodies while the running total
+stays under `[context] fact_budget` (default 2000 tokens) and emitting
+`- name: description` for the overflow under a heading that tells the model it
+can retrieve a body with `recall_search`. So the model always knows every fact
+exists, whether or not it fits.
+
+Name order rather than recency is deliberate: the system block stays
+byte-identical between turns, which preserves the prompt cache. The daemon
+loads facts at startup and re-reads the directory after a `memory` write or
+delete, not on every turn.
+
+### Recall — the interface and the default backend
+
+```go
+type Chunk struct {
+    ID, Kind, Text, SessionID string   // Kind: "message" | "summary" | "fact"
+    CreatedAt time.Time
+}
+type Hit struct {
+    Chunk
+    Score   float64
+    Excerpt string
+}
+
 type Recall interface {
     Index(ctx context.Context, chunks []Chunk) error
-    Search(ctx context.Context, query string, k int) ([]Hit, error)
+    Search(ctx context.Context, q Query) ([]Hit, error)
     Status(ctx context.Context) (Status, error)
 }
 ```
 
-Backends: `sqlitefts` (default, zero setup, keyword) and `weaviate` (semantic).
+`Search` takes a `Query` rather than `(query string, k int)` because it needs
+`Kinds` and `SessionID` filters — the CLI searches everything, the tool searches
+a narrower slice — and because adding a field later beats changing a signature
+once a second backend implements it.
 
-Indexed content is curated: fact files, compaction summaries, and user messages.
-Tool output is deliberately excluded — bulky and quick to go stale.
+Backends: `sqlitefts` (default, zero setup, keyword) and `weaviate` (semantic,
+5b). `internal/recall` holds the interface; each backend is a subpackage.
+`sqlitefts` talks to a narrow queryer interface the store satisfies, so it tests
+against a real in-memory SQLite without dragging in session machinery.
+
+**Corpus.** Indexed content is curated: fact files, compaction summaries, and
+message text from both sides of the conversation. Tool-result blocks are
+deliberately excluded — bulky, quick to go stale, and the one place in a message
+where untrusted third-party text lives. Assistant prose is spore's own output
+and introduces no new trust boundary, and excluding it would mean recall could
+find a question but never its answer.
+
+**Schema and sync.** One FTS5 virtual table,
+`recall_fts(text, kind UNINDEXED, ref_id UNINDEXED, session_id UNINDEXED,
+created_at UNINDEXED)`; ranking by `bm25()`, excerpts by `snippet()`.
+
+Indexing happens in Go, inside the same transaction as `AppendMessage` and
+`SetSummary`, rather than in a SQLite trigger. The curation rule is "text blocks
+only, never `tool_result`", and `messages.content` is a JSON block array: a
+trigger would have to re-implement the block format in `json_each` and would
+drift the first time that struct changed. Triggers survive only on the delete
+path, which needs no knowledge of the format. Facts index at startup and after
+each `memory` write or delete.
+
+Keeping the index write inside the message transaction is deliberate. An FTS
+insert into the same database fails only for reasons — disk full, corruption —
+that would fail the message write too, so there is no case where sacrificing the
+archive buys a working index. Drift from any other cause is what
+`spore recall reindex` repairs; schema creation backfills once from `messages`
+and `summaries` so an existing database becomes searchable on upgrade.
+
+**Query handling.** FTS5 MATCH reads `"`, `*`, `-`, `NEAR` and `OR` as syntax,
+so a natural-language query is a syntax error rather than an empty result.
+Queries are tokenised and each token double-quoted before reaching MATCH: a
+search is always a literal token conjunction, and no input can produce a
+malformed-query error.
+
+`Status` reports the backend name, indexed object count per kind, and a
+`Degraded` flag with reason — always false for `sqlitefts`, and the seam 5b's
+fallback needs.
+
+### Surfaces
+
+`recall_search` takes `query` and `k` (default 8, capped at 25) and is
+read-only. Hits render as `[kind · session · date] excerpt`; a `fact` hit
+returns the whole body rather than a snippet, since facts are short and this is
+the retrieval path budget-overflow facts depend on. It opens the `retriever`
+span section 7 reserves — query, backend, k, hit ids and scores — with the query
+text dropped under `redact`.
+
+`memory` takes `op` (`write` or `delete`), `name`, and for a write
+`description`, `type` and `body`. It is not read-only, and it is confined by
+`internal/memory` rather than by the workspace guard, because
+`<data_dir>/memory` lies outside the workspace the filesystem tools are bounded
+to.
+
+CLI: `spore recall search <query> [--kind] [--session] [-k]`,
+`spore recall status`, `spore recall reindex`; `setup` and `teardown` join them
+in 5b.
+
+**Policy.** In `config.Default()`, `recall_search` is allowed and `memory` is
+`ask`. Under the `remote` profile `memory` is denied outright — a fact, once
+written, shapes every future turn in every session, so a single injection
+through a bridge would otherwise plant permanent context — and it sits in the
+profile deny list rather than `baselineDeny`, which stays reserved for rules no
+approval may talk past.
+
+`recall_search` under `remote` is not denied but scoped: the tool reads
+`policy.SessionFrom(ctx)` and, under `ProfileRemote`, forces `Query.SessionID`
+to the calling session and drops the `fact` kind. Otherwise an admitted Discord
+user could search the operator's entire local history and personal facts through
+the bot. The policy engine cannot express this, because it gates tool names and
+predicates and not result scope, so the tool owns it — and that makes it a
+property to test rather than a comment.
+
+**Self-provisioning (5b).** `recall_setup` is exposed both as
+`spore recall setup` and as an agent tool, so "set up my vector store" is
+something spore can do when asked. It: checks for Docker; writes
+`~/.spore/weaviate/compose.yml` pinned to an exact Weaviate version; starts the
+container bound to localhost only; waits for readiness; creates the collection
+with the Ollama vectorizer configured; backfills from SQLite in batches emitting
+progress events; sets `recall.backend = "weaviate"` in config. `spore recall
+status` reports container health, object count and backfill lag; `spore recall
+teardown` reverses it. Because it starts a container, provisioning passes
+through the policy engine.
 
 Vectors are computed Weaviate-side via `text2vec-ollama` pointed at the local
 Ollama, so spore ships no embedding model and holds no embedding API key.
-
-**Self-provisioning.** `recall_setup` is exposed both as `spore recall setup`
-and as an agent tool, so "set up my vector store" is something spore can do when
-asked. It: checks for Docker; writes `~/.spore/weaviate/compose.yml` pinned to an
-exact Weaviate version; starts the container bound to localhost only; waits for
-readiness; creates the collection with the Ollama vectorizer configured;
-backfills from SQLite in batches emitting progress events; sets
-`recall.backend = "weaviate"` in config. `spore recall status` reports container
-health, object count and backfill lag; `spore recall teardown` reverses it.
-Because it starts a container, provisioning passes through the policy engine.
 
 **Degradation.** If Weaviate is configured but unreachable, recall falls back to
 the `sqlitefts` backend and the turn continues with a warning event.
@@ -232,10 +376,10 @@ Each builtin is a small package implementing one interface (`Name`, `Schema`,
 | `shell` | exec with timeout and output cap |
 | `web` | search, fetch-to-markdown |
 | `schedule` | create, list, cancel background jobs |
-| `memory` | fact create, update, delete, list |
-| `recall` | search over history and facts |
+| `memory` | fact write, delete (files under `<data_dir>/memory`) |
+| `recall_search` | search over messages, summaries and facts |
 
-The `memory` and `recall` builtins depend on subsystems that land in Plan 5 and
+The `memory` and `recall_search` builtins depend on subsystems that land in Plan 5a and
 ship with it, and `schedule` ships in Plan 3 with the scheduler it drives; the
 rest ship in Plan 2 (section 11).
 
@@ -353,8 +497,8 @@ ordered rules, evaluated on the tool *and its arguments*:
 workspace = "~/dev"
 default   = "ask"
 
-allow = [ "fs.read", "fs.list", "fs.glob", "fs.grep", "web.*", "recall.*", "memory.*" ]
-ask   = [ "fs.write", "fs.edit", "shell.exec", "schedule.*", "mcp__*" ]
+allow = [ "fs.read", "fs.list", "fs.glob", "fs.grep", "web.*", "recall_search" ]
+ask   = [ "fs.write", "fs.edit", "shell.exec", "schedule.*", "mcp__*", "memory" ]
 deny  = [
   "fs.*(path outside workspace)",
   "fs.*(path matches **/.env, **/.ssh/**, **/*_rsa)",
@@ -537,13 +681,30 @@ The seams are chosen so the interesting parts test offline:
   working directory actually hold; and one through the guard proving that
   `deny mcp__*` under the `remote` profile stops a call before it reaches the
   server.
+- Memory and recall test offline in full. `internal/memory` parses table-driven,
+  including broken frontmatter, a `name` disagreeing with its filename, and a
+  `name` holding `../` — the last asserting that a write and a delete stay
+  inside the directory. Budget tests cover under, at, and over the fact budget,
+  and assert that two identical calls to `Assemble` produce byte-identical
+  system blocks, stating the prompt-cache property as a test rather than a
+  comment. `sqlitefts` runs against a real in-memory SQLite under
+  `-tags sqlite_fts5`, with a query-sanitisation table covering `"`, `*`, `-v`,
+  `NEAR`, `OR`, unicode and empty input, each asserting a result rather than a
+  syntax error. Two tests carry the trust boundary and earn a mutation check: a
+  `tool_result` block never reaches the index however the message is shaped, and
+  a `remote`-profile `recall_search` returns neither another session's messages
+  nor any fact — both building config through `config.Load` on a real file,
+  since `Default()` carries no baseline deny and a policy assertion against it
+  proves nothing. A round-trip test appends and searches, deletes a fact and
+  confirms it is gone, then corrupts the table by hand and repairs it with
+  `reindex`.
 
 No live API calls in CI.
 
 ## 11. Implementation staging
 
-Five stages, each independently useful; stage 4 is two plans. Each plan is
-written only once its predecessor completes.
+Five stages, each independently useful; stages 4 and 5 are two plans each. Each
+plan is written only once its predecessor completes.
 
 1. **Core** — store and schema, config, provider interface with `anthropic` and
    `openaicompat`, the agent loop, compaction, router, `spore once` and `chat`
@@ -555,10 +716,17 @@ written only once its predecessor completes.
    scheduler and background jobs.
 4. **Discord bridge** (4a, shipped) — the bridge with the `remote` trust profile,
    admission, thread-per-session, and message-component approvals; then **MCP**
-   (4b) — MCP client host and namespaced tools. They share nothing but the tool
+   (4b, shipped) — MCP client host and namespaced tools. They share nothing but the tool
    registry and the policy engine, both of which already exist, and the bridge
    is the first surface an untrusted party can reach, so it earns a focused
    review of its own rather than one that also has to weigh whether namespaced
    MCP tools work.
-5. **Memory and recall** — fact files, FTS search, the `Recall` interface, the
-   Weaviate backend with `recall setup`, and `trace setup` for Phoenix.
+5. **Memory and recall**, split for the same reason stage 4 was. **5a** is
+   fact files, the `memory` tool, context budgeting, FTS5 search and the
+   `Recall` interface with its `sqlitefts` backend: pure Go and SQLite, no
+   daemon, testable end to end offline. **5b** is the Weaviate backend,
+   `recall setup|status|teardown`, and `trace setup` for Phoenix. They share
+   only the `Recall` interface, and 5b introduces a dependency on Docker, a
+   container lifecycle, a network backfill and an agent-callable tool that
+   starts a container — a new policy surface that earns a focused review rather
+   than one also weighing changes to context assembly.
