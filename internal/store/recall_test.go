@@ -240,6 +240,41 @@ func TestReindexAllNeverIndexesToolResultBlocks(t *testing.T) {
 	}
 }
 
+// A recall index that cannot even be queried must not stop spore from
+// starting, because cmdRecall opens the store the same way the daemon does --
+// a fatal Open would mean the index breaks the one command that repairs it.
+// Dropping an FTS5 shadow table is a real corruption, not a stand-in: the
+// virtual table itself becomes unreadable, which is a stronger failure than
+// the drifted-or-wiped-rows case ReindexAll repairs.
+func TestOpenSurvivesACorruptRecallIndex(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "spore.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid, _ := st.CreateSession(ctx, "t")
+	if _, err := st.AppendMessage(ctx, Message{SessionID: sid, Role: "user",
+		BlocksJSON: blocks(t, provider.Block{Type: provider.BlockText, Text: "before the corruption"})}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`DROP TABLE recall_fts_data`); err != nil {
+		t.Fatalf("corrupt the fts5 shadow table: %v", err)
+	}
+	st.Close()
+
+	st2, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open failed on a corrupt recall index, so cmdRecall could never repair it: %v", err)
+	}
+	defer st2.Close()
+
+	// The store itself -- unrelated to recall -- must still work.
+	if _, _, err := st2.Session(ctx, sid); err != nil {
+		t.Fatalf("store is unusable after a degraded recall backfill: %v", err)
+	}
+}
+
 // An existing database predates the index, so opening it must backfill.
 func TestOpenBackfillsAnExistingDatabase(t *testing.T) {
 	ctx := context.Background()

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -65,9 +66,14 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	// A backfill failure is deliberately not fatal here, unlike the schema and
+	// open errors above it. cmdRecall opens the store the same way everything
+	// else does, so a fatal error here would mean a corrupt recall index makes
+	// spore unstartable, including the "spore recall reindex" command that is
+	// the only way to repair it. Degrade instead: search comes back empty
+	// until the index is rebuilt, but every turn still runs.
 	if err := backfillRecall(db); err != nil {
-		db.Close()
-		return nil, err
+		slog.Default().Warn("recall index backfill failed, search will be empty until it is repaired", "error", err)
 	}
 	return &Store{db: db}, nil
 }
