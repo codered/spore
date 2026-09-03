@@ -78,8 +78,9 @@ type Agent struct {
 	Router   *router.Router
 	Cfg      *config.Config
 	Tools    ToolRunner
-	// Facts is the loaded fact set. Nil means no memory layer, which is what
-	// a bare `spore once` runs with.
+	// Facts is the loaded fact set. Nil means no memory layer attached; every
+	// production construction path (buildAgent) sets it, so nil in practice
+	// means a test built the Agent directly with New and never attached one.
 	Facts *memory.Cache
 }
 
@@ -89,7 +90,8 @@ func New(st *store.Store, reg *provider.Registry, rt *router.Router, cfg *config
 
 // Snapshot reads the session's persisted state into the value context
 // assembly consumes. Facts come from the fact cache when one is attached;
-// a nil cache means no facts, which is what `spore once` runs with.
+// a nil cache means no facts, which only happens when an Agent is built
+// directly (as tests do) rather than through buildAgent.
 func (a *Agent) Snapshot(ctx context.Context, sessionID string) (Snapshot, error) {
 	rows, err := a.Store.Messages(ctx, sessionID)
 	if err != nil {

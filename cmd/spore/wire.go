@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -95,6 +96,13 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	factsDir := filepath.Join(cfg.DataDir, "memory")
 	facts := memory.NewCache(factsDir)
 	for _, err := range facts.Reload() {
+		if errors.Is(err, memory.ErrReadDir) {
+			// The whole reload failed (permission denied, an unmounted volume);
+			// nothing was skipped, and Reload deliberately kept the previously
+			// cached set rather than blanking it.
+			slog.Default().Warn("fact directory unreadable, keeping previously loaded facts", "error", err)
+			continue
+		}
 		// A hand-edited fact that will not parse costs one fact and a warning,
 		// never a failed startup.
 		slog.Default().Warn("skipping malformed fact", "error", err)
