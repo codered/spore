@@ -45,7 +45,8 @@ func (b *Backend) Index(ctx context.Context, chunks []recall.Chunk) error {
 	tb, hasTx := b.db.(txBeginner)
 	if !hasTx {
 		// Fallback for test doubles and future adapters that don't support
-		// transactions. Process each chunk independently.
+		// transactions. Process each chunk independently. This path is NOT atomic:
+		// a failure mid-batch leaves prior chunks in the index.
 		for _, c := range chunks {
 			if _, err := b.db.ExecContext(ctx,
 				`DELETE FROM recall_fts WHERE kind = ? AND ref_id = ?`, c.Kind, c.ID); err != nil {
