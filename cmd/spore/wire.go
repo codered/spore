@@ -42,8 +42,8 @@ import (
 // passed in here just to register the two memory tools around it.
 func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recallBackend recall.Recall, approver policy.Approver) (*policy.Guard, *mcphost.Host, error) {
 	reg := tool.NewRegistry(cfg.Policy.MaxOutput)
-	tools := fs.New(cfg.Policy.Workspace, cfg.Policy.MaxOutput)
-	tools = append(tools, shell.New(cfg.Policy.Workspace,
+	tools := fs.New(cfg.Policy.MaxOutput)
+	tools = append(tools, shell.New(
 		time.Duration(cfg.Shell.TimeoutSeconds)*time.Second, cfg.Policy.MaxOutput))
 	tools = append(tools, web.New(cfg.Web, cfg.Policy.MaxOutput)...)
 	tools = append(tools, schedule.New(st)...)

@@ -65,7 +65,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// An empty body is fine — a session with no title is legal.
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	id, err := s.store.CreateSession(r.Context(), strings.TrimSpace(body.Title), "")
+	id, err := s.store.CreateSession(r.Context(), strings.TrimSpace(body.Title), s.cfg.Policy.Workspace)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "create session: %v", err)
 		return
@@ -164,7 +164,12 @@ func (s *Server) startTurn(sessionID, text, client string, profile policy.Profil
 		}
 	}()
 
-	ctx := policy.WithSession(s.base, policy.Session{ID: sessionID, Profile: profile})
+	sess, found, err := s.store.Session(s.base, sessionID)
+	if err != nil || !found {
+		return fmt.Errorf("could not load session: %w", err)
+	}
+
+	ctx := policy.WithSession(s.base, policy.Session{ID: sessionID, Profile: profile, Workspace: sess.Workspace})
 	ctx, turn = sporetrace.StartTurn(ctx, sessionID, client)
 
 	ch, err := s.agent.Run(ctx, sessionID, text)

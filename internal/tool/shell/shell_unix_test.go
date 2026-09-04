@@ -7,24 +7,31 @@
 package shell
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/codered/spore/internal/policy"
 )
 
 func TestTimeoutReapsBackgroundedChildren(t *testing.T) {
 	ws := t.TempDir()
 	marker := filepath.Join(ws, "grandchild-ran.txt")
-	tl := New(ws, 5*time.Second, 1<<20)
+	tl := New(5*time.Second, 1<<20)
+	ctx := policy.WithSession(context.Background(),
+		policy.Session{ID: "test", Profile: policy.ProfileLocal, Workspace: ws})
 	// The command backgrounds a child that creates the marker well after the
 	// timeout. Killing only the direct child leaves the grandchild running and
 	// the marker appears — which is exactly what Setpgid exists to prevent.
-	if _, err := call(t, tl, map[string]any{
+	raw, _ := json.Marshal(map[string]any{
 		"command":         "(sleep 2; touch " + marker + ") & sleep 30",
 		"timeout_seconds": 1,
-	}); err != nil {
+	})
+	if _, err := tl.Call(ctx, raw); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(3 * time.Second)
@@ -38,8 +45,12 @@ func TestExitAtTheDeadlineIsReportedAsAnExitNotAKill(t *testing.T) {
 	// output pipe open past the deadline, so the deadline expires while the
 	// call is still waiting. The process exited on its own and was never
 	// signalled: reporting a kill would hide the exit status from the model.
-	tl := New(t.TempDir(), 20*time.Millisecond, 1<<20)
-	out, err := call(t, tl, map[string]string{"command": "sleep 1 & exit 7"})
+	ws := t.TempDir()
+	tl := New(20*time.Millisecond, 1<<20)
+	ctx := policy.WithSession(context.Background(),
+		policy.Session{ID: "test", Profile: policy.ProfileLocal, Workspace: ws})
+	raw, _ := json.Marshal(map[string]string{"command": "sleep 1 & exit 7"})
+	out, err := tl.Call(ctx, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,15 +65,18 @@ func TestExitAtTheDeadlineIsReportedAsAnExitNotAKill(t *testing.T) {
 func TestGrandchildIsReapedEvenWhenTheShellExitsFirst(t *testing.T) {
 	ws := t.TempDir()
 	marker := filepath.Join(ws, "grandchild-ran.txt")
-	tl := New(ws, 5*time.Second, 1<<20)
+	tl := New(5*time.Second, 1<<20)
+	ctx := policy.WithSession(context.Background(),
+		policy.Session{ID: "test", Profile: policy.ProfileLocal, Workspace: ws})
 	// bash exits straight away, so os/exec never invokes Cancel; the
 	// grandchild inherits the output pipe and keeps the call blocked. Nothing
 	// kills the process group on this path, so the deadline has to.
 	start := time.Now()
-	out, err := call(t, tl, map[string]any{
+	raw, _ := json.Marshal(map[string]any{
 		"command":         "(sleep 4; touch " + marker + ") & exit 7",
 		"timeout_seconds": 1,
 	})
+	out, err := tl.Call(ctx, raw)
 	if err != nil {
 		t.Fatal(err)
 	}

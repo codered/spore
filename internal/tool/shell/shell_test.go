@@ -8,7 +8,21 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/codered/spore/internal/policy"
 )
+
+func ctxFor(ws string) context.Context {
+	return policy.WithSession(context.Background(),
+		policy.Session{ID: "test", Profile: policy.ProfileLocal, Workspace: ws})
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
 
 func call(t *testing.T, tl interface {
 	Call(context.Context, json.RawMessage) (string, error)
@@ -20,8 +34,10 @@ func call(t *testing.T, tl interface {
 
 func TestExecCapturesOutput(t *testing.T) {
 	ws := t.TempDir()
-	tl := New(ws, 5*time.Second, 1<<20)
-	out, err := call(t, tl, map[string]string{"command": "echo hello"})
+	tl := New(5*time.Second, 1<<20)
+	ctx := ctxFor(ws)
+	raw, _ := json.Marshal(map[string]string{"command": "echo hello"})
+	out, err := tl.Call(ctx, raw)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -35,10 +51,10 @@ func TestExecRunsInTheWorkspace(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws, "marker.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tl := New(ws, 5*time.Second, 1<<20)
-	// Comparing pwd output would be fragile where the temp dir is reached
-	// through a symlink; listing the workspace is not.
-	out, err := call(t, tl, map[string]string{"command": "ls"})
+	tl := New(5*time.Second, 1<<20)
+	ctx := ctxFor(ws)
+	raw, _ := json.Marshal(map[string]string{"command": "ls"})
+	out, err := tl.Call(ctx, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,8 +64,11 @@ func TestExecRunsInTheWorkspace(t *testing.T) {
 }
 
 func TestNonZeroExitIsReportedNotHidden(t *testing.T) {
-	tl := New(t.TempDir(), 5*time.Second, 1<<20)
-	out, err := call(t, tl, map[string]string{"command": "echo to-stderr 1>&2; exit 3"})
+	ws := t.TempDir()
+	tl := New(5*time.Second, 1<<20)
+	ctx := ctxFor(ws)
+	raw, _ := json.Marshal(map[string]string{"command": "echo to-stderr 1>&2; exit 3"})
+	out, err := tl.Call(ctx, raw)
 	if err != nil {
 		t.Fatalf("a failing command must return output, not a Go error: %v", err)
 	}
@@ -62,9 +81,12 @@ func TestNonZeroExitIsReportedNotHidden(t *testing.T) {
 }
 
 func TestTimeoutKillsTheCommand(t *testing.T) {
-	tl := New(t.TempDir(), 5*time.Second, 1<<20)
+	ws := t.TempDir()
+	tl := New(5*time.Second, 1<<20)
+	ctx := ctxFor(ws)
 	start := time.Now()
-	out, err := call(t, tl, map[string]any{"command": "sleep 30", "timeout_seconds": 1})
+	raw, _ := json.Marshal(map[string]any{"command": "sleep 30", "timeout_seconds": 1})
+	out, err := tl.Call(ctx, raw)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -77,15 +99,21 @@ func TestTimeoutKillsTheCommand(t *testing.T) {
 }
 
 func TestEmptyCommandIsAnError(t *testing.T) {
-	tl := New(t.TempDir(), 5*time.Second, 1<<20)
-	if _, err := call(t, tl, map[string]string{"command": "  "}); err == nil {
+	ws := t.TempDir()
+	tl := New(5*time.Second, 1<<20)
+	ctx := ctxFor(ws)
+	raw, _ := json.Marshal(map[string]string{"command": "  "})
+	if _, err := tl.Call(ctx, raw); err == nil {
 		t.Error("an empty command must be a tool error")
 	}
 }
 
 func TestOutputIsCappedInMemory(t *testing.T) {
-	tl := New(t.TempDir(), 10*time.Second, 4096)
-	out, err := call(t, tl, map[string]string{"command": "head -c 200000 /dev/zero | tr '\\0' 'x'"})
+	ws := t.TempDir()
+	tl := New(10*time.Second, 4096)
+	ctx := ctxFor(ws)
+	raw, _ := json.Marshal(map[string]string{"command": "head -c 200000 /dev/zero | tr '\\0' 'x'"})
+	out, err := tl.Call(ctx, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,8 +130,11 @@ func TestFastCommandIsNeverReportedAsTimedOut(t *testing.T) {
 	// command really did finish, which a deadline shorter than bash's own
 	// startup would not establish.
 	for i := 0; i < 50; i++ {
-		tl := New(t.TempDir(), 2*time.Second, 1<<20)
-		out, err := call(t, tl, map[string]string{"command": "true"})
+		ws := t.TempDir()
+		tl := New(2*time.Second, 1<<20)
+		ctx := ctxFor(ws)
+		raw, _ := json.Marshal(map[string]string{"command": "true"})
+		out, err := tl.Call(ctx, raw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -114,7 +145,30 @@ func TestFastCommandIsNeverReportedAsTimedOut(t *testing.T) {
 }
 
 func TestShellIsNotReadOnly(t *testing.T) {
-	if New(t.TempDir(), time.Second, 1<<20).ReadOnly() {
+	if New(time.Second, 1<<20).ReadOnly() {
 		t.Error("shell_exec must never be read-only: it would join concurrent batches")
+	}
+}
+
+func TestShellRunsInTheSessionWorkspace(t *testing.T) {
+	ws := t.TempDir()
+	tl := New(5*time.Second, 1<<16)
+	ctx := ctxFor(ws)
+	out, err := tl.Call(ctx, json.RawMessage(`{"command":"pwd"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// macOS resolves /var to /private/var, so compare resolved paths.
+	want, _ := filepath.EvalSymlinks(ws)
+	got, _ := filepath.EvalSymlinks(strings.TrimSpace(firstLine(out)))
+	if got != want {
+		t.Fatalf("pwd = %q, want %q", got, want)
+	}
+}
+
+func TestShellRefusesWithoutASessionWorkspace(t *testing.T) {
+	tl := New(5*time.Second, 1<<16)
+	if _, err := tl.Call(context.Background(), json.RawMessage(`{"command":"pwd"}`)); err == nil {
+		t.Fatal("a shell call with no workspace on the context must be refused")
 	}
 }

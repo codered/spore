@@ -59,15 +59,15 @@ allow = ["fs_list"]
 				provider.ScriptTurn{Text: "done"},
 			)
 
+			// Create a session with the shared workspace so the test can write files to it
+			id, err := srv.Store().CreateSession(t.Context(), "profile-test", workspace)
+			if err != nil {
+				t.Fatalf("CreateSession: %v", err)
+			}
+
 			// Create the test file in the workspace
 			if err := os.WriteFile(filepath.Join(workspace, "test.txt"), []byte("hello from test"), 0o600); err != nil {
 				t.Fatal(err)
-			}
-
-			// Create a session and attach to events
-			id, err := srv.Store().CreateSession(t.Context(), "profile-test", "")
-			if err != nil {
-				t.Fatalf("CreateSession: %v", err)
 			}
 
 			// Attach to SSE stream using the existing helper

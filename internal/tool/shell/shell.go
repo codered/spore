@@ -13,23 +13,25 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/tool"
 )
 
 type execTool struct {
-	ws             string
 	defaultTimeout time.Duration
 	maxOutput      int
 }
 
-func New(workspace string, defaultTimeout time.Duration, maxOutput int) tool.Tool {
+// New builds shell_exec. Like the filesystem tools it holds no workspace: the
+// session's root arrives on the context of each call.
+func New(defaultTimeout time.Duration, maxOutput int) tool.Tool {
 	if defaultTimeout <= 0 {
 		defaultTimeout = 120 * time.Second
 	}
 	if maxOutput <= 0 {
 		maxOutput = 30_000
 	}
-	return &execTool{ws: workspace, defaultTimeout: defaultTimeout, maxOutput: maxOutput}
+	return &execTool{defaultTimeout: defaultTimeout, maxOutput: maxOutput}
 }
 
 // capWriter accepts output up to a byte budget and counts the rest. The
@@ -85,6 +87,12 @@ func (t *execTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 	if strings.TrimSpace(a.Command) == "" {
 		return "", errors.New("command is required")
 	}
+
+	ws := policy.WorkspaceFrom(ctx)
+	if ws == "" {
+		return "", errors.New("no session workspace on the context, so there is nowhere to run this command")
+	}
+
 	timeout := t.defaultTimeout
 	if a.TimeoutSeconds > 0 {
 		timeout = time.Duration(a.TimeoutSeconds) * time.Second
@@ -101,7 +109,7 @@ func (t *execTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 	// rules internal/policy matches them against, are bash. On Windows that
 	// means shell_exec needs a bash on PATH (Git Bash, WSL, MSYS2).
 	cmd := exec.Command("bash", "-c", a.Command)
-	cmd.Dir = t.ws
+	cmd.Dir = ws
 	// Group the child with its descendants so the whole tree can be killed
 	// together; a command that spawns children must not leave them running
 	// after a timeout.
