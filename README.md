@@ -254,6 +254,28 @@ after.
 `spore recall teardown` stops the containers and goes back to keyword
 search, keeping the data volume unless you pass `--purge`.
 
+### Tracing
+
+Off by default. To see turns, LLM calls, tool calls and retrievals as spans:
+
+    spore trace setup
+
+This writes `~/.spore/phoenix/compose.yml`, starts Phoenix on loopback, waits
+for it, and sets `trace.enabled = true`. Restart the daemon afterwards. The UI
+is at http://localhost:6006.
+
+`spore trace status` reports the configuration and whether the collector is
+answering; `spore trace teardown` stops it and turns tracing back off, keeping
+the data volume unless you pass `--purge`.
+
+Prompts and completions are recorded in full, **including messages that
+arrived over a bridge** — a Discord user's text is stored in the container's
+volume along with everything else. Set `redact = true` under `[trace]` to keep
+span shapes, token counts and costs while dropping the text.
+
+If you already run a collector, point `trace.endpoint` at it and skip setup
+entirely. Export failures never block a turn.
+
 ## Running as a daemon
 
     spore serve                  # HTTP API, web UI and scheduler on 127.0.0.1:7777

@@ -20,6 +20,12 @@ test:
 test-weaviate:
 	go test -tags "sqlite_fts5 weaviate" ./internal/recall/... -v
 
+# test-phoenix needs a running collector: `spore trace setup` first.
+# It is not part of `make test` on purpose -- the default suite must not
+# depend on a container.
+test-phoenix:
+	go test -tags "sqlite_fts5 phoenix" ./internal/trace/... -v
+
 vet:
 	go vet $(TAGS) ./...
 
@@ -29,4 +35,4 @@ fmt:
 fmtcheck:
 	@out="$$(gofmt -l .)"; if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 
-.PHONY: build install test test-weaviate vet fmt fmtcheck
+.PHONY: build install test test-weaviate test-phoenix vet fmt fmtcheck

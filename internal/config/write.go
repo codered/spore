@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -170,36 +171,47 @@ func renderManaged(l LearnedPolicy) string {
 	return b.String()
 }
 
-// SetRecallBackend records the backend `spore recall setup` provisioned. It
-// rewrites an existing [recall] section rather than appending a second one:
-// two sections of the same name make the file fail to load, which would turn
-// a successful setup into a broken install.
-func SetRecallBackend(path, backend string) error {
-	learnMu.Lock()
-	defer learnMu.Unlock()
-	switch backend {
-	case RecallSQLiteFTS, RecallWeaviate:
-	default:
-		return fmt.Errorf("recall backend must be %s or %s, got %q", RecallSQLiteFTS, RecallWeaviate, backend)
+// assignsKey reports whether a trimmed config line assigns to key. Matching a
+// bare prefix is not enough: "enabled_at" starts with "enabled", and
+// overwriting the wrong line would silently change a setting the operator did
+// not ask spore to touch.
+func assignsKey(trimmed, key string) bool {
+	if !strings.HasPrefix(trimmed, key) {
+		return false
 	}
+	return strings.HasPrefix(strings.TrimSpace(trimmed[len(key):]), "=")
+}
+
+// setSectionKey rewrites one key inside one section of a TOML file, adding
+// the key or the whole section when either is missing. It edits a single line
+// and leaves every other byte alone, comments included: a setup verb has no
+// business reformatting a file the operator maintains by hand. literal is
+// written as-is, so callers pass an already-quoted string or a bare number or
+// bool.
+//
+// It rewrites an existing section rather than appending a second one of the
+// same name: duplicate sections make the file fail to load, which would turn
+// a successful setup into a broken install.
+func setSectionKey(path, section, key, literal string) error {
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
 	lines := strings.Split(string(body), "\n")
-	setting := fmt.Sprintf("backend = %q", backend)
+	header := "[" + section + "]"
+	setting := key + " = " + literal
 
-	inRecall, replaced, sectionAt := false, false, -1
+	inSection, replaced, sectionAt := false, false, -1
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "[") {
-			inRecall = trimmed == "[recall]"
-			if inRecall {
+			inSection = trimmed == header
+			if inSection {
 				sectionAt = i
 			}
 			continue
 		}
-		if inRecall && strings.HasPrefix(trimmed, "backend") {
+		if inSection && assignsKey(trimmed, key) {
 			lines[i] = setting
 			replaced = true
 		}
@@ -210,10 +222,31 @@ func SetRecallBackend(path, backend string) error {
 		rest := append([]string{setting}, lines[sectionAt+1:]...)
 		lines = append(lines[:sectionAt+1], rest...)
 	default:
-		lines = append(lines, "", "[recall]", setting, "")
+		lines = append(lines, "", header, setting, "")
 	}
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
+}
+
+// SetRecallBackend records the backend `spore recall setup` provisioned.
+func SetRecallBackend(path, backend string) error {
+	learnMu.Lock()
+	defer learnMu.Unlock()
+	switch backend {
+	case RecallSQLiteFTS, RecallWeaviate:
+	default:
+		return fmt.Errorf("recall backend must be %s or %s, got %q", RecallSQLiteFTS, RecallWeaviate, backend)
+	}
+	return setSectionKey(path, "recall", "backend", strconv.Quote(backend))
+}
+
+// SetTraceEnabled records whether `spore trace setup` left tracing on. It is
+// the only key the trace verbs write: endpoint, sample_rate and redact stay
+// the operator's.
+func SetTraceEnabled(path string, enabled bool) error {
+	learnMu.Lock()
+	defer learnMu.Unlock()
+	return setSectionKey(path, "trace", "enabled", strconv.FormatBool(enabled))
 }

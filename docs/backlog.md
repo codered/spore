@@ -65,3 +65,29 @@ extended.
    a cost ceiling, and both belong in config next to `context`.
 4. What "seeing them running" means on each surface: the terminal has a live
    view, the web UI has SSE, Discord has neither.
+
+## The container tests: status
+
+Known gap, partially closed. Plan 5b added `internal/recall/weaviate/integration_test.go`
+and the `make test-weaviate` target. Plan 5c added `internal/trace/phoenix/integration_test.go`
+and the `make test-phoenix` target, exercising both backends against real servers.
+
+Docker is available on the development machine. The phoenix suite (`make test-phoenix`)
+has now been run against a real Phoenix collector and passed, verifying that the exporter
+spore builds is accepted by the collector on the default endpoint, and that the span tree
+shapes correctly. The weaviate suite (`make test-weaviate`) has not been run, and can no
+longer cite Docker unavailability as a reason.
+
+The default suite is unaffected and passes: the container tests are guarded by
+both a build tag (`-tags phoenix` or `-tags weaviate`) and a `docker` lookup, so they
+skip rather than fail when the containers are absent. What remains unverified for
+weaviate is the part no unit test can cover — the compose file starting, readiness
+detection, collection creation as mapped, the backfill, and the round trip through a
+real embedding sidecar.
+
+**Open questions**
+
+1. Does `make test-weaviate` pass in the development environment? CI would be a good
+   gate, but so would local verification.
+2. Until both suites run, is the README claiming an untested path — are `spore trace setup`
+   and `spore recall setup` honestly shippable?
