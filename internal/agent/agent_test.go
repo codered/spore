@@ -13,6 +13,7 @@ import (
 
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/memory"
+	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/router"
 	"github.com/codered/spore/internal/store"
@@ -526,5 +527,41 @@ func TestSnapshotWithNoFactCacheIsEmpty(t *testing.T) {
 	}
 	if len(snap.Facts) != 0 {
 		t.Fatal("facts appeared with no cache attached")
+	}
+}
+
+func TestSnapshotDescribesTheSessionsWorkspace(t *testing.T) {
+	a, st := harness(t, provider.NewScript(), nil)
+	a.Env = func(root string) string { return "root=" + root }
+	ctx := policy.WithSession(context.Background(),
+		policy.Session{ID: "s1", Profile: policy.ProfileLocal, Workspace: "/ws/a"})
+	id, err := st.CreateSession(ctx, "", "/ws/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := a.Snapshot(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Environment != "root=/ws/a" {
+		t.Fatalf("environment = %q, want root=/ws/a", snap.Environment)
+	}
+}
+
+// No session on the context means no environment section, rather than a
+// description of a directory this turn is not working in.
+func TestSnapshotHasNoEnvironmentWithoutAWorkspace(t *testing.T) {
+	a, st := harness(t, provider.NewScript(), nil)
+	a.Env = func(root string) string { return "root=" + root }
+	id, err := st.CreateSession(context.Background(), "", "/ws/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := a.Snapshot(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Environment != "root=" {
+		t.Fatalf("environment = %q, want the describer called with an empty root", snap.Environment)
 	}
 }

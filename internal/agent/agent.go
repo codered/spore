@@ -9,6 +9,7 @@ import (
 
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/memory"
+	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/router"
 	"github.com/codered/spore/internal/store"
@@ -78,10 +79,10 @@ type Agent struct {
 	Router   *router.Router
 	Cfg      *config.Config
 	Tools    ToolRunner
-	// Env renders the environment section of the system prompt: the working
-	// directory and its files. Nil means no environment section, which is
-	// what a test that builds an Agent with New gets.
-	Env func() string
+	// Env renders the environment section of the system prompt for one root:
+	// the session's working directory and its files. Nil means no environment
+	// section, which is what a test that builds an Agent with New gets.
+	Env func(root string) string
 	// Facts is the loaded fact set. Nil means no memory layer attached; every
 	// production construction path (buildAgent) sets it, so nil in practice
 	// means a test built the Agent directly with New and never attached one.
@@ -107,7 +108,9 @@ func (a *Agent) Snapshot(ctx context.Context, sessionID string) (Snapshot, error
 	}
 	snap := Snapshot{System: a.Cfg.SystemPrompt, Summary: summary}
 	if a.Env != nil {
-		snap.Environment = a.Env()
+		// The root comes from the turn context, not from the agent: one agent
+		// serves every session, and each is rooted somewhere of its own.
+		snap.Environment = a.Env(policy.WorkspaceFrom(ctx))
 	}
 	if a.Facts != nil {
 		snap.Facts = a.Facts.Facts()
