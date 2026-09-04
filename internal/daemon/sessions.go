@@ -164,7 +164,11 @@ func (s *Server) startTurn(sessionID, text, client string, profile policy.Profil
 		}
 	}()
 
-	ctx := policy.WithSession(s.base, sessionID, profile)
+	sess, found, err := s.store.Session(s.base, sessionID)
+	if err != nil || !found {
+		return fmt.Errorf("read session %s: %v (found=%v)", sessionID, err, found)
+	}
+	ctx := policy.WithSession(s.base, policy.Session{ID: sessionID, Profile: profile, Workspace: sess.Workspace})
 	ctx, turn = sporetrace.StartTurn(ctx, sessionID, client)
 
 	ch, err := s.agent.Run(ctx, sessionID, text)

@@ -131,7 +131,7 @@ workspace = "`+dir+`"
 		t.Fatal(err)
 	}
 	decide := func(p policy.Profile, name string) policy.Decision {
-		return engine.Evaluate(p, policy.Call{Tool: name, Args: json.RawMessage(`{}`)}).Decision
+		return engine.Evaluate(policy.Session{ID: "test", Profile: p, Workspace: dir}, policy.Call{Tool: name, Args: json.RawMessage(`{}`)}).Decision
 	}
 	if d := decide(policy.ProfileRemote, "memory"); d != policy.DecisionDeny {
 		t.Fatalf("remote memory decision = %v, want deny", d)
@@ -198,7 +198,7 @@ workspace = "`+dir+`"
 	// call needs a session and profile on the context the way a real turn's
 	// dispatch would attach one, and it needs the allowApprover above to get
 	// past the ask.
-	runCtx := policy.WithSession(ctx, sid, policy.ProfileLocal)
+	runCtx := policy.WithSession(ctx, policy.Session{ID: sid, Profile: policy.ProfileLocal, Workspace: dir})
 	call := provider.Block{
 		Type: provider.BlockToolUse,
 		ID:   "call-1",

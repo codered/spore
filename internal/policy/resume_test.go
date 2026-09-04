@@ -34,7 +34,7 @@ func TestSuspensionSurvivesARestart(t *testing.T) {
 		Ask:             []string{"fs_write"},
 		ApprovalTimeout: "50ms",
 	}), ap, st1, nil)
-	res := g1.Run(WithSession(ctx, sid, ProfileLocal), toolCall("fs_write", "c1", `{"path":"/ws/a.go"}`))
+	res := g1.Run(WithSession(ctx, Session{ID: sid, Profile: ProfileLocal, Workspace: "/ws"}), toolCall("fs_write", "c1", `{"path":"/ws/a.go"}`))
 	if !res.IsError {
 		t.Fatal("the unanswered call was allowed")
 	}
