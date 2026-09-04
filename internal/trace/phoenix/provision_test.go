@@ -2,6 +2,7 @@ package phoenix
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -172,5 +173,56 @@ func TestWaitReadyGivesUpAtTheDeadline(t *testing.T) {
 	}
 	if time.Since(start) > 5*time.Second {
 		t.Errorf("WaitReady overran its timeout by too much: %v", time.Since(start))
+	}
+}
+
+func TestWaitReadyBoundsIndividualAttempts(t *testing.T) {
+	// Test that a stalled HTTP response (connection accepted, no response sent)
+	// cannot outlive WaitReady's timeout. Without per-attempt context bounding,
+	// a single blocked read can hang indefinitely.
+
+	// Create a listener that accepts connections but never sends data.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("create listener: %v", err)
+	}
+	defer ln.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Accept connections but never respond, just read/discard.
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Just accept and hold the connection open forever.
+			// The client's context timeout should interrupt.
+			go func() {
+				defer conn.Close()
+				select {}
+			}()
+		}
+	}()
+
+	healthURL := "http://" + ln.Addr().String() + "/healthz"
+
+	start := time.Now()
+	timeout := 100 * time.Millisecond
+	err = WaitReady(context.Background(), healthURL, timeout)
+	elapsed := time.Since(start)
+
+	ln.Close() // Stop accepting connections
+	<-done     // Wait for goroutine to exit
+
+	if err == nil {
+		t.Fatal("WaitReady returned success against a server that never responded")
+	}
+	// The timeout should bound the wait. Allow generous slack for scheduling,
+	// but a stalled response should not cause WaitReady to hang for seconds.
+	// Without per-attempt context bounding, this could hang for 10+ seconds.
+	if elapsed > timeout*5 {
+		t.Errorf("WaitReady blocked for %v against a %v timeout; per-attempt context not bounding attempts", elapsed, timeout)
 	}
 }

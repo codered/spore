@@ -135,11 +135,21 @@ func Ready(ctx context.Context, healthURL string) error {
 
 // WaitReady polls until Phoenix answers or the timeout passes. A first start
 // pulls the image, so the caller's timeout is generous; the poll is cheap.
+// Each poll attempt is bounded by the remaining time, so a stalled response
+// cannot outlive the overall timeout.
 func WaitReady(ctx context.Context, healthURL string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var last error
 	for {
-		last = Ready(ctx, healthURL)
+		// Bound each poll attempt. A connection that is accepted but stalled
+		// cannot outlive the overall deadline.
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("waiting for phoenix at %s: %w", healthURL, last)
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, remaining)
+		last = Ready(attemptCtx, healthURL)
+		cancel()
 		if last == nil {
 			return nil
 		}
