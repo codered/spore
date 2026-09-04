@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -554,4 +555,146 @@ func TestBackfillSessionWorkspaces(t *testing.T) {
 	if got.Workspace != "/home/user" {
 		t.Fatalf("workspace = %q, want /home/user", got.Workspace)
 	}
+}
+
+// Opening a database whose sessions table lacks the workspace column must
+// produce the new shape rather than failing. The migration must preserve all
+// rows and their associated data (unlike migrateJobs which can drop).
+func TestOpenMigratesSessionsWorkspace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spore.db")
+
+	// First open: create database with new schema
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("initial Open: %v", err)
+	}
+	ctx := context.Background()
+
+	// Create a session with a real transcript (message) so we prove preservation
+	sessionID, err := s.CreateSession(ctx, "pre-migration", "/ws/old")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Append a message to the session
+	_, err = s.AppendMessage(ctx, Message{
+		SessionID:  sessionID,
+		Role:       "user",
+		BlocksJSON: []byte(`[{"type":"text","text":"hello"}]`),
+		Model:      "anthropic/claude-opus-5",
+		CallSite:   "test",
+	})
+	if err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	// Capture the session state before migration
+	origSess, _, err := s.Session(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("Session before migration: %v", err)
+	}
+	s.Close()
+
+	// Drop and recreate the sessions table in pre-stage-6 shape
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Capture the session row to re-insert it
+	var sessionTitle, createdAt, updatedAt string
+	err = db.QueryRow(
+		`SELECT title, created_at, updated_at FROM sessions WHERE id = ?`,
+		sessionID).Scan(&sessionTitle, &createdAt, &updatedAt)
+	if err != nil {
+		t.Fatalf("capture session row: %v", err)
+	}
+
+	// Drop the new schema table
+	if _, err := db.Exec(`DROP TABLE sessions`); err != nil {
+		t.Fatalf("drop sessions: %v", err)
+	}
+
+	// Recreate in pre-stage-6 shape (no workspace column)
+	if _, err := db.Exec(`CREATE TABLE sessions (
+		id         TEXT PRIMARY KEY,
+		title      TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatalf("recreate stub: %v", err)
+	}
+
+	// Re-insert the session row (without workspace)
+	if _, err := db.Exec(
+		`INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+		sessionID, sessionTitle, createdAt, updatedAt); err != nil {
+		t.Fatalf("re-insert session: %v", err)
+	}
+
+	db.Close()
+
+	// Reopen through Open — this should run the migration
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen over stub: %v", err)
+	}
+
+	// Verify the session row survived with workspace now empty
+	sess2, found, err := s2.Session(ctx, sessionID)
+	if err != nil || !found {
+		t.Fatalf("session after migration: found=%v err=%v", found, err)
+	}
+	if sess2.Title != origSess.Title {
+		t.Fatalf("title changed: was %q, now %q", origSess.Title, sess2.Title)
+	}
+	if sess2.CreatedAt != origSess.CreatedAt {
+		t.Fatalf("created_at changed: was %v, now %v", origSess.CreatedAt, sess2.CreatedAt)
+	}
+	if sess2.UpdatedAt != origSess.UpdatedAt {
+		t.Fatalf("updated_at changed: was %v, now %v", origSess.UpdatedAt, sess2.UpdatedAt)
+	}
+	// The migration adds an empty workspace; it does not backfill
+	if sess2.Workspace != "" {
+		t.Fatalf("workspace should be empty after migration, got %q", sess2.Workspace)
+	}
+
+	// Verify the message row survived intact
+	msgs, err := s2.Messages(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("Messages after migration: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	if msgs[0].Role != "user" || string(msgs[0].BlocksJSON) != `[{"type":"text","text":"hello"}]` {
+		t.Fatalf("message corrupted: %+v", msgs[0])
+	}
+
+	s2.Close()
+
+	// Verify idempotence: reopen and check nothing changed
+	s3, err := Open(path)
+	if err != nil {
+		t.Fatalf("second reopen: %v", err)
+	}
+
+	sess3, found, err := s3.Session(ctx, sessionID)
+	if err != nil || !found {
+		t.Fatalf("session after second open: found=%v err=%v", found, err)
+	}
+	if sess3.Workspace != "" {
+		t.Fatalf("workspace changed after second open, got %q", sess3.Workspace)
+	}
+
+	msgs3, err := s3.Messages(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("Messages after second open: %v", err)
+	}
+	if len(msgs3) != 1 {
+		t.Fatalf("got %d messages after second open, want 1", len(msgs3))
+	}
+
+	s3.Close()
 }
