@@ -5,9 +5,9 @@ records what was asked for -- or what was knowingly left undone -- and the open
 questions that must be answered before it can be specified, so the next
 brainstorm starts where this one stopped rather than from the request.
 
-Nothing here is a commitment to an order. Stages 5a, 5b and 5c have shipped.
-The next stage is 6 (per-session workspace), specified in section 5 of the
-design spec and not yet planned.
+Nothing here is a commitment to an order. Stages 5a, 5b, 5c and 6 have all
+shipped; the staged plan in section 11 of the design spec is complete, and
+everything below is what has been asked for since.
 
 ## Chat commands
 
