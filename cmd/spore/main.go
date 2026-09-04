@@ -30,6 +30,9 @@ usage:
   spore recall reindex         rebuild the index from SQLite and fact files
   spore recall setup           provision the vector store and backfill it
   spore recall teardown        stop the vector store and return to keyword search
+  spore trace setup            provision the phoenix collector and turn tracing on
+  spore trace status           report trace configuration and collector health
+  spore trace teardown         stop the collector and turn tracing off
 
 flags:
   -config <path>   config file (default ~/.spore/config.toml)
@@ -120,6 +123,8 @@ func run(args []string) error {
 		return cmdMCPList(ctx, cfg)
 	case "recall":
 		return cmdRecall(ctx, cfg, args[1:])
+	case "trace":
+		return cmdTrace(ctx, cfg, args[1:])
 	default:
 		fmt.Print(usage)
 		return fmt.Errorf("unknown command %q", args[0])
