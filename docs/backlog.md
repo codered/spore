@@ -141,13 +141,16 @@ predicate. An MCP tool call naming an absolute path outside the calling
 session's workspace — or outside the ceiling entirely — resolves to `ask`,
 and if a human approves it, the call runs unbounded by the policy engine.
 
-The blast radius is bounded by the ask-gate and the remote profile's blanket
-denial. For a local session, every MCP call requires human approval before it
+The blast radius is bounded by the ask-gate and profile-based denial. For an
+interactive local session, every MCP call requires human approval before it
 runs, which gives the operator a chance to notice and refuse calls with
-suspicious paths. For the `remote` trust profile (Discord and scheduled jobs),
-`mcp__*` is denied outright, so a bridge user cannot reach any server at all.
-This gap predates stage 6 — before that change, the workspace was the single
-ceiling and `mcp__*` was equally unchecked then. It is not a regression.
+suspicious paths. For a scheduled job — which is also a local session —
+the same ask-gate applies, but there is no one to answer the approval, so the
+call is denied when the approval times out. For the `remote` trust profile,
+which is what the Discord bridge runs under, `mcp__*` is denied outright, so
+a bridge user cannot reach any server at all. This gap predates stage 6 —
+before that change, the workspace was the single ceiling and `mcp__*` was
+equally unchecked then. It is not a regression.
 
 Fixing it properly means adding an `mcp__*` path rule to the baseline deny
 set (the list no approval may override), which is a behaviour change with its
