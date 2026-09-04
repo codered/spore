@@ -65,7 +65,7 @@ func newFullServerWithPolicy(t *testing.T, policyTOML string, turns ...provider.
 	srv := New(Options{Store: st, Cfg: cfg})
 
 	reg := tool.NewRegistry(cfg.Policy.MaxOutput)
-	for _, tl := range fs.New(workspace, cfg.Policy.MaxOutput) {
+	for _, tl := range fs.New(cfg.Policy.MaxOutput) {
 		if err := reg.Register(tl); err != nil {
 			t.Fatalf("register %s: %v", tl.Name(), err)
 		}

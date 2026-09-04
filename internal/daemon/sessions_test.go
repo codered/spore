@@ -65,7 +65,7 @@ allow = ["fs_list"]
 			}
 
 			// Create a session and attach to events
-			id, err := srv.Store().CreateSession(t.Context(), "profile-test", "")
+			id, err := srv.Store().CreateSession(t.Context(), "profile-test", workspace)
 			if err != nil {
 				t.Fatalf("CreateSession: %v", err)
 			}
