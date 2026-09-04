@@ -1,4 +1,5 @@
 .superpowers/
+.claude/
 /spore
 *.db
 *.db-wal
