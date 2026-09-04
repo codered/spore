@@ -160,7 +160,7 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	}
 	a := agent.New(st, reg, rt, cfg, tools)
 	a.Facts = facts
-	a.Env = workspace.NewDescriber(cfg.Policy.Workspace).Describe
+	a.Env = workspace.NewDescribers().Describe
 	return a, host, mir, nil
 }
 
