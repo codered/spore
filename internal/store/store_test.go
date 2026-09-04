@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -17,11 +18,24 @@ func openTestStore(t *testing.T) *Store {
 	return s
 }
 
+// newStore is openTestStore, plus the data directory the store was opened
+// in: the tests below assert on paths the store derives from it.
+func newStore(t *testing.T) (*Store, string) {
+	t.Helper()
+	dir := t.TempDir()
+	s, err := Open(filepath.Join(dir, "spore.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s, dir
+}
+
 func TestAppendAndReadMessagesInOrder(t *testing.T) {
 	ctx := context.Background()
 	s := openTestStore(t)
 
-	id, err := s.CreateSession(ctx, "first session")
+	id, err := s.CreateSession(ctx, "first session", "")
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -61,7 +75,7 @@ func TestSummaryRoundTripAndSessionListing(t *testing.T) {
 	ctx := context.Background()
 	s := openTestStore(t)
 
-	id, err := s.CreateSession(ctx, "summarised")
+	id, err := s.CreateSession(ctx, "summarised", "")
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -97,7 +111,7 @@ func TestSummaryRoundTripAndSessionListing(t *testing.T) {
 func TestSummaryAbsentIsNotAnError(t *testing.T) {
 	ctx := context.Background()
 	s := openTestStore(t)
-	id, _ := s.CreateSession(ctx, "empty")
+	id, _ := s.CreateSession(ctx, "empty", "")
 	text, through, err := s.Summary(ctx, id)
 	if err != nil {
 		t.Fatalf("Summary on session with no summary: %v", err)
@@ -127,7 +141,7 @@ func TestTimeFormatSortsChronologically(t *testing.T) {
 
 func TestCreateSessionWritesFixedWidthTimestamp(t *testing.T) {
 	s := openTestStore(t)
-	id, err := s.CreateSession(context.Background(), "fixed width")
+	id, err := s.CreateSession(context.Background(), "fixed width", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,11 +162,11 @@ func TestListSessionsOrdering(t *testing.T) {
 	s := openTestStore(t)
 
 	// Create two sessions
-	id1, err := s.CreateSession(ctx, "first")
+	id1, err := s.CreateSession(ctx, "first", "")
 	if err != nil {
 		t.Fatalf("CreateSession 1: %v", err)
 	}
-	id2, err := s.CreateSession(ctx, "second")
+	id2, err := s.CreateSession(ctx, "second", "")
 	if err != nil {
 		t.Fatalf("CreateSession 2: %v", err)
 	}
@@ -191,7 +205,7 @@ func TestListSessionsOrdering(t *testing.T) {
 func TestPendingCallLifecycle(t *testing.T) {
 	ctx := context.Background()
 	s := openTestStore(t)
-	sid, err := s.CreateSession(ctx, "t")
+	sid, err := s.CreateSession(ctx, "t", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,8 +246,8 @@ func TestPendingCallLifecycle(t *testing.T) {
 func TestPendingCallsAreScopedToASession(t *testing.T) {
 	ctx := context.Background()
 	s := openTestStore(t)
-	a, _ := s.CreateSession(ctx, "a")
-	b, _ := s.CreateSession(ctx, "b")
+	a, _ := s.CreateSession(ctx, "a", "")
+	b, _ := s.CreateSession(ctx, "b", "")
 	if _, err := s.AddPendingCall(ctx, PendingCall{SessionID: a, ToolUseID: "1", Tool: "fs_write", ArgsJSON: []byte(`{}`)}); err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +263,7 @@ func TestPendingCallsAreScopedToASession(t *testing.T) {
 func TestSessionDecisionRemembersAllowForTheSession(t *testing.T) {
 	ctx := context.Background()
 	s := openTestStore(t)
-	sid, _ := s.CreateSession(ctx, "t")
+	sid, _ := s.CreateSession(ctx, "t", "")
 
 	if _, ok, err := s.SessionDecision(ctx, sid, "fs_write"); err != nil || ok {
 		t.Fatalf("SessionDecision before any answer = (ok %v, err %v), want not found", ok, err)
@@ -269,7 +283,7 @@ func TestSessionDecisionRemembersAllowForTheSession(t *testing.T) {
 		t.Error("a once-scoped answer was remembered for the session")
 	}
 	// A decision in one session must not leak into another.
-	other, _ := s.CreateSession(ctx, "other")
+	other, _ := s.CreateSession(ctx, "other", "")
 	if _, ok, _ := s.SessionDecision(ctx, other, "fs_write"); ok {
 		t.Error("a session-scoped decision leaked across sessions")
 	}
@@ -278,7 +292,7 @@ func TestSessionDecisionRemembersAllowForTheSession(t *testing.T) {
 func TestLatestSessionDecisionWins(t *testing.T) {
 	ctx := context.Background()
 	s := openTestStore(t)
-	sid, _ := s.CreateSession(ctx, "t")
+	sid, _ := s.CreateSession(ctx, "t", "")
 	if err := s.RecordApproval(ctx, sid, "fs_write", []byte(`{}`), "allow", "session"); err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +310,7 @@ func TestSessionLookupByID(t *testing.T) {
 	s := openTestStore(t)
 
 	// Create a session
-	id, err := s.CreateSession(ctx, "test session")
+	id, err := s.CreateSession(ctx, "test session", "")
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -338,7 +352,7 @@ func TestSessionLookupByID(t *testing.T) {
 func TestPendingCallByID(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
-	sid, err := st.CreateSession(ctx, "t")
+	sid, err := st.CreateSession(ctx, "t", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +380,7 @@ func TestPendingCallByID(t *testing.T) {
 func TestBridgeBindings(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
-	sid, err := st.CreateSession(ctx, "t")
+	sid, err := st.CreateSession(ctx, "t", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +403,7 @@ func TestBridgeBindings(t *testing.T) {
 
 	// Rebinding is idempotent, not an error: the DM surface rebinds its
 	// rolling session every time /new is used.
-	sid2, _ := st.CreateSession(ctx, "t2")
+	sid2, _ := st.CreateSession(ctx, "t2", "")
 	if err := st.BindExternal(ctx, "discord", "thread-1", sid2); err != nil {
 		t.Fatal(err)
 	}
@@ -438,5 +452,106 @@ func TestPruneSeen(t *testing.T) {
 	}
 	if fresh, _ := st.MarkSeen(ctx, "discord", "old"); !fresh {
 		t.Fatal("PruneSeen did not remove a row outside the window")
+	}
+}
+
+func TestCreateSessionRecordsWorkspace(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	id, err := s.CreateSession(ctx, "titled", "/projects/thing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := s.Session(ctx, id)
+	if err != nil || !found {
+		t.Fatalf("session %s: found=%v err=%v", id, found, err)
+	}
+	if got.Workspace != "/projects/thing" {
+		t.Fatalf("workspace = %q, want /projects/thing", got.Workspace)
+	}
+}
+
+// An empty workspace is the caller saying "I have no directory of my own".
+// The store allocates one under its own data directory and records it, but
+// must not create it: a session that is opened and never used leaves nothing
+// on disk.
+func TestCreateSessionAllocatesSessionDir(t *testing.T) {
+	s, dir := newStore(t)
+	ctx := context.Background()
+	id, err := s.CreateSession(ctx, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := s.Session(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "sessions", id)
+	if got.Workspace != want {
+		t.Fatalf("workspace = %q, want %q", got.Workspace, want)
+	}
+	if _, err := os.Stat(want); !os.IsNotExist(err) {
+		t.Fatalf("session directory was created at creation time: stat err = %v", err)
+	}
+}
+
+func TestListSessionsCarriesWorkspace(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	if _, err := s.CreateSession(ctx, "a", "/ws/a"); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.ListSessions(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Workspace != "/ws/a" {
+		t.Fatalf("list = %+v, want one row rooted at /ws/a", list)
+	}
+}
+
+func TestSetSessionWorkspace(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	id, err := s.CreateSession(ctx, "", "/ws/old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionWorkspace(ctx, id, "/ws/new"); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := s.Session(ctx, id)
+	if got.Workspace != "/ws/new" {
+		t.Fatalf("workspace = %q, want /ws/new", got.Workspace)
+	}
+	if err := s.SetSessionWorkspace(ctx, "nosuch", "/ws/new"); err == nil {
+		t.Fatal("re-rooting an unknown session should error")
+	}
+}
+
+// A database written before the column existed has rows with an empty
+// workspace. They are backfilled with the configured ceiling so resuming one
+// behaves exactly as it did.
+func TestBackfillSessionWorkspaces(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	id, err := s.CreateSession(ctx, "", "/ws/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a pre-migration row.
+	if _, err := s.DB().ExecContext(ctx, `UPDATE sessions SET workspace = '' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.BackfillSessionWorkspaces(ctx, "/home/user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("backfilled %d rows, want 1", n)
+	}
+	got, _, _ := s.Session(ctx, id)
+	if got.Workspace != "/home/user" {
+		t.Fatalf("workspace = %q, want /home/user", got.Workspace)
 	}
 }

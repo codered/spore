@@ -65,7 +65,7 @@ func guardFixture(t *testing.T, pc config.PolicyConfig, ap Approver) (*Guard, *r
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	sid, err := st.CreateSession(context.Background(), "guard test")
+	sid, err := st.CreateSession(context.Background(), "guard test", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestPatternScopeLearnsARule(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	sid, _ := st.CreateSession(context.Background(), "t")
+	sid, _ := st.CreateSession(context.Background(), "t", "")
 	var learned []string
 	g := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{Ask: []string{"fs_write"}}), ap, st,
 		func(d Decision, rule string) error {
@@ -334,7 +334,7 @@ func TestNoDuplicateAuditRowsWhenApprovalRacesBetweenGuardAndBroker(t *testing.T
 	}
 	defer st.Close()
 
-	sid, err := st.CreateSession(ctx, "test session")
+	sid, err := st.CreateSession(ctx, "test session", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +385,7 @@ func TestResolveDowngradesADegradedPatternAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	sid, err := st.CreateSession(ctx, "t")
+	sid, err := st.CreateSession(ctx, "t", "")
 	if err != nil {
 		t.Fatal(err)
 	}

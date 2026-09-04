@@ -16,11 +16,21 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-type Store struct{ db *sql.DB }
+type Store struct {
+	db *sql.DB
+	// dataDir is the directory holding the database file. It is where a
+	// session with no directory of its own is rooted, so the store can
+	// allocate one without knowing anything about config.
+	dataDir string
+}
 
 type Session struct {
-	ID        string
-	Title     string
+	ID    string
+	Title string
+	// Workspace is the directory this session is rooted at: the working
+	// directory for its filesystem tools, its shell calls and the
+	// environment section of its prompt. Fixed at creation.
+	Workspace string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -45,6 +55,45 @@ const timeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
 func nowString() string { return time.Now().UTC().Format(timeFormat) }
 
+// migrateSessions adds the per-session workspace column to a database written
+// before stage 6. Unlike migrateJobs this preserves every row: sessions hold
+// real transcripts. The column lands empty and is filled by
+// BackfillSessionWorkspaces, which needs the configured ceiling and so cannot
+// run here -- Open knows nothing about config.
+func migrateSessions(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(sessions)`)
+	if err != nil {
+		return fmt.Errorf("inspect sessions table: %w", err)
+	}
+	defer rows.Close()
+	var columns int
+	hasWorkspace := false
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		columns++
+		if name == "workspace" {
+			hasWorkspace = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	// No table at all: the schema statement creates the right one.
+	if columns == 0 || hasWorkspace {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN workspace TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add sessions.workspace: %w", err)
+	}
+	return nil
+}
+
 func Open(path string) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -62,6 +111,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateSessions(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if _, err := db.Exec(schemaSQL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
@@ -75,7 +128,7 @@ func Open(path string) (*Store, error) {
 	if err := backfillRecall(db); err != nil {
 		slog.Default().Warn("recall index backfill failed, search will be empty until it is repaired", "error", err)
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, dataDir: filepath.Dir(path)}, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -88,12 +141,23 @@ func newID() string {
 	return hex.EncodeToString(b[:])
 }
 
-func (s *Store) CreateSession(ctx context.Context, title string) (string, error) {
+// SessionsDir is where spore allocates a workspace for a session whose
+// creator has no directory of its own -- a bridge, the web UI, the scheduler.
+func (s *Store) SessionsDir() string { return filepath.Join(s.dataDir, "sessions") }
+
+// CreateSession records a session rooted at workspace. An empty workspace
+// means the creator has no directory of its own, and the session is rooted at
+// SessionsDir()/<id>. The directory is NOT created here: a session that is
+// opened and never used must leave nothing on disk.
+func (s *Store) CreateSession(ctx context.Context, title, workspace string) (string, error) {
 	id := newID()
+	if workspace == "" {
+		workspace = filepath.Join(s.SessionsDir(), id)
+	}
 	now := time.Now().UTC().Format(timeFormat)
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`,
-		id, title, now, now)
+		`INSERT INTO sessions (id, title, workspace, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+		id, title, workspace, now, now)
 	if err != nil {
 		return "", fmt.Errorf("create session: %w", err)
 	}
@@ -102,7 +166,7 @@ func (s *Store) CreateSession(ctx context.Context, title string) (string, error)
 
 func (s *Store) ListSessions(ctx context.Context, limit int) ([]Session, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, title, created_at, updated_at FROM sessions ORDER BY updated_at DESC LIMIT ?`, limit)
+		`SELECT id, title, workspace, created_at, updated_at FROM sessions ORDER BY updated_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
@@ -111,7 +175,7 @@ func (s *Store) ListSessions(ctx context.Context, limit int) ([]Session, error) 
 	for rows.Next() {
 		var sess Session
 		var created, updated string
-		if err := rows.Scan(&sess.ID, &sess.Title, &created, &updated); err != nil {
+		if err := rows.Scan(&sess.ID, &sess.Title, &sess.Workspace, &created, &updated); err != nil {
 			return nil, err
 		}
 		sess.CreatedAt, _ = time.Parse(timeFormat, created)
@@ -126,8 +190,8 @@ func (s *Store) Session(ctx context.Context, id string) (Session, bool, error) {
 	var sess Session
 	var created, updated string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, title, created_at, updated_at FROM sessions WHERE id = ?`, id).
-		Scan(&sess.ID, &sess.Title, &created, &updated)
+		`SELECT id, title, workspace, created_at, updated_at FROM sessions WHERE id = ?`, id).
+		Scan(&sess.ID, &sess.Title, &sess.Workspace, &created, &updated)
 	if err == sql.ErrNoRows {
 		return Session{}, false, nil
 	}
@@ -137,6 +201,41 @@ func (s *Store) Session(ctx context.Context, id string) (Session, bool, error) {
 	sess.CreatedAt, _ = time.Parse(timeFormat, created)
 	sess.UpdatedAt, _ = time.Parse(timeFormat, updated)
 	return sess, true, nil
+}
+
+// SetSessionWorkspace re-roots a session. The root is fixed at creation for
+// every ordinary path; this exists for the CLI's deliberate "--workspace on a
+// resume" exception, and the caller is responsible for checking the new root
+// against the ceiling first.
+func (s *Store) SetSessionWorkspace(ctx context.Context, id, workspace string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET workspace = ?, updated_at = ? WHERE id = ?`,
+		workspace, nowString(), id)
+	if err != nil {
+		return fmt.Errorf("re-root session: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("no session %s", id)
+	}
+	return nil
+}
+
+// BackfillSessionWorkspaces roots every session written before the column
+// existed at the configured ceiling, so resuming one behaves exactly as it
+// did when the workspace was a single daemon-wide value.
+func (s *Store) BackfillSessionWorkspaces(ctx context.Context, root string) (int64, error) {
+	if root == "" {
+		return 0, nil
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET workspace = ? WHERE workspace = ''`, root)
+	if err != nil {
+		return 0, fmt.Errorf("backfill session workspaces: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 // AppendMessage assigns the next seq for the session and writes the row.

@@ -117,7 +117,7 @@ command = %q
 	// pending call keyed by session id, and that insert has a foreign key
 	// into sessions — a call on an unknown session id would fail before
 	// the approver is ever consulted, which would falsely look like a deny.
-	sessionID, err = st.CreateSession(ctx, "e2e test")
+	sessionID, err = st.CreateSession(ctx, "e2e test", "")
 	if err != nil {
 		t.Fatalf("store.CreateSession: %v", err)
 	}
