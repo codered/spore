@@ -119,7 +119,7 @@ func newSession(t *testing.T, ts *httptest.Server, title string) string {
 // An allowed tool call runs for real: the model asks to read a file, the
 // guard allows it, the fs builtin reads it, and the content comes back.
 func TestEndToEndAllowedToolCallReachesTheRealBuiltin(t *testing.T) {
-	_, ts, workspace := newFullServer(t,
+	srv, ts, workspace := newFullServer(t,
 		provider.ScriptTurn{ToolCalls: []provider.Block{{
 			Type: provider.BlockToolUse, ID: "call-1", Name: "fs_read",
 			Input: json.RawMessage(`{"path":"note.txt"}`),
@@ -130,7 +130,10 @@ func TestEndToEndAllowedToolCallReachesTheRealBuiltin(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	id := newSession(t, ts, "e2e")
+	id, err := srv.Store().CreateSession(t.Context(), "e2e", workspace)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
 	r := attachStream(t, ts, id)
 	post := postJSON(t, ts.URL+"/api/sessions/"+id+"/messages", map[string]string{"text": "read note.txt"})
 	post.Body.Close()
@@ -160,16 +163,18 @@ func TestEndToEndAllowedToolCallReachesTheRealBuiltin(t *testing.T) {
 // never reach the filesystem — deny is absolute and is never escalated to a
 // human, so no approval event may appear.
 func TestEndToEndDeniedCallNeverReachesTheBuiltin(t *testing.T) {
-	_, ts, workspace := newFullServer(t,
+	srv, ts, workspace := newFullServer(t,
 		provider.ScriptTurn{ToolCalls: []provider.Block{{
 			Type: provider.BlockToolUse, ID: "call-1", Name: "fs_read",
 			Input: json.RawMessage(`{"path":"/etc/passwd"}`),
 		}}},
 		provider.ScriptTurn{Text: "I could not read that"},
 	)
-	_ = workspace
 
-	id := newSession(t, ts, "denied")
+	id, err := srv.Store().CreateSession(t.Context(), "denied", workspace)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
 	r := attachStream(t, ts, id)
 	post := postJSON(t, ts.URL+"/api/sessions/"+id+"/messages", map[string]string{"text": "read /etc/passwd"})
 	post.Body.Close()
@@ -191,7 +196,7 @@ func TestEndToEndDeniedCallNeverReachesTheBuiltin(t *testing.T) {
 // The full approval round trip: a turn suspends, the approval arrives over
 // SSE, a client answers over HTTP, and the turn resumes and completes.
 func TestEndToEndApprovalSuspendsAndResumesTheTurn(t *testing.T) {
-	_, ts, workspace := newFullServer(t,
+	srv, ts, workspace := newFullServer(t,
 		provider.ScriptTurn{ToolCalls: []provider.Block{{
 			Type: provider.BlockToolUse, ID: "call-1", Name: "fs_write",
 			Input: json.RawMessage(`{"path":"out.txt","content":"written by the agent"}`),
@@ -199,7 +204,10 @@ func TestEndToEndApprovalSuspendsAndResumesTheTurn(t *testing.T) {
 		provider.ScriptTurn{Text: "done"},
 	)
 
-	id := newSession(t, ts, "approve")
+	id, err := srv.Store().CreateSession(t.Context(), "approve", workspace)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
 	r := attachStream(t, ts, id)
 	post := postJSON(t, ts.URL+"/api/sessions/"+id+"/messages", map[string]string{"text": "write out.txt"})
 	post.Body.Close()
@@ -249,7 +257,7 @@ func TestEndToEndApprovalSuspendsAndResumesTheTurn(t *testing.T) {
 // A second client attaching mid-suspension is told what is waiting, so a
 // browser opened after the fact can still answer.
 func TestEndToEndSecondClientSeesThePendingApproval(t *testing.T) {
-	_, ts, _ := newFullServer(t,
+	srv, ts, workspace := newFullServer(t,
 		provider.ScriptTurn{ToolCalls: []provider.Block{{
 			Type: provider.BlockToolUse, ID: "call-1", Name: "fs_write",
 			Input: json.RawMessage(`{"path":"late.txt","content":"x"}`),
@@ -257,7 +265,10 @@ func TestEndToEndSecondClientSeesThePendingApproval(t *testing.T) {
 		provider.ScriptTurn{Text: "done"},
 	)
 
-	id := newSession(t, ts, "late")
+	id, err := srv.Store().CreateSession(t.Context(), "late", workspace)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
 	first := attachStream(t, ts, id)
 	post := postJSON(t, ts.URL+"/api/sessions/"+id+"/messages", map[string]string{"text": "write late.txt"})
 	post.Body.Close()
