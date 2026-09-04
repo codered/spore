@@ -119,18 +119,27 @@ func newSession(t *testing.T, ts *httptest.Server, title string) string {
 // An allowed tool call runs for real: the model asks to read a file, the
 // guard allows it, the fs builtin reads it, and the content comes back.
 func TestEndToEndAllowedToolCallReachesTheRealBuiltin(t *testing.T) {
-	_, ts, workspace := newFullServer(t,
+	srv, ts, _ := newFullServer(t,
 		provider.ScriptTurn{ToolCalls: []provider.Block{{
 			Type: provider.BlockToolUse, ID: "call-1", Name: "fs_read",
 			Input: json.RawMessage(`{"path":"note.txt"}`),
 		}}},
 		provider.ScriptTurn{Text: "the note says hello"},
 	)
-	if err := os.WriteFile(filepath.Join(workspace, "note.txt"), []byte("hello from disk"), 0o600); err != nil {
+
+	id := newSession(t, ts, "e2e")
+	// Get the session's workspace and create the file there
+	sess, found, err := srv.Store().Session(t.Context(), id)
+	if !found || err != nil {
+		t.Fatalf("could not load session: %v", err)
+	}
+	if err := os.MkdirAll(sess.Workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sess.Workspace, "note.txt"), []byte("hello from disk"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	id := newSession(t, ts, "e2e")
 	r := attachStream(t, ts, id)
 	post := postJSON(t, ts.URL+"/api/sessions/"+id+"/messages", map[string]string{"text": "read note.txt"})
 	post.Body.Close()
@@ -191,7 +200,7 @@ func TestEndToEndDeniedCallNeverReachesTheBuiltin(t *testing.T) {
 // The full approval round trip: a turn suspends, the approval arrives over
 // SSE, a client answers over HTTP, and the turn resumes and completes.
 func TestEndToEndApprovalSuspendsAndResumesTheTurn(t *testing.T) {
-	_, ts, workspace := newFullServer(t,
+	srv, ts, _ := newFullServer(t,
 		provider.ScriptTurn{ToolCalls: []provider.Block{{
 			Type: provider.BlockToolUse, ID: "call-1", Name: "fs_write",
 			Input: json.RawMessage(`{"path":"out.txt","content":"written by the agent"}`),
@@ -200,6 +209,16 @@ func TestEndToEndApprovalSuspendsAndResumesTheTurn(t *testing.T) {
 	)
 
 	id := newSession(t, ts, "approve")
+	// Get the session's workspace
+	sess, found, err := srv.Store().Session(t.Context(), id)
+	if !found || err != nil {
+		t.Fatalf("could not load session: %v", err)
+	}
+	workspace := sess.Workspace
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
 	r := attachStream(t, ts, id)
 	post := postJSON(t, ts.URL+"/api/sessions/"+id+"/messages", map[string]string{"text": "write out.txt"})
 	post.Body.Close()

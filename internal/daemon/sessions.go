@@ -65,7 +65,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// An empty body is fine — a session with no title is legal.
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	id, err := s.store.CreateSession(r.Context(), strings.TrimSpace(body.Title), s.cfg.Policy.Workspace)
+	id, err := s.store.CreateSession(r.Context(), strings.TrimSpace(body.Title), "")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "create session: %v", err)
 		return
@@ -165,7 +165,10 @@ func (s *Server) startTurn(sessionID, text, client string, profile policy.Profil
 	}()
 
 	sess, found, err := s.store.Session(s.base, sessionID)
-	if err != nil || !found {
+	if !found {
+		return fmt.Errorf("no session %s", sessionID)
+	}
+	if err != nil {
 		return fmt.Errorf("could not load session: %w", err)
 	}
 

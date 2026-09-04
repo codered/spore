@@ -51,7 +51,7 @@ allow = ["fs_list"]
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv, ts, workspace := newFullServerWithPolicy(t, policyTOML,
+			srv, ts, _ := newFullServerWithPolicy(t, policyTOML,
 				provider.ScriptTurn{ToolCalls: []provider.Block{{
 					Type: provider.BlockToolUse, ID: "call-1", Name: "fs_read",
 					Input: json.RawMessage(`{"path":"test.txt"}`),
@@ -59,14 +59,23 @@ allow = ["fs_list"]
 				provider.ScriptTurn{Text: "done"},
 			)
 
-			// Create a session with the shared workspace so the test can write files to it
-			id, err := srv.Store().CreateSession(t.Context(), "profile-test", workspace)
+			// Create a session with its own per-session workspace directory
+			id, err := srv.Store().CreateSession(t.Context(), "profile-test", "")
 			if err != nil {
 				t.Fatalf("CreateSession: %v", err)
 			}
 
-			// Create the test file in the workspace
-			if err := os.WriteFile(filepath.Join(workspace, "test.txt"), []byte("hello from test"), 0o600); err != nil {
+			// Get the session to find its workspace (allocated as SessionsDir()/id)
+			sess, found, err := srv.Store().Session(t.Context(), id)
+			if !found || err != nil {
+				t.Fatalf("could not load session: %v", err)
+			}
+
+			// Create the directory and test file in the session's workspace
+			if err := os.MkdirAll(sess.Workspace, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(sess.Workspace, "test.txt"), []byte("hello from test"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 

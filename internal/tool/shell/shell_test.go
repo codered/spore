@@ -26,18 +26,16 @@ func firstLine(s string) string {
 
 func call(t *testing.T, tl interface {
 	Call(context.Context, json.RawMessage) (string, error)
-}, args any) (string, error) {
+}, ws string, args any) (string, error) {
 	t.Helper()
 	raw, _ := json.Marshal(args)
-	return tl.Call(context.Background(), raw)
+	return tl.Call(ctxFor(ws), raw)
 }
 
 func TestExecCapturesOutput(t *testing.T) {
 	ws := t.TempDir()
 	tl := New(5*time.Second, 1<<20)
-	ctx := ctxFor(ws)
-	raw, _ := json.Marshal(map[string]string{"command": "echo hello"})
-	out, err := tl.Call(ctx, raw)
+	out, err := call(t, tl, ws, map[string]string{"command": "echo hello"})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -52,9 +50,7 @@ func TestExecRunsInTheWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	tl := New(5*time.Second, 1<<20)
-	ctx := ctxFor(ws)
-	raw, _ := json.Marshal(map[string]string{"command": "ls"})
-	out, err := tl.Call(ctx, raw)
+	out, err := call(t, tl, ws, map[string]string{"command": "ls"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,9 +62,7 @@ func TestExecRunsInTheWorkspace(t *testing.T) {
 func TestNonZeroExitIsReportedNotHidden(t *testing.T) {
 	ws := t.TempDir()
 	tl := New(5*time.Second, 1<<20)
-	ctx := ctxFor(ws)
-	raw, _ := json.Marshal(map[string]string{"command": "echo to-stderr 1>&2; exit 3"})
-	out, err := tl.Call(ctx, raw)
+	out, err := call(t, tl, ws, map[string]string{"command": "echo to-stderr 1>&2; exit 3"})
 	if err != nil {
 		t.Fatalf("a failing command must return output, not a Go error: %v", err)
 	}
@@ -83,10 +77,8 @@ func TestNonZeroExitIsReportedNotHidden(t *testing.T) {
 func TestTimeoutKillsTheCommand(t *testing.T) {
 	ws := t.TempDir()
 	tl := New(5*time.Second, 1<<20)
-	ctx := ctxFor(ws)
 	start := time.Now()
-	raw, _ := json.Marshal(map[string]any{"command": "sleep 30", "timeout_seconds": 1})
-	out, err := tl.Call(ctx, raw)
+	out, err := call(t, tl, ws, map[string]any{"command": "sleep 30", "timeout_seconds": 1})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -101,9 +93,7 @@ func TestTimeoutKillsTheCommand(t *testing.T) {
 func TestEmptyCommandIsAnError(t *testing.T) {
 	ws := t.TempDir()
 	tl := New(5*time.Second, 1<<20)
-	ctx := ctxFor(ws)
-	raw, _ := json.Marshal(map[string]string{"command": "  "})
-	if _, err := tl.Call(ctx, raw); err == nil {
+	if _, err := call(t, tl, ws, map[string]string{"command": "  "}); err == nil {
 		t.Error("an empty command must be a tool error")
 	}
 }
@@ -111,9 +101,7 @@ func TestEmptyCommandIsAnError(t *testing.T) {
 func TestOutputIsCappedInMemory(t *testing.T) {
 	ws := t.TempDir()
 	tl := New(10*time.Second, 4096)
-	ctx := ctxFor(ws)
-	raw, _ := json.Marshal(map[string]string{"command": "head -c 200000 /dev/zero | tr '\\0' 'x'"})
-	out, err := tl.Call(ctx, raw)
+	out, err := call(t, tl, ws, map[string]string{"command": "head -c 200000 /dev/zero | tr '\\0' 'x'"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,9 +120,7 @@ func TestFastCommandIsNeverReportedAsTimedOut(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		ws := t.TempDir()
 		tl := New(2*time.Second, 1<<20)
-		ctx := ctxFor(ws)
-		raw, _ := json.Marshal(map[string]string{"command": "true"})
-		out, err := tl.Call(ctx, raw)
+		out, err := call(t, tl, ws, map[string]string{"command": "true"})
 		if err != nil {
 			t.Fatal(err)
 		}
