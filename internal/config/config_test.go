@@ -508,3 +508,38 @@ func TestRecallURLMustParse(t *testing.T) {
 		t.Errorf("error %q does not point at recall.url", err)
 	}
 }
+
+func TestRemoteProfileWorkspaceMustBeInsideTheCeiling(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	body := "default_model = \"anthropic/claude-opus-5\"\n" +
+		"[policy]\nworkspace = \"" + filepath.Join(dir, "ceiling") + "\"\n\n" +
+		"[policy.profile.remote]\nworkspace = \"" + filepath.Join(dir, "elsewhere") + "\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("a remote workspace outside the ceiling must fail at load, not at the first tool call")
+	}
+}
+
+func TestProfileWorkspaceExpandsHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	body := "default_model = \"anthropic/claude-opus-5\"\n" +
+		"[policy]\nworkspace = \"~\"\n\n[policy.profile.remote]\nworkspace = \"~/shared\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Policy.Profiles["remote"].Workspace; got != filepath.Join(home, "shared") {
+		t.Fatalf("remote workspace = %q, want %q", got, filepath.Join(home, "shared"))
+	}
+}

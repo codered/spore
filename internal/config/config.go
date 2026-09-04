@@ -122,10 +122,15 @@ type LearnedPolicy struct {
 }
 
 type ProfilePolicy struct {
-	Default string   `toml:"default"`
-	Allow   []string `toml:"allow"`
-	Ask     []string `toml:"ask"`
-	Deny    []string `toml:"deny"`
+	Default string `toml:"default"`
+	// Workspace roots every session created on this profile at one
+	// directory, instead of at a session directory of its own. It is the
+	// operator saying a bridge user is meant to work on something real; it
+	// is itself checked against policy.workspace at load.
+	Workspace string   `toml:"workspace"`
+	Allow     []string `toml:"allow"`
+	Ask       []string `toml:"ask"`
+	Deny      []string `toml:"deny"`
 }
 
 type WebConfig struct {
@@ -385,6 +390,24 @@ func expandHome(p string) (string, error) {
 	return filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/")), nil
 }
 
+// insideCeiling is a lexical containment check on path boundaries, so
+// "/ws-evil" is not inside "/ws". It is deliberately simpler than
+// policy.Inside -- config cannot import policy, which imports config -- and
+// that is sound here because both paths are operator-written configuration,
+// not tool arguments: there is no attacker-supplied symlink to see through.
+func insideCeiling(ceiling, p string) bool {
+	ceiling = filepath.Clean(ceiling)
+	p = filepath.Clean(p)
+	if ceiling == p {
+		return true
+	}
+	rel, err := filepath.Rel(ceiling, p)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 // interpolate replaces ${VAR} with the environment value, erroring when a
@@ -451,6 +474,24 @@ func Load(path string) (*Config, error) {
 	cfg.Policy.Deny = append(append([]string{}, baselineDeny...), cfg.Policy.Deny...)
 	if cfg.Policy.Profiles == nil {
 		cfg.Policy.Profiles = map[string]ProfilePolicy{}
+	}
+	// A profile workspace is expanded and bounded at load, so an operator
+	// learns about a bad one at startup rather than when a bridge user's
+	// first tool call is refused.
+	for name, p := range cfg.Policy.Profiles {
+		if p.Workspace == "" {
+			continue
+		}
+		expanded, err := expandHome(p.Workspace)
+		if err != nil {
+			return nil, fmt.Errorf("policy.profile.%s.workspace %q: %w", name, p.Workspace, err)
+		}
+		if !insideCeiling(cfg.Policy.Workspace, expanded) {
+			return nil, fmt.Errorf("policy.profile.%s.workspace %s is outside policy.workspace %s",
+				name, expanded, cfg.Policy.Workspace)
+		}
+		p.Workspace = expanded
+		cfg.Policy.Profiles[name] = p
 	}
 	if cfg.Web.UserAgent == "" {
 		cfg.Web.UserAgent = d.Web.UserAgent
