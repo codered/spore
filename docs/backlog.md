@@ -1,11 +1,13 @@
 # Backlog
 
-Wanted, not yet scheduled. Each entry records what was asked for and the open
+Wanted, not yet scheduled, and known gaps in what has shipped. Each entry
+records what was asked for -- or what was knowingly left undone -- and the open
 questions that must be answered before it can be specified, so the next
 brainstorm starts where this one stopped rather than from the request.
 
-Nothing here is a commitment to an order. The next stage is 5b (Weaviate
-recall backend, `recall setup|status|teardown`, `trace setup`).
+Nothing here is a commitment to an order. Stages 5a, 5b and 5c have shipped.
+The next stage is 6 (per-session workspace), specified in section 5 of the
+design spec and not yet planned.
 
 ## Chat commands
 
@@ -65,6 +67,36 @@ extended.
    a cost ceiling, and both belong in config next to `context`.
 4. What "seeing them running" means on each surface: the terminal has a live
    view, the web UI has SSE, Discord has neither.
+
+## Deleting a fact leaves its vector behind
+
+Known gap, shipped that way in 5b, deliberately. The FTS index is written
+inside `AppendMessage`'s transaction and `UnindexFact` deletes the row there,
+but Weaviate is a mirror driven forward from a watermark over `recall_fts` and
+the mirror only moves forward. It has no delete path, so the vector copy of a
+deleted fact survives until the next `recall reindex` and can surface in a
+semantic search in the meantime.
+
+The blast radius is bounded -- a stale hit on content the user removed, never a
+wrong answer to a keyword search, and never data loss -- which is why 5b landed
+without it. Fixing it properly is a delete path through the mirror, which is a
+task of its own rather than something to smuggle into a backend review.
+
+**Open questions**
+
+1. What does the mirror learn deletions from? The watermark is a high-water
+   mark over an append-only feed, and a deletion is not an append. Either
+   `UnindexFact` writes a tombstone row the feed carries forward, or the
+   mirror periodically diffs its object ids against `recall_fts`. The
+   tombstone is exact and costs a table plus a retention rule; the diff needs
+   no schema change and costs a full scan of both sides.
+2. Is deletion allowed to fail? Every other Weaviate write is non-fatal by
+   design -- the store is a mirror and the keyword index is the record. A
+   delete that silently fails leaves exactly the stale object this entry is
+   about, so it may need a retry that the mirror's forward-only model has no
+   place to put.
+3. Does `recall reindex` stay the escape hatch either way, and is it worth
+   running on a schedule until the delete path exists?
 
 ## The container tests: both suites have now run
 

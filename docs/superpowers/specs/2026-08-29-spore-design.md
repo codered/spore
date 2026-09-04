@@ -189,6 +189,22 @@ retained; this is the archive behind `spore session list|show|resume|export`.
 FTS5 over the curated corpus provides keyword search across all history with no
 vector store present.
 
+Every session records the directory it is rooted at. `sessions.workspace` is
+written at creation and is the working directory for that session's filesystem
+tools, its shell calls and the environment section of its prompt. A creator
+that has a working directory of its own supplies it -- the CLI sends its cwd.
+A creator that has none -- a bridge, the web UI, the scheduler -- gets
+`<data_dir>/sessions/<id>`, created on the session's first turn so a session
+that is opened and never used leaves nothing on disk. Sessions created before
+the column existed are backfilled with the configured ceiling, so resuming one
+behaves exactly as it did.
+
+The root is fixed at creation. Resuming a session from another directory does
+not move it: a transcript, its recall hits and its file references stay
+coherent, and the daemon can answer where a detached session is rooted from
+the database alone. `--workspace` on the CLI is the deliberate exception, and
+it rewrites the row.
+
 There is no `facts` table. Facts are files, and the file is the only source of
 truth; SQLite indexes their text for search but never owns it.
 
@@ -470,7 +486,14 @@ there is, is a child that gets nothing it was not given: the subprocess
 environment is built from scratch out of `env`, the names listed in `inherit`,
 and `PATH` (without which `npx` cannot resolve, and which leaks nothing).
 Provider keys in spore's own environment are invisible to it by default. The
-working directory is pinned to `policy.workspace`. Shutdown cancels the
+working directory is pinned to `policy.workspace` -- the ceiling of section 9,
+not the calling session's own workspace. One server process is shared by every
+session, so it cannot hold a per-session directory, and spawning a set of
+servers per session would multiply real subprocesses for a cosmetic gain.
+Containment does not depend on that cwd: path arguments to MCP tools are
+evaluated by the policy engine against the calling session's workspace like
+any other tool's, so the bound is per-session even though the process is not.
+Shutdown cancels the
 context, closes the session, and kills the process group after a grace period,
 so a wedged server cannot outlive the daemon.
 
@@ -532,6 +555,22 @@ deny  = [
 ]
 ```
 
+- **`workspace` is a ceiling, not a location.** Each session carries its own
+  workspace (section 5); `policy.workspace` bounds where one is allowed to be,
+  and a session rooted outside it is refused at creation rather than quietly
+  moved. `path outside workspace` is evaluated against the *calling session's*
+  workspace, so one daemon serving a local session in a project and a bridge
+  session in its own directory applies the right bound to each. Session
+  directories under `<data_dir>` are always within the bound whatever the
+  ceiling says: spore allocated them, and a ceiling naming a project directory
+  would otherwise reject spore's own storage.
+- **The `remote` profile is confined to its session directory.** A bridge
+  session cannot reach the rest of the ceiling at all. Setting
+  `[policy.remote] workspace` roots every remote session at that directory
+  instead of at one of its own, for the case where a bridge user is meant to
+  work on something real; it is itself checked against the ceiling, and
+  leaving it unset is what keeps an untrusted party in a directory that holds
+  nothing but its own session.
 - **Deny is checked first and is absolute.** No approval can override it. This
   is the barrier against prompt injection talking its way to `sudo`.
 - **`ask` suspends the turn.** The pending call is persisted, an
@@ -595,7 +634,10 @@ non-fatal and never block a turn.
 operation and public endpoints are non-goals (section 1), so the trust boundary
 is the machine. The API is small: list, create and show sessions; post a message
 to a session; an SSE stream per session carrying turn deltas and tool-call
-events; resolve a pending approval; and job create, list and cancel.
+events; resolve a pending approval; and job create, list and cancel. Session
+creation carries an optional `workspace`; a request that omits it gets a
+session directory, and one naming a directory outside the ceiling is refused
+with an error rather than a fallback.
 
 Multi-client behaviour falls out of that surface. One turn's events fan out to
 every client attached to the session, and a client disconnecting never cancels
@@ -667,6 +709,10 @@ attachment handling.
 
 `spore serve | chat | once | session | recall | trace | mcp | doctor`.
 
+`chat` and `once` send their working directory when they create a session, so
+spore describes and operates on the directory you ran it in. `--workspace`
+overrides that, and on a resume it re-roots the session deliberately.
+
 `chat` and `once` are thin clients against the daemon's HTTP API — the same path
 the web UI uses, so only one code path stays warm. When no daemon is listening
 they start one: a detached `spore serve` that outlives the CLI invocation, so
@@ -681,6 +727,11 @@ One TOML file at `~/.spore/config.toml`, with `${ENV_VAR}` interpolation so
 secrets live in the environment or the systemd unit and never in the file.
 Policy rules written back by "always allow this pattern" land in a marked
 section of the same file.
+
+`[policy] workspace` is the ceiling every session's workspace must lie within,
+not the directory spore works in; it defaults to the home directory.
+`[policy.remote] workspace` widens what bridge sessions may reach, which
+otherwise stops at their own session directory.
 
 `[recall]` carries `backend` (`sqlitefts` or `weaviate`) and `url`. An empty
 `url` means the instance `spore recall setup` provisions on loopback; setting it
@@ -741,7 +792,7 @@ No live API calls in CI, and no container in the default suite.
 
 ## 11. Implementation staging
 
-Five stages, each independently useful; stages 4 and 5 are two plans each. Each
+Six stages, each independently useful; stages 4 and 5 are two plans each. Each
 plan is written only once its predecessor completes.
 
 1. **Core** — store and schema, config, provider interface with `anthropic` and
@@ -762,9 +813,18 @@ plan is written only once its predecessor completes.
 5. **Memory and recall**, split for the same reason stage 4 was. **5a**
    (shipped) is fact files, the `memory` tool, context budgeting, FTS5 search
    and the `Recall` interface with its `sqlitefts` backend: pure Go and SQLite,
-   no daemon, testable end to end offline. **5b** is the Weaviate backend and
-   `recall setup|status|teardown`. **5c** is `trace setup` for Phoenix. 5b and
-   5c were one stage until it became clear they share only the shape of a
-   pinned compose file: a review of a new search backend should not also have
-   to weigh a tracing sidecar. 5b introduces the first dependency on Docker, a
-   container lifecycle and a network backfill, which is review enough.
+   no daemon, testable end to end offline. **5b** (shipped) is the Weaviate
+   backend and `recall setup|status|teardown`. **5c** (shipped) is
+   `trace setup` for Phoenix. 5b and 5c were one stage until it became clear
+   they share only the shape of a pinned compose file: a review of a new search
+   backend should not also have to weigh a tracing sidecar. 5b introduced the
+   first dependency on Docker, a container lifecycle and a network backfill,
+   which was review enough.
+6. **Per-session workspace** — the workspace stops being one value per daemon
+   and becomes a property of a session: recorded at creation, carried on the
+   turn context beside the trust profile, and honoured by the filesystem
+   tools, the shell and the policy engine's `path outside workspace`. It is
+   last because it touches every surface at once and reinterprets a documented
+   config key, which is a poor thing to do while the surfaces themselves are
+   still moving. It lands after 5c for that reason, and not because anything
+   in 5c depends on it.

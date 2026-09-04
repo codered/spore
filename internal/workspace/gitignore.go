@@ -98,13 +98,14 @@ type ruleSet struct {
 // wins, which is git's own precedence.
 type ignoreStack []ruleSet
 
-// load reads dir/.gitignore and returns the stack with that file appended.
-// A missing or unreadable file leaves the stack unchanged, so a directory
-// without rules simply inherits its parents'.
-func (s ignoreStack) load(root, dir string) ignoreStack {
+// load reads dir/.gitignore and returns the stack with that file appended,
+// and whether it contributed any rule. A missing or unreadable file leaves
+// the stack unchanged, so a directory without rules simply inherits its
+// parents'.
+func (s ignoreStack) load(root, dir string) (ignoreStack, bool) {
 	f, err := os.Open(filepath.Join(root, filepath.FromSlash(dir), ".gitignore"))
 	if err != nil {
-		return s
+		return s, false
 	}
 	defer f.Close()
 	var rs ruleSet
@@ -116,14 +117,14 @@ func (s ignoreStack) load(root, dir string) ignoreStack {
 		}
 	}
 	if len(rs.patterns) == 0 {
-		return s
+		return s, false
 	}
 	// Copy rather than append in place: sibling directories share the parent
 	// stack, and appending to a shared backing array would leak one sibling's
 	// rules into the next.
 	out := make(ignoreStack, len(s), len(s)+1)
 	copy(out, s)
-	return append(out, rs)
+	return append(out, rs), true
 }
 
 // ignored reports whether rel (slash-separated, relative to the root) is
