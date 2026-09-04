@@ -20,13 +20,21 @@ func cmdSession(ctx context.Context, st *store.Store, args []string) error {
 			return err
 		}
 		for _, s := range sessions {
-			fmt.Printf("%s  %s  %s\n", s.ID, s.UpdatedAt.Format("2006-01-02 15:04"), s.Title)
+			fmt.Printf("%s  %s  %s  %s\n", s.ID, s.UpdatedAt.Format("2006-01-02 15:04"), s.Workspace, s.Title)
 		}
 		return nil
 	case "show":
 		if len(args) < 2 {
 			return fmt.Errorf("session show needs a session id")
 		}
+		sess, found, err := st.Session(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("no session %s", args[1])
+		}
+		fmt.Printf("session %s\nworkspace %s\n", sess.ID, sess.Workspace)
 		msgs, err := st.Messages(ctx, args[1])
 		if err != nil {
 			return err

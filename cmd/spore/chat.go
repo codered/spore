@@ -17,13 +17,28 @@ import (
 // cmdChat opens an interactive session. On a terminal it runs the full
 // interface; with input or output redirected it falls back to the plain
 // line-at-a-time loop, which is what scripts and tests drive.
-func cmdChat(ctx context.Context, cfg *config.Config, sessionID string) error {
+func cmdChat(ctx context.Context, cfg *config.Config, sessionID, workspaceFlag string) error {
 	c, err := ensureDaemon(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	if sessionID == "" {
-		if sessionID, err = c.createSession(ctx, "chat"); err != nil {
+		ws, err := sessionWorkspace(workspaceFlag)
+		if err != nil {
+			return err
+		}
+		if sessionID, err = c.createSession(ctx, "chat", ws); err != nil {
+			return err
+		}
+	} else if workspaceFlag != "" {
+		// Resuming does not move a session -- a transcript, its recall hits
+		// and its file references stay coherent. --workspace is the one way
+		// to say "move it anyway", and it rewrites the row.
+		ws, err := sessionWorkspace(workspaceFlag)
+		if err != nil {
+			return err
+		}
+		if err := c.setWorkspace(ctx, sessionID, ws); err != nil {
 			return err
 		}
 	}
