@@ -160,7 +160,8 @@ func sessionWorkspace(flag string) (string, error) {
 // takeWorkspaceFlag pulls "--workspace <dir>" (or "-workspace <dir>") out of
 // an argument list, wherever it appears, and returns the rest. spore's CLI
 // parses by hand rather than with the flag package, because a prompt is a
-// positional argument that may itself begin with a dash.
+// positional argument that may itself begin with a dash. If the flag
+// appears more than once, the last occurrence wins.
 func takeWorkspaceFlag(args []string) (rest []string, workspace string, err error) {
 	for i := 0; i < len(args); i++ {
 		if args[i] != "--workspace" && args[i] != "-workspace" {
@@ -189,7 +190,7 @@ func openStore(ctx context.Context, cfg *config.Config) (*store.Store, error) {
 		// shows, and the daemon refuses only to run a turn for it.
 		slog.Default().Warn("backfilling session workspaces failed", "error", err)
 	} else if n > 0 {
-		slog.Default().Info("rooted sessions written before stage 6", "count", n, "workspace", cfg.Policy.Workspace)
+		slog.Default().Info("backfilled sessions with no recorded workspace", "count", n, "workspace", cfg.Policy.Workspace)
 	}
 	return st, nil
 }
