@@ -5,16 +5,19 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/memory"
 	"github.com/codered/spore/internal/recall"
-	"github.com/codered/spore/internal/recall/sqlitefts"
+	"github.com/codered/spore/internal/recall/mirror"
+	weaviaterecall "github.com/codered/spore/internal/recall/weaviate"
 	"github.com/codered/spore/internal/store"
 )
 
@@ -23,14 +26,20 @@ import (
 // is the operator.
 func cmdRecall(ctx context.Context, cfg *config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: spore recall search <query> | status | reindex")
+		return fmt.Errorf("usage: spore recall search <query> | status | reindex | setup | teardown")
 	}
 	st, err := store.Open(cfg.DBPath())
 	if err != nil {
 		return err
 	}
 	defer st.Close()
-	backend := sqlitefts.New(st.DB())
+
+	// The operator sees what the model sees, so search and status go through
+	// the configured backend rather than always through the keyword index.
+	backend, mir, err := buildRecall(cfg, st, slog.Default())
+	if err != nil {
+		return err
+	}
 
 	switch args[0] {
 	case "search":
@@ -38,10 +47,94 @@ func cmdRecall(ctx context.Context, cfg *config.Config, args []string) error {
 	case "status":
 		return recallStatusCmd(ctx, backend)
 	case "reindex":
-		return recallReindexCmd(ctx, cfg, st)
+		return recallReindexCmd(ctx, cfg, st, mir)
+	case "setup":
+		return recallSetupCmd(ctx, cfg, st, args[1:])
+	case "teardown":
+		return recallTeardownCmd(ctx, cfg, args[1:])
 	default:
-		return fmt.Errorf("unknown recall command %q: want search, status or reindex", args[0])
+		return fmt.Errorf("unknown recall command %q: want search, status, reindex, setup or teardown", args[0])
 	}
+}
+
+// weaviateDir is where the compose file lives: next to the database rather
+// than in the workspace, because it is spore's state and not the operator's
+// project.
+func weaviateDir(cfg *config.Config) string {
+	return filepath.Join(cfg.DataDir, "weaviate")
+}
+
+func recallSetupCmd(ctx context.Context, cfg *config.Config, st *store.Store, args []string) error {
+	fs := flag.NewFlagSet("recall setup", flag.ContinueOnError)
+	timeout := fs.Duration("timeout", 5*time.Minute, "how long to wait for the container to become ready")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if cfg.Recall.URL != "" {
+		fmt.Printf("recall.url is %s, so there is nothing to provision.\n", cfg.Recall.URL)
+	} else {
+		if err := weaviaterecall.DockerAvailable(); err != nil {
+			return err
+		}
+		dir := weaviateDir(cfg)
+		path, err := weaviaterecall.WriteCompose(dir)
+		if err != nil {
+			return err
+		}
+		fmt.Println("wrote", path)
+		fmt.Println("starting weaviate and its embedding sidecar (a first run pulls two images)...")
+		if err := weaviaterecall.Up(ctx, dir); err != nil {
+			return err
+		}
+	}
+
+	backend, err := weaviaterecall.New(cfg.WeaviateURL())
+	if err != nil {
+		return err
+	}
+	fmt.Print("waiting for it to answer... ")
+	if err := weaviaterecall.WaitReady(ctx, backend, *timeout); err != nil {
+		fmt.Println("no")
+		return err
+	}
+	fmt.Println("ready")
+
+	if err := backend.EnsureCollection(ctx); err != nil {
+		return err
+	}
+	fmt.Print("backfilling... ")
+	n, err := mirror.New(st, backend, weaviaterecall.Name, slog.Default()).Once(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%d chunks\n", n)
+
+	if err := config.SetRecallBackend(cfg.Path, config.RecallWeaviate); err != nil {
+		return err
+	}
+	fmt.Printf("recall.backend is now %q in %s\n", config.RecallWeaviate, cfg.Path)
+	fmt.Println("restart the daemon to pick it up: spore serve --stop && spore serve")
+	return nil
+}
+
+func recallTeardownCmd(ctx context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("recall teardown", flag.ContinueOnError)
+	purge := fs.Bool("purge", false, "also delete the vector store's data volume")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if cfg.Recall.URL != "" {
+		return fmt.Errorf("recall.url points at %s, which spore did not start; stop it yourself", cfg.Recall.URL)
+	}
+	if err := weaviaterecall.Down(ctx, weaviateDir(cfg), *purge); err != nil {
+		return err
+	}
+	if err := config.SetRecallBackend(cfg.Path, config.RecallSQLiteFTS); err != nil {
+		return err
+	}
+	fmt.Printf("stopped; recall.backend is back to %q\n", config.RecallSQLiteFTS)
+	return nil
 }
 
 func recallSearchCmd(ctx context.Context, backend recall.Recall, args []string) error {
@@ -106,7 +199,7 @@ func recallStatusCmd(ctx context.Context, backend recall.Recall) error {
 
 // recallReindexCmd rebuilds both halves: messages and summaries from SQLite,
 // facts from the files that own them.
-func recallReindexCmd(ctx context.Context, cfg *config.Config, st *store.Store) error {
+func recallReindexCmd(ctx context.Context, cfg *config.Config, st *store.Store, mir *mirror.Mirror) error {
 	n, err := st.ReindexAll(ctx)
 	if err != nil {
 		return err
@@ -139,5 +232,30 @@ func recallReindexCmd(ctx context.Context, cfg *config.Config, st *store.Store) 
 		}
 	}
 	fmt.Printf("reindexed %d messages and summaries, %d facts\n", n, len(facts))
+
+	if mir == nil {
+		return nil
+	}
+	// A rebuild renumbers every FTS rowid, so the mirror's watermark now
+	// points at nothing meaningful. Drop the mirrored copy and start it over
+	// rather than leaving it half-matched to the new numbering.
+	vector, err := weaviaterecall.New(cfg.WeaviateURL())
+	if err != nil {
+		return err
+	}
+	if err := vector.DropAll(ctx); err != nil {
+		return err
+	}
+	if err := vector.EnsureCollection(ctx); err != nil {
+		return err
+	}
+	if err := mir.Reset(ctx); err != nil {
+		return err
+	}
+	mirrored, err := mir.Once(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("mirrored %d chunks to %s\n", mirrored, weaviaterecall.Name)
 	return nil
 }

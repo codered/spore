@@ -196,11 +196,13 @@ keyword search) is allowed by default; for a `remote` session it is
 additionally confined in the tool itself, not by policy, to that session's
 own messages and summaries, with facts excluded entirely.
 
-Three CLI verbs give you, the operator, the same index unscoped:
+These CLI verbs give you, the operator, the same index unscoped:
 
-    spore recall search <query>     # keyword search over messages, summaries and facts
-    spore recall status             # backend name and indexed counts per kind
+    spore recall search <query>     # search messages, summaries and facts
+    spore recall status             # backend name, indexed counts, degradation
     spore recall reindex            # rebuild from spore.db and the fact files
+    spore recall setup              # provision the vector store and backfill it
+    spore recall teardown           # stop it and return to keyword search
 
     $ spore recall search backoff
     message  482  2026-08-30
@@ -216,8 +218,41 @@ Three CLI verbs give you, the operator, the same index unscoped:
     $ spore recall reindex
     reindexed 482 messages and summaries, 3 facts
 
-Recall is keyword-only (SQLite FTS5) in this release. Semantic search arrives
-alongside the Weaviate backend, set up with `spore recall setup`.
+### Semantic recall
+
+Keyword search (SQLite FTS5) needs nothing and is always on. For semantic
+search:
+
+    spore recall setup
+
+That writes `~/.spore/weaviate/compose.yml`, starts Weaviate and a small
+embedding container on loopback, backfills your history, and switches
+`recall.backend` to `weaviate`. Restart the daemon afterwards. It needs
+Docker and nothing else: no Ollama, no embedding API key. Vectors are
+computed by the sidecar, because no Weaviate vectorizer runs in-process and
+the alternative would be spore holding a key.
+
+Already run Weaviate yourself? Set `recall.url` and skip setup entirely.
+
+    [recall]
+    backend = "weaviate"
+    url = "http://box.local:8080"
+
+Weaviate being down is never fatal. Search falls back to the keyword index
+and the turn continues:
+
+    $ spore recall status
+    backend: sqlitefts
+    degraded: weaviate at 127.0.0.1:8080: dial tcp: connect: connection refused
+
+The fallback needs no repair afterwards, because the keyword index was never
+behind: it is written inside the same transaction as the message it indexes.
+Weaviate is a mirror, caught up from a watermark a few seconds later, so a
+new message is searchable by keyword immediately and semantically shortly
+after.
+
+`spore recall teardown` stops the containers and goes back to keyword
+search, keeping the data volume unless you pass `--purge`.
 
 ## Running as a daemon
 

@@ -3,15 +3,20 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/memory"
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/provider"
+	"github.com/codered/spore/internal/recall"
+	"github.com/codered/spore/internal/recall/sqlitefts"
 	"github.com/codered/spore/internal/store"
 )
 
@@ -40,7 +45,7 @@ func TestBuildAgentRegistersConfiguredProviders(t *testing.T) {
 	}
 	cfg.Routes = []config.Route{{When: "compaction|title|classify", Model: "ollama/qwen3:8b"}}
 
-	a, _, err := buildAgent(cfg, st, terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout})
+	a, _, _, err := buildAgent(cfg, st, terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout})
 	if err != nil {
 		t.Fatalf("buildAgent: %v", err)
 	}
@@ -63,7 +68,7 @@ func TestBuildAgentRejectsUnknownProviderKind(t *testing.T) {
 	cfg.DefaultModel = "weird/model"
 	cfg.Providers = map[string]config.ProviderConfig{"weird": {Kind: "telepathy"}}
 
-	if _, _, err := buildAgent(cfg, st, terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout}); err == nil {
+	if _, _, _, err := buildAgent(cfg, st, terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout}); err == nil {
 		t.Fatal("buildAgent accepted an unknown provider kind")
 	}
 }
@@ -100,7 +105,7 @@ workspace = "`+dir+`"
 	facts := memory.NewCache(filepath.Join(dir, "memory"))
 	facts.Reload()
 
-	guard, host, err := buildTools(cfg, st, facts, nil)
+	guard, host, err := buildTools(cfg, st, facts, sqlitefts.New(st.DB()), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +180,7 @@ workspace = "`+dir+`"
 	}
 	defer st.Close()
 
-	a, host, err := buildAgent(cfg, st, allowApprover{})
+	a, host, _, err := buildAgent(cfg, st, allowApprover{})
 	if err != nil {
 		t.Fatalf("buildAgent: %v", err)
 	}
@@ -262,7 +267,7 @@ workspace = "`+dir+`"
 
 	// First startup: the directory is readable, so the fact gets indexed
 	// the ordinary way.
-	_, host, err := buildAgent(cfg, st, allowApprover{})
+	_, host, _, err := buildAgent(cfg, st, allowApprover{})
 	if err != nil {
 		t.Fatalf("buildAgent: %v", err)
 	}
@@ -280,7 +285,7 @@ workspace = "`+dir+`"
 	t.Cleanup(func() { os.Chmod(memDir, 0o700) })
 
 	// Second startup: the directory is unreadable. Spore must still start.
-	_, host2, err := buildAgent(cfg, st, allowApprover{})
+	_, host2, _, err := buildAgent(cfg, st, allowApprover{})
 	if err != nil {
 		t.Fatalf("buildAgent failed to start with an unreadable fact directory: %v", err)
 	}
@@ -293,5 +298,91 @@ workspace = "`+dir+`"
 	})
 	if !strings.Contains(out, "prefers-tabs") {
 		t.Fatalf("fact index was cleared even though the fact directory could not be read:\n%s", out)
+	}
+}
+
+func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+func TestBuildRecallDefaultsToSQLiteFTSWithNoMirror(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	backend, m, err := buildRecall(config.Default(), st, quietLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backend == nil {
+		t.Fatal("no backend")
+	}
+	if m != nil {
+		t.Error("the default backend started a mirror; there is nothing to mirror to")
+	}
+	status, err := backend.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Backend != "sqlitefts" {
+		t.Errorf("backend %q, want sqlitefts", status.Backend)
+	}
+}
+
+func TestBuildRecallWrapsWeaviateInAFallback(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cfg := config.Default()
+	cfg.Recall.Backend = config.RecallWeaviate
+	cfg.Recall.URL = "http://127.0.0.1:1" // nothing listens here
+
+	start := time.Now()
+	backend, m, err := buildRecall(cfg, st, quietLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Wiring happens while the daemon starts, so a sidecar that is down must
+	// not delay startup.
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("buildRecall took %s with the vector store down", elapsed)
+	}
+	if m == nil {
+		t.Error("no mirror was built for a mirrored backend")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// The whole point of the fallback: a dead vector store still searches.
+	if _, err := backend.Search(ctx, recall.Query{Text: "anything"}); err != nil {
+		t.Errorf("search failed with the vector store down: %v", err)
+	}
+	status, err := backend.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Degraded {
+		t.Error("status is healthy with the vector store down")
+	}
+	if status.Reason == "" {
+		t.Error("degraded with no reason")
+	}
+}
+
+func TestBuildRecallRejectsAnUnusableWeaviateURL(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cfg := config.Default()
+	cfg.Recall.Backend = config.RecallWeaviate
+	cfg.Recall.URL = "not-a-url"
+	if _, _, err := buildRecall(cfg, st, quietLogger()); err == nil {
+		t.Fatal("an unusable url wired without error")
 	}
 }

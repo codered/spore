@@ -34,6 +34,23 @@ type Config struct {
 	Daemon    DaemonConfig              `toml:"daemon"`
 	Bridge    BridgeConfig              `toml:"bridge"`
 	MCP       MCPConfig                 `toml:"mcp"`
+	Recall    RecallConfig              `toml:"recall"`
+}
+
+// Recall backend names. sqlitefts ships in every build and needs nothing;
+// weaviate is a mirror over the same corpus and can be unreachable, which is
+// why choosing it never switches the keyword index off.
+const (
+	RecallSQLiteFTS = "sqlitefts"
+	RecallWeaviate  = "weaviate"
+)
+
+// RecallConfig selects the search backend. An empty URL means the instance
+// `spore recall setup` provisions on loopback; setting it points spore at one
+// the operator runs and turns provisioning off.
+type RecallConfig struct {
+	Backend string `toml:"backend"`
+	URL     string `toml:"url"`
 }
 
 // ProviderConfig describes one upstream. Kind selects the adapter
@@ -329,6 +346,7 @@ func Default() *Config {
 		Providers: map[string]ProviderConfig{},
 		Context:   ContextConfig{MaxTokens: 180_000, CompactAt: 0.75, KeepRecent: 12, FactBudget: 2000},
 		Trace:     TraceConfig{Endpoint: "http://localhost:6006/v1/traces", SampleRate: 1.0},
+		Recall:    RecallConfig{Backend: RecallSQLiteFTS},
 		Policy: PolicyConfig{
 			Workspace:       home,
 			Default:         "ask",
@@ -443,6 +461,9 @@ func Load(path string) (*Config, error) {
 	if cfg.Daemon.Addr == "" {
 		cfg.Daemon.Addr = d.Daemon.Addr
 	}
+	if cfg.Recall.Backend == "" {
+		cfg.Recall.Backend = d.Recall.Backend
+	}
 	if cfg.Daemon.TickSeconds == 0 {
 		cfg.Daemon.TickSeconds = d.Daemon.TickSeconds
 	}
@@ -506,7 +527,28 @@ func (c *Config) Validate() error {
 	if err := ValidateDaemonAddr(c.Daemon.Addr); err != nil {
 		return err
 	}
+	switch c.Recall.Backend {
+	case RecallSQLiteFTS, RecallWeaviate:
+	default:
+		return fmt.Errorf("recall.backend must be %s or %s, got %q",
+			RecallSQLiteFTS, RecallWeaviate, c.Recall.Backend)
+	}
+	if c.Recall.URL != "" {
+		if _, err := url.Parse(c.Recall.URL); err != nil {
+			return fmt.Errorf("recall.url: %w", err)
+		}
+	}
 	return nil
+}
+
+// WeaviateURL is the address the backend dials. The default is the loopback
+// address `spore recall setup` binds, so a machine that ran setup needs no
+// configuration at all.
+func (c *Config) WeaviateURL() string {
+	if c.Recall.URL != "" {
+		return c.Recall.URL
+	}
+	return "http://127.0.0.1:8080"
 }
 
 // DBPath is the SQLite file backing every session.

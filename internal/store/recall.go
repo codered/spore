@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -204,4 +205,73 @@ func backfillRecall(db *sql.DB) error {
 	s := &Store{db: db}
 	_, err := s.ReindexAll(context.Background())
 	return err
+}
+
+// IndexRow is one row of the keyword index, as a mirror backend sees it.
+// RowID is recall_fts's own rowid and is the only ordering a mirror may rely
+// on: it rises monotonically, and re-indexing a fact deletes its row and
+// inserts a new one at the end, so an update looks like an append.
+type IndexRow struct {
+	RowID     int64
+	Kind      string
+	RefID     string
+	SessionID string
+	CreatedAt string
+	Text      string
+}
+
+// IndexRowsSince returns up to limit rows written after cursor, oldest first.
+// It is the mirror's whole view of the corpus: whatever reached the keyword
+// index reaches the mirror, so the curation rule -- text blocks only, never a
+// tool_result -- is enforced in exactly one place.
+func (s *Store) IndexRowsSince(ctx context.Context, cursor int64, limit int) ([]IndexRow, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT rowid, kind, ref_id, session_id, created_at, text
+		   FROM recall_fts WHERE rowid > ? ORDER BY rowid LIMIT ?`, cursor, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read index rows: %w", err)
+	}
+	defer rows.Close()
+	var out []IndexRow
+	for rows.Next() {
+		var r IndexRow
+		if err := rows.Scan(&r.RowID, &r.Kind, &r.RefID, &r.SessionID, &r.CreatedAt, &r.Text); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SyncCursor reports how far a mirror has caught up. A backend that never ran
+// reports 0, which means "start at the beginning" and makes a first sync and a
+// backfill the same operation.
+func (s *Store) SyncCursor(ctx context.Context, backend string) (int64, error) {
+	var cursor int64
+	err := s.db.QueryRowContext(ctx, `SELECT cursor FROM recall_sync WHERE backend = ?`, backend).Scan(&cursor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read sync cursor: %w", err)
+	}
+	return cursor, nil
+}
+
+// SetSyncCursor records progress. It is written only after the mirror has
+// accepted the batch, so a crash re-sends rows rather than skipping them --
+// object ids are derived from kind and ref_id, which makes a re-send an
+// overwrite.
+func (s *Store) SetSyncCursor(ctx context.Context, backend string, cursor int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO recall_sync (backend, cursor, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(backend) DO UPDATE SET cursor = excluded.cursor, updated_at = excluded.updated_at`,
+		backend, cursor, nowString())
+	if err != nil {
+		return fmt.Errorf("write sync cursor: %w", err)
+	}
+	return nil
 }

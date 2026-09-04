@@ -1,0 +1,14 @@
+{
+  "entries": [
+    {
+      "id": "spore-identity",
+      "file": "spore-identity.md",
+      "tags": [
+        "project"
+      ],
+      "summary": "A personal AI agent that runs as an always-on daemon in a single Go binary.",
+      "last_accessed": "2026-08-30",
+      "access_count": 1
+    }
+  ]
+}

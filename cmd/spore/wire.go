@@ -19,7 +19,10 @@ import (
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/provider/anthropic"
 	"github.com/codered/spore/internal/provider/openaicompat"
+	"github.com/codered/spore/internal/recall"
+	"github.com/codered/spore/internal/recall/mirror"
 	"github.com/codered/spore/internal/recall/sqlitefts"
+	weaviaterecall "github.com/codered/spore/internal/recall/weaviate"
 	"github.com/codered/spore/internal/router"
 	"github.com/codered/spore/internal/store"
 	"github.com/codered/spore/internal/tool"
@@ -37,14 +40,13 @@ import (
 // caller — serve supervises it, and everything else closes it. The fact
 // cache is built by the caller (buildAgent needs it for Agent.Facts too) and
 // passed in here just to register the two memory tools around it.
-func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, approver policy.Approver) (*policy.Guard, *mcphost.Host, error) {
+func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recallBackend recall.Recall, approver policy.Approver) (*policy.Guard, *mcphost.Host, error) {
 	reg := tool.NewRegistry(cfg.Policy.MaxOutput)
 	tools := fs.New(cfg.Policy.Workspace, cfg.Policy.MaxOutput)
 	tools = append(tools, shell.New(cfg.Policy.Workspace,
 		time.Duration(cfg.Shell.TimeoutSeconds)*time.Second, cfg.Policy.MaxOutput))
 	tools = append(tools, web.New(cfg.Web, cfg.Policy.MaxOutput)...)
 	tools = append(tools, schedule.New(st)...)
-	recallBackend := sqlitefts.New(st.DB())
 	tools = append(tools, mem.NewRecallSearch(recallBackend), mem.NewMemory(facts, st))
 	for _, t := range tools {
 		if err := reg.Register(t); err != nil {
@@ -65,9 +67,26 @@ func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, approv
 	return policy.NewGuard(reg, engine, approver, st, learn), host, nil
 }
 
+// buildRecall chooses the search backend. sqlitefts is always constructed:
+// with weaviate configured it becomes the fallback, so a vector store that is
+// down costs semantic ranking and never costs search. The mirror is nil for
+// the default backend, because there is nothing to mirror to.
+func buildRecall(cfg *config.Config, st *store.Store, log *slog.Logger) (recall.Recall, *mirror.Mirror, error) {
+	keyword := sqlitefts.New(st.DB())
+	if cfg.Recall.Backend != config.RecallWeaviate {
+		return keyword, nil, nil
+	}
+	vector, err := weaviaterecall.New(cfg.WeaviateURL())
+	if err != nil {
+		return nil, nil, err
+	}
+	return recall.NewFallback(vector, keyword, log),
+		mirror.New(st, vector, weaviaterecall.Name, log), nil
+}
+
 // buildAgent turns configuration into a wired agent. Plan 1 registers no
 // tools, so the agent runs text-only turns; Plan 2 passes a real ToolRunner.
-func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (*agent.Agent, *mcphost.Host, error) {
+func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (*agent.Agent, *mcphost.Host, *mirror.Mirror, error) {
 	reg := provider.NewRegistry()
 	for name, pc := range cfg.Providers {
 		price := provider.ProviderPrice{In: pc.PriceIn, Out: pc.PriceOut}
@@ -80,16 +99,16 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 			reg.Register(name, anthropic.New(pc.BaseURL, pc.APIKey, ws, nil), price)
 		case "openai", "openai-compatible":
 			if pc.BaseURL == "" {
-				return nil, nil, fmt.Errorf("provider %q: base_url is required for kind %q", name, pc.Kind)
+				return nil, nil, nil, fmt.Errorf("provider %q: base_url is required for kind %q", name, pc.Kind)
 			}
 			reg.Register(name, openaicompat.New(pc.BaseURL, pc.APIKey, nil), price)
 		default:
-			return nil, nil, fmt.Errorf("provider %q: unknown kind %q (want anthropic or openai)", name, pc.Kind)
+			return nil, nil, nil, fmt.Errorf("provider %q: unknown kind %q (want anthropic or openai)", name, pc.Kind)
 		}
 	}
 	rt, err := router.New(cfg.Routes, cfg.DefaultModel)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	// The fact cache is loaded once here; the memory tool reloads it after
@@ -131,32 +150,36 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 		}
 	}
 
-	tools, host, err := buildTools(cfg, st, facts, approver)
+	recallBackend, mir, err := buildRecall(cfg, st, slog.Default())
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
+	}
+	tools, host, err := buildTools(cfg, st, facts, recallBackend, approver)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 	a := agent.New(st, reg, rt, cfg, tools)
 	a.Facts = facts
 	a.Env = workspace.NewDescriber(cfg.Policy.Workspace).Describe
-	return a, host, nil
+	return a, host, mir, nil
 }
 
 // buildServer wires the daemon. The ordering here is load-bearing: the guard
 // needs the daemon's approver, and the daemon needs the guard, so the server
 // is constructed first with no agent, and the agent is attached once its
 // tools have been built around the server's broker.
-func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, *mcphost.Host, error) {
+func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, *mcphost.Host, *mirror.Mirror, error) {
 	srv := daemon.New(daemon.Options{Store: st, Cfg: cfg})
-	a, host, err := buildAgent(cfg, st, srv.Approver())
+	a, host, mir, err := buildAgent(cfg, st, srv.Approver())
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	guard, ok := a.Tools.(*policy.Guard)
 	if !ok {
-		return nil, nil, fmt.Errorf("internal: agent tools are %T, want *policy.Guard", a.Tools)
+		return nil, nil, nil, fmt.Errorf("internal: agent tools are %T, want *policy.Guard", a.Tools)
 	}
 	srv.Attach(a, guard)
-	return srv, host, nil
+	return srv, host, mir, nil
 }
 
 // buildBridge constructs the Discord bridge, or reports (nil, nil) when it is
