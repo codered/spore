@@ -87,7 +87,7 @@ func TestRunSingleTurnPersistsAndReportsCost(t *testing.T) {
 	})
 	a, st := harness(t, script, nil)
 
-	sid, err := st.CreateSession(ctx, "t")
+	sid, err := st.CreateSession(ctx, "t", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestRunDispatchesToolsAndFeedsResultsBack(t *testing.T) {
 	tools := &fakeTools{result: "module github.com/codered/spore"}
 	a, st := harness(t, script, tools)
 
-	sid, _ := st.CreateSession(ctx, "t")
+	sid, _ := st.CreateSession(ctx, "t", "")
 	ch, err := a.Run(ctx, sid, "what module is this?")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -206,7 +206,7 @@ func TestRunStopsAtMaxIterations(t *testing.T) {
 		}
 	}
 	a, st := harness(t, provider.NewScript(turns...), &fakeTools{result: "x"})
-	sid, _ := st.CreateSession(ctx, "t")
+	sid, _ := st.CreateSession(ctx, "t", "")
 
 	ch, _ := a.Run(ctx, sid, "loop forever")
 	var sawError bool
@@ -250,7 +250,7 @@ func TestRunDispatchesReadOnlyBatchConcurrently(t *testing.T) {
 	)
 	tools := &concurrentTools{}
 	a, st := harness(t, script, tools)
-	sid, _ := st.CreateSession(ctx, "t")
+	sid, _ := st.CreateSession(ctx, "t", "")
 
 	ch, err := a.Run(ctx, sid, "read two files")
 	if err != nil {
@@ -298,7 +298,7 @@ func TestMidStreamProviderErrorEndsLLMSpan(t *testing.T) {
 
 	script := provider.NewScript(provider.ScriptTurn{Err: errors.New("upstream exploded")})
 	a, st := harness(t, script, nil)
-	sid, _ := st.CreateSession(context.Background(), "t")
+	sid, _ := st.CreateSession(context.Background(), "t", "")
 
 	ch, err := a.Run(context.Background(), sid, "hello")
 	if err != nil {
@@ -375,7 +375,7 @@ func TestReadOnlyBatchConcurrencyIsBounded(t *testing.T) {
 	)
 	tools := &throttleTools{}
 	a, st := harness(t, script, tools)
-	sid, _ := st.CreateSession(ctx, "t")
+	sid, _ := st.CreateSession(ctx, "t", "")
 
 	ch, err := a.Run(ctx, sid, "read many files")
 	if err != nil {
@@ -449,7 +449,7 @@ func TestCancelledTurnDoesNotOrphanToolUse(t *testing.T) {
 	)
 	tools := &cancellableTools{}
 	a, st := harness(t, script, tools)
-	sid, _ := st.CreateSession(ctx, "t")
+	sid, _ := st.CreateSession(ctx, "t", "")
 
 	// Create a cancellable context and pass it to the tool runner.
 	runCtx, runCancel := context.WithCancel(ctx)
@@ -503,7 +503,7 @@ func TestSnapshotIncludesFactsFromTheCache(t *testing.T) {
 	a := newTestAgent(t)
 	a.Facts = cache
 
-	sid, err := a.Store.CreateSession(ctx, "t")
+	sid, err := a.Store.CreateSession(ctx, "t", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +519,7 @@ func TestSnapshotIncludesFactsFromTheCache(t *testing.T) {
 func TestSnapshotWithNoFactCacheIsEmpty(t *testing.T) {
 	ctx := context.Background()
 	a := newTestAgent(t)
-	sid, _ := a.Store.CreateSession(ctx, "t")
+	sid, _ := a.Store.CreateSession(ctx, "t", "")
 	snap, err := a.Snapshot(ctx, sid)
 	if err != nil {
 		t.Fatalf("a nil fact cache must not be an error: %v", err)
