@@ -59,7 +59,7 @@ func (t recallSearch) Call(ctx context.Context, args json.RawMessage) (string, e
 	// a result, so this restriction has to live in the tool. A remote session
 	// is an admitted chat user, not the operator: it may search its own
 	// conversation and nothing else, and it may not read facts at all.
-	sessionID, profile := policy.SessionFrom(ctx)
+	sess := policy.SessionFrom(ctx)
 	// This is deliberately a negative match on the one trusted profile, not a
 	// positive match on the untrusted one. policy.Engine accepts arbitrary
 	// profile names from config, so a future profile this tool has never
@@ -67,7 +67,7 @@ func (t recallSearch) Call(ctx context.Context, args json.RawMessage) (string, e
 	// Matching on == ProfileRemote would instead send it down the unscoped,
 	// facts-included path -- fail-open exactly where every other trust
 	// decision in this codebase fails closed.
-	if profile != policy.ProfileLocal {
+	if sess.Profile != policy.ProfileLocal {
 		// An empty session id is not "no filter" — the sqlitefts backend only
 		// applies its session_id predicate when SessionID is non-empty, so
 		// setting it to "" here would turn a remote call with no session
@@ -78,10 +78,10 @@ func (t recallSearch) Call(ctx context.Context, args json.RawMessage) (string, e
 		// guarantee this function can lean on. Refuse instead of searching:
 		// return the same "no matches" a caller sees for a real empty
 		// result, not an error the model might read as worth retrying.
-		if sessionID == "" {
+		if sess.ID == "" {
 			return "no matches", nil
 		}
-		q.SessionID = sessionID
+		q.SessionID = sess.ID
 		q.Kinds = []string{recall.KindMessage, recall.KindSummary}
 	}
 

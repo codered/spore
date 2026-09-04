@@ -81,7 +81,7 @@ func toolCall(name, id, args string) provider.Block {
 func TestAllowRunsWithoutAsking(t *testing.T) {
 	ap := &scriptedApprover{}
 	g, inner, _, sid := guardFixture(t, config.PolicyConfig{Allow: []string{"fs_read"}}, ap)
-	ctx := WithSession(context.Background(), sid, ProfileLocal)
+	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal})
 	got := g.Run(ctx, toolCall("fs_read", "c1", `{"path":"/ws/a"}`))
 	if got.IsError {
 		t.Fatalf("allowed call returned an error: %q", got.Content)
@@ -100,7 +100,7 @@ func TestDenyNeverReachesTheTool(t *testing.T) {
 		Allow: []string{"shell_exec"},
 		Deny:  []string{"shell_exec(matches sudo)"},
 	}, ap)
-	ctx := WithSession(context.Background(), sid, ProfileLocal)
+	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal})
 	got := g.Run(ctx, toolCall("shell_exec", "c1", `{"command":"sudo rm -rf /tmp/x"}`))
 	if !got.IsError {
 		t.Fatal("a denied call must return a tool error")
@@ -119,7 +119,7 @@ func TestDenyNeverReachesTheTool(t *testing.T) {
 func TestAskPromptsAndRunsOnApproval(t *testing.T) {
 	ap := &scriptedApprover{answer: Answer{Allow: true, Scope: ScopeOnce}}
 	g, inner, st, sid := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
-	ctx := WithSession(context.Background(), sid, ProfileLocal)
+	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal})
 	got := g.Run(ctx, toolCall("fs_write", "c1", `{"path":"/ws/a"}`))
 	if got.IsError {
 		t.Fatalf("approved call errored: %q", got.Content)
@@ -140,7 +140,7 @@ func TestAskPromptsAndRunsOnApproval(t *testing.T) {
 func TestAskDeniedReportsBackToTheModel(t *testing.T) {
 	ap := &scriptedApprover{answer: Answer{Allow: false, Scope: ScopeOnce}}
 	g, inner, _, sid := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
-	got := g.Run(WithSession(context.Background(), sid, ProfileLocal), toolCall("fs_write", "c1", `{"path":"/ws/a"}`))
+	got := g.Run(WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal}), toolCall("fs_write", "c1", `{"path":"/ws/a"}`))
 	if !got.IsError || !strings.Contains(got.Content, "declined") {
 		t.Errorf("got %+v, want a tool error saying the user declined", got)
 	}
@@ -152,7 +152,7 @@ func TestAskDeniedReportsBackToTheModel(t *testing.T) {
 func TestSessionScopeAnswersOnlyOnce(t *testing.T) {
 	ap := &scriptedApprover{answer: Answer{Allow: true, Scope: ScopeSession}}
 	g, inner, _, sid := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
-	ctx := WithSession(context.Background(), sid, ProfileLocal)
+	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal})
 	for i := 0; i < 3; i++ {
 		if got := g.Run(ctx, toolCall("fs_write", "c", `{"path":"/ws/a"}`)); got.IsError {
 			t.Fatalf("call %d errored: %q", i, got.Content)
@@ -169,7 +169,7 @@ func TestSessionScopeAnswersOnlyOnce(t *testing.T) {
 func TestSessionScopeDenialIsAlsoRemembered(t *testing.T) {
 	ap := &scriptedApprover{answer: Answer{Allow: false, Scope: ScopeSession}}
 	g, inner, _, sid := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
-	ctx := WithSession(context.Background(), sid, ProfileLocal)
+	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal})
 	for i := 0; i < 2; i++ {
 		if got := g.Run(ctx, toolCall("fs_write", "c", `{"path":"/ws/a"}`)); !got.IsError {
 			t.Fatalf("call %d was allowed after a session denial", i)
@@ -189,7 +189,7 @@ func TestRememberedSessionAllowStillCannotBeatDeny(t *testing.T) {
 		Ask:  []string{"shell_exec"},
 		Deny: []string{"shell_exec(matches sudo)"},
 	}, ap)
-	ctx := WithSession(context.Background(), sid, ProfileLocal)
+	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal})
 	if got := g.Run(ctx, toolCall("shell_exec", "c1", `{"command":"ls"}`)); got.IsError {
 		t.Fatalf("benign call errored: %q", got.Content)
 	}
@@ -218,7 +218,7 @@ func TestPatternScopeLearnsARule(t *testing.T) {
 			learned = append(learned, string(d)+" "+rule)
 			return nil
 		})
-	g.Run(WithSession(context.Background(), sid, ProfileLocal), toolCall("fs_write", "c1", `{"path":"/ws/src/a.go"}`))
+	g.Run(WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal}), toolCall("fs_write", "c1", `{"path":"/ws/src/a.go"}`))
 	if len(learned) != 1 {
 		t.Fatalf("learned = %v, want one rule written back", learned)
 	}
@@ -245,7 +245,7 @@ func TestUnansweredApprovalDeniesAtTheTimeout(t *testing.T) {
 		Ask:             []string{"fs_write"},
 		ApprovalTimeout: "50ms",
 	}, ap)
-	got := g.Run(WithSession(context.Background(), sid, ProfileLocal), toolCall("fs_write", "c1", `{"path":"/ws/a"}`))
+	got := g.Run(WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal}), toolCall("fs_write", "c1", `{"path":"/ws/a"}`))
 	if !got.IsError || !strings.Contains(got.Content, "timed out") {
 		t.Errorf("got %+v, want a timeout denial", got)
 	}
@@ -261,7 +261,7 @@ func TestUnansweredApprovalDeniesAtTheTimeout(t *testing.T) {
 func TestApproverErrorDenies(t *testing.T) {
 	ap := &scriptedApprover{err: errors.New("no tty")}
 	g, inner, _, sid := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
-	got := g.Run(WithSession(context.Background(), sid, ProfileLocal), toolCall("fs_write", "c1", `{"path":"/ws/a"}`))
+	got := g.Run(WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal}), toolCall("fs_write", "c1", `{"path":"/ws/a"}`))
 	if !got.IsError {
 		t.Error("an approver failure must deny, not allow")
 	}
@@ -302,11 +302,11 @@ func TestMissingSessionDeniesEvenAnAllowedTool(t *testing.T) {
 func TestSessionWithoutAProfileGetsTheStrictestRuleset(t *testing.T) {
 	// A session attached without naming its trust level is a caller mistake,
 	// and must not be quietly treated as the most trusted one.
-	if _, p := SessionFrom(WithSession(context.Background(), "s1", "")); p != ProfileRemote {
-		t.Errorf("profile = %q, want %q for a session attached with no profile", p, ProfileRemote)
+	if s := SessionFrom(WithSession(context.Background(), Session{ID: "s1", Profile: ""})); s.Profile != ProfileRemote {
+		t.Errorf("profile = %q, want %q for a session attached with no profile", s.Profile, ProfileRemote)
 	}
-	if _, p := SessionFrom(WithSession(context.Background(), "s1", ProfileLocal)); p != ProfileLocal {
-		t.Errorf("profile = %q, want an explicitly named profile to be honoured", p)
+	if s := SessionFrom(WithSession(context.Background(), Session{ID: "s1", Profile: ProfileLocal})); s.Profile != ProfileLocal {
+		t.Errorf("profile = %q, want an explicitly named profile to be honoured", s.Profile)
 	}
 }
 
@@ -476,5 +476,28 @@ func TestPatternForReportsDegradation(t *testing.T) {
 				t.Fatalf("PatternFor = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.wantOK)
 			}
 		})
+	}
+}
+
+func TestSessionFromCarriesWorkspace(t *testing.T) {
+	ctx := WithSession(context.Background(), Session{ID: "s1", Profile: ProfileLocal, Workspace: "/ws/a"})
+	got := SessionFrom(ctx)
+	if got.ID != "s1" || got.Profile != ProfileLocal || got.Workspace != "/ws/a" {
+		t.Fatalf("session = %+v", got)
+	}
+	if WorkspaceFrom(ctx) != "/ws/a" {
+		t.Fatalf("WorkspaceFrom = %q", WorkspaceFrom(ctx))
+	}
+}
+
+// Nothing attached still fails toward the strictest ruleset, and names no
+// directory at all rather than a default one.
+func TestSessionFromEmptyContext(t *testing.T) {
+	got := SessionFrom(context.Background())
+	if got.Profile != ProfileRemote {
+		t.Fatalf("profile = %q, want %q", got.Profile, ProfileRemote)
+	}
+	if got.Workspace != "" {
+		t.Fatalf("workspace = %q, want empty", got.Workspace)
 	}
 }

@@ -21,7 +21,7 @@ func cmdPolicyCheck(cfg *config.Config, profile, toolName, argsJSON string) erro
 	if err != nil {
 		return err
 	}
-	res := engine.Evaluate(policy.Profile(profile), policy.Call{Tool: toolName, Args: json.RawMessage(argsJSON)})
+	res := engine.Evaluate(policy.Session{ID: "policy-check", Profile: policy.Profile(profile), Workspace: ""}, policy.Call{Tool: toolName, Args: json.RawMessage(argsJSON)})
 	fmt.Printf("%s\t%s\t%s\n", res.Decision, toolName, res.Rule)
 	if res.Decision == policy.DecisionAsk {
 		pattern, ok := policy.PatternFor(policy.Call{Tool: toolName, Args: json.RawMessage(argsJSON)})

@@ -43,7 +43,7 @@ func TestOperatorCanOverrideTheRemoteMCPDeny(t *testing.T) {
 		t.Fatalf("NewEngine: %v", err)
 	}
 	call := policy.Call{Tool: "mcp__whatever", Args: json.RawMessage(`{}`)}
-	if got := e.Evaluate(policy.ProfileRemote, call); got.Decision == policy.DecisionDeny {
+	if got := e.Evaluate(policy.Session{Profile: policy.ProfileRemote}, call); got.Decision == policy.DecisionDeny {
 		t.Errorf("remote mcp__whatever = %q after an explicit override, want it not to be denied", got.Decision)
 	}
 
@@ -58,7 +58,7 @@ func TestOperatorCanOverrideTheRemoteMCPDeny(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
-	if got := defaultEngine.Evaluate(policy.ProfileRemote, call); got.Decision != policy.DecisionDeny {
+	if got := defaultEngine.Evaluate(policy.Session{Profile: policy.ProfileRemote}, call); got.Decision != policy.DecisionDeny {
 		t.Errorf("remote mcp__whatever with no override = %q, want deny", got.Decision)
 	}
 }

@@ -164,7 +164,7 @@ func (s *Server) startTurn(sessionID, text, client string, profile policy.Profil
 		}
 	}()
 
-	ctx := policy.WithSession(s.base, sessionID, profile)
+	ctx := policy.WithSession(s.base, policy.Session{ID: sessionID, Profile: profile})
 	ctx, turn = sporetrace.StartTurn(ctx, sessionID, client)
 
 	ch, err := s.agent.Run(ctx, sessionID, text)
