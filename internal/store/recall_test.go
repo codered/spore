@@ -34,7 +34,7 @@ func countFTS(t *testing.T, st *Store, where string, args ...any) int {
 func TestAppendMessageIndexesText(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
-	sid, err := st.CreateSession(ctx, "t")
+	sid, err := st.CreateSession(ctx, "t", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestAppendMessageIndexesText(t *testing.T) {
 func TestToolResultBlocksAreNeverIndexed(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
-	sid, _ := st.CreateSession(ctx, "t")
+	sid, _ := st.CreateSession(ctx, "t", "")
 	if _, err := st.AppendMessage(ctx, Message{
 		SessionID: sid, Role: "tool",
 		BlocksJSON: blocks(t,
@@ -77,7 +77,7 @@ func TestToolResultBlocksAreNeverIndexed(t *testing.T) {
 func TestMixedMessageIndexesOnlyItsText(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
-	sid, _ := st.CreateSession(ctx, "t")
+	sid, _ := st.CreateSession(ctx, "t", "")
 	if _, err := st.AppendMessage(ctx, Message{
 		SessionID: sid, Role: "assistant",
 		BlocksJSON: blocks(t,
@@ -98,7 +98,7 @@ func TestMixedMessageIndexesOnlyItsText(t *testing.T) {
 func TestSummaryIndexReplacesRatherThanAccumulates(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
-	sid, _ := st.CreateSession(ctx, "t")
+	sid, _ := st.CreateSession(ctx, "t", "")
 	if err := st.SetSummary(ctx, sid, "first summary", 1); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestSummaryIndexReplacesRatherThanAccumulates(t *testing.T) {
 func TestDeletingASessionClearsItsIndexRows(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
-	sid, _ := st.CreateSession(ctx, "t")
+	sid, _ := st.CreateSession(ctx, "t", "")
 	if _, err := st.AppendMessage(ctx, Message{SessionID: sid, Role: "user",
 		BlocksJSON: blocks(t, provider.Block{Type: provider.BlockText, Text: "vanishing text"})}); err != nil {
 		t.Fatal(err)
@@ -155,7 +155,7 @@ func TestFactIndexWriteReplaceAndDelete(t *testing.T) {
 func TestReindexRebuildsAfterCorruption(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
-	sid, _ := st.CreateSession(ctx, "t")
+	sid, _ := st.CreateSession(ctx, "t", "")
 	if _, err := st.AppendMessage(ctx, Message{SessionID: sid, Role: "user",
 		BlocksJSON: blocks(t, provider.Block{Type: provider.BlockText, Text: "recoverable text"})}); err != nil {
 		t.Fatal(err)
@@ -186,7 +186,7 @@ func TestReindexRebuildsAfterCorruption(t *testing.T) {
 func TestClearFactIndexDropsOnlyFacts(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
-	sid, _ := st.CreateSession(ctx, "t")
+	sid, _ := st.CreateSession(ctx, "t", "")
 	if _, err := st.AppendMessage(ctx, Message{SessionID: sid, Role: "user",
 		BlocksJSON: blocks(t, provider.Block{Type: provider.BlockText, Text: "surviving message"})}); err != nil {
 		t.Fatal(err)
@@ -214,7 +214,7 @@ func TestClearFactIndexDropsOnlyFacts(t *testing.T) {
 func TestReindexAllNeverIndexesToolResultBlocks(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
-	sid, _ := st.CreateSession(ctx, "t")
+	sid, _ := st.CreateSession(ctx, "t", "")
 	if _, err := st.AppendMessage(ctx, Message{
 		SessionID: sid, Role: "tool",
 		BlocksJSON: blocks(t,
@@ -253,7 +253,7 @@ func TestOpenSurvivesACorruptRecallIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sid, _ := st.CreateSession(ctx, "t")
+	sid, _ := st.CreateSession(ctx, "t", "")
 	if _, err := st.AppendMessage(ctx, Message{SessionID: sid, Role: "user",
 		BlocksJSON: blocks(t, provider.Block{Type: provider.BlockText, Text: "before the corruption"})}); err != nil {
 		t.Fatal(err)
@@ -283,7 +283,7 @@ func TestOpenBackfillsAnExistingDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sid, _ := st.CreateSession(ctx, "t")
+	sid, _ := st.CreateSession(ctx, "t", "")
 	if _, err := st.AppendMessage(ctx, Message{SessionID: sid, Role: "user",
 		BlocksJSON: blocks(t, provider.Block{Type: provider.BlockText, Text: "historic text"})}); err != nil {
 		t.Fatal(err)
@@ -307,7 +307,7 @@ func TestOpenBackfillsAnExistingDatabase(t *testing.T) {
 func TestIndexRowsSinceWalksTheCorpusInOrder(t *testing.T) {
 	st := openTestStore(t)
 	ctx := context.Background()
-	id, err := st.CreateSession(ctx, "s")
+	id, err := st.CreateSession(ctx, "s", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestIndexRowsSinceWalksTheCorpusInOrder(t *testing.T) {
 func TestIndexRowsSinceHonoursTheLimit(t *testing.T) {
 	st := openTestStore(t)
 	ctx := context.Background()
-	id, _ := st.CreateSession(ctx, "s")
+	id, _ := st.CreateSession(ctx, "s", "")
 	for i := 0; i < 5; i++ {
 		bs := blocks(t, provider.Block{Type: provider.BlockText, Text: "m"})
 		if _, err := st.AppendMessage(ctx, Message{SessionID: id, Role: "user", BlocksJSON: bs}); err != nil {

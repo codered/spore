@@ -85,7 +85,9 @@ func (s *Server) StartJob(ctx context.Context, job store.Job) (string, error) {
 	if len(title) > 60 {
 		title = title[:60]
 	}
-	sessionID, err := s.store.CreateSession(ctx, title)
+	// A job has no directory of its own, so it gets a session directory --
+	// the same treatment as the web UI and the bridge.
+	sessionID, err := s.CreateSession(ctx, title, "", policy.ProfileLocal)
 	if err != nil {
 		return "", err
 	}

@@ -56,12 +56,16 @@ func approve(ctx context.Context, c *client, ap terminalApprover, sessionID stri
 	}
 }
 
-func cmdOnce(ctx context.Context, cfg *config.Config, prompt string) error {
+func cmdOnce(ctx context.Context, cfg *config.Config, prompt, workspaceFlag string) error {
 	c, err := ensureDaemon(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	sessionID, err := c.createSession(ctx, prompt)
+	ws, err := sessionWorkspace(workspaceFlag)
+	if err != nil {
+		return err
+	}
+	sessionID, err := c.createSession(ctx, prompt, ws)
 	if err != nil {
 		return err
 	}

@@ -87,6 +87,7 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
+	mux.HandleFunc("PATCH /api/sessions/{id}", s.handlePatchSession)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleShowSession)
 	mux.HandleFunc("POST /api/sessions/{id}/messages", s.handlePostMessage)
 	mux.HandleFunc("GET /api/sessions/{id}/events", s.handleEvents)

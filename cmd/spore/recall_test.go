@@ -47,7 +47,7 @@ workspace = "`+dir+`"
 	}
 	defer st.Close()
 	ctx := context.Background()
-	sid, err := st.CreateSession(ctx, "t")
+	sid, err := st.CreateSession(ctx, "t", "")
 	if err != nil {
 		t.Fatal(err)
 	}

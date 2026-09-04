@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	// aliased: this package is itself named fs.
 	iofs "io/fs"
@@ -23,32 +24,52 @@ import (
 
 const noMatches = "no matches"
 
-// New builds the six filesystem tools bound to a workspace. maxBytes caps a
-// single file read before the registry's own output budget applies.
-func New(workspace string, maxBytes int) []tool.Tool {
-	b := base{ws: workspace, maxBytes: maxBytes}
+// New builds the six filesystem tools. They hold no workspace: one daemon
+// serves sessions rooted in different directories, so the root arrives on the
+// context of each call and a call carrying none is refused.
+func New(maxBytes int) []tool.Tool {
+	b := base{maxBytes: maxBytes}
 	return []tool.Tool{
 		readTool{b}, writeTool{b}, editTool{b},
 		listTool{b}, globTool{b}, grepTool{b},
 	}
 }
 
-type base struct {
-	ws       string
-	maxBytes int
+type base struct{ maxBytes int }
+
+// errNoWorkspace is the fail-closed answer to a call that arrived with no
+// session. The guard already refuses an unattributed call, so this is
+// defence in depth for a tool reached another way -- never a reason to
+// substitute a default directory.
+var errNoWorkspace = errors.New("no session workspace on the context, so there is nowhere to resolve this path against")
+
+func (b base) ws(ctx context.Context) (string, error) {
+	ws := policy.WorkspaceFrom(ctx)
+	if ws == "" {
+		return "", errNoWorkspace
+	}
+	return ws, nil
 }
 
-func (b base) resolve(p string) (string, error) {
+func (b base) resolve(ctx context.Context, p string) (string, error) {
+	ws, err := b.ws(ctx)
+	if err != nil {
+		return "", err
+	}
 	if p == "" {
 		p = "."
 	}
-	return policy.Resolve(b.ws, p)
+	return policy.Resolve(ws, p)
 }
 
-// rel renders a path for the model relative to the workspace when possible,
-// so transcripts stay short and stable.
-func (b base) rel(p string) string {
-	if r, err := filepath.Rel(b.ws, p); err == nil && !strings.HasPrefix(r, "..") {
+// rel renders a path for the model relative to the session's workspace when
+// possible, so transcripts stay short and stable.
+func (b base) rel(ctx context.Context, p string) string {
+	ws := policy.WorkspaceFrom(ctx)
+	if ws == "" {
+		return p
+	}
+	if r, err := filepath.Rel(ws, p); err == nil && !strings.HasPrefix(r, "..") {
 		return r
 	}
 	return p
@@ -83,7 +104,7 @@ func (readTool) Schema() json.RawMessage {
 "required":["path"]}`)
 }
 
-func (t readTool) Call(_ context.Context, args json.RawMessage) (string, error) {
+func (t readTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var a struct {
 		Path   string `json:"path"`
 		Offset int    `json:"offset"`
@@ -92,7 +113,7 @@ func (t readTool) Call(_ context.Context, args json.RawMessage) (string, error) 
 	if err := decode(args, &a); err != nil {
 		return "", err
 	}
-	p, err := t.resolve(a.Path)
+	p, err := t.resolve(ctx, a.Path)
 	if err != nil {
 		return "", err
 	}
@@ -147,12 +168,12 @@ func (writeTool) Schema() json.RawMessage {
 "required":["path","content"]}`)
 }
 
-func (t writeTool) Call(_ context.Context, args json.RawMessage) (string, error) {
+func (t writeTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var a struct{ Path, Content string }
 	if err := decode(args, &a); err != nil {
 		return "", err
 	}
-	p, err := t.resolve(a.Path)
+	p, err := t.resolve(ctx, a.Path)
 	if err != nil {
 		return "", err
 	}
@@ -162,7 +183,7 @@ func (t writeTool) Call(_ context.Context, args json.RawMessage) (string, error)
 	if err := os.WriteFile(p, []byte(a.Content), 0o644); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("wrote %d bytes to %s", len(a.Content), t.rel(p)), nil
+	return fmt.Sprintf("wrote %d bytes to %s", len(a.Content), t.rel(ctx, p)), nil
 }
 
 // ---- fs_edit ----
@@ -183,7 +204,7 @@ func (editTool) Schema() json.RawMessage {
 "required":["path","old","new"]}`)
 }
 
-func (t editTool) Call(_ context.Context, args json.RawMessage) (string, error) {
+func (t editTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var a struct {
 		Path       string `json:"path"`
 		Old        string `json:"old"`
@@ -196,7 +217,7 @@ func (t editTool) Call(_ context.Context, args json.RawMessage) (string, error) 
 	if a.Old == "" {
 		return "", fmt.Errorf("old must not be empty")
 	}
-	p, err := t.resolve(a.Path)
+	p, err := t.resolve(ctx, a.Path)
 	if err != nil {
 		return "", err
 	}
@@ -208,9 +229,9 @@ func (t editTool) Call(_ context.Context, args json.RawMessage) (string, error) 
 	n := strings.Count(body, a.Old)
 	switch {
 	case n == 0:
-		return "", fmt.Errorf("%s: the text to replace was not found", t.rel(p))
+		return "", fmt.Errorf("%s: the text to replace was not found", t.rel(ctx, p))
 	case n > 1 && !a.ReplaceAll:
-		return "", fmt.Errorf("%s: the text to replace appears %d times; pass more surrounding context or set replace_all", t.rel(p), n)
+		return "", fmt.Errorf("%s: the text to replace appears %d times; pass more surrounding context or set replace_all", t.rel(ctx, p), n)
 	}
 	if a.ReplaceAll {
 		body = strings.ReplaceAll(body, a.Old, a.New)
@@ -225,7 +246,7 @@ func (t editTool) Call(_ context.Context, args json.RawMessage) (string, error) 
 	if err := os.WriteFile(p, []byte(body), mode); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("replaced %d occurrence(s) in %s", n, t.rel(p)), nil
+	return fmt.Sprintf("replaced %d occurrence(s) in %s", n, t.rel(ctx, p)), nil
 }
 
 // ---- fs_list ----
@@ -240,14 +261,14 @@ func (listTool) Schema() json.RawMessage {
 "path":{"type":"string","description":"Directory path. Defaults to the workspace root."}}}`)
 }
 
-func (t listTool) Call(_ context.Context, args json.RawMessage) (string, error) {
+func (t listTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var a struct {
 		Path string `json:"path"`
 	}
 	if len(args) > 0 {
 		_ = json.Unmarshal(args, &a)
 	}
-	p, err := t.resolve(a.Path)
+	p, err := t.resolve(ctx, a.Path)
 	if err != nil {
 		return "", err
 	}
@@ -315,7 +336,7 @@ func globRE(pattern string) (*regexp.Regexp, error) {
 	return regexp.Compile(policy.GlobSource(pattern))
 }
 
-func (t globTool) Call(_ context.Context, args json.RawMessage) (string, error) {
+func (t globTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var a struct{ Pattern, Path string }
 	if err := decode(args, &a); err != nil {
 		return "", err
@@ -327,13 +348,13 @@ func (t globTool) Call(_ context.Context, args json.RawMessage) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("invalid pattern %q: %w", a.Pattern, err)
 	}
-	root, err := t.resolve(a.Path)
+	root, err := t.resolve(ctx, a.Path)
 	if err != nil {
 		return "", err
 	}
 	var hits []string
 	err = walkFiles(root, func(p string) error {
-		r := t.rel(p)
+		r := t.rel(ctx, p)
 		if re.MatchString(r) || re.MatchString(filepath.Base(p)) {
 			hits = append(hits, r)
 		}
@@ -368,7 +389,7 @@ func (grepTool) Schema() json.RawMessage {
 
 const maxGrepHits = 200
 
-func (t grepTool) Call(_ context.Context, args json.RawMessage) (string, error) {
+func (t grepTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var a struct{ Pattern, Path, Glob string }
 	if err := decode(args, &a); err != nil {
 		return "", err
@@ -384,7 +405,7 @@ func (t grepTool) Call(_ context.Context, args json.RawMessage) (string, error) 
 			return "", fmt.Errorf("invalid glob %q: %w", a.Glob, err)
 		}
 	}
-	root, err := t.resolve(a.Path)
+	root, err := t.resolve(ctx, a.Path)
 	if err != nil {
 		return "", err
 	}
@@ -393,7 +414,7 @@ func (t grepTool) Call(_ context.Context, args json.RawMessage) (string, error) 
 	// unreported, such a file is indistinguishable from one with no matches.
 	var unscannable []string
 	err = walkFiles(root, func(p string) error {
-		r := t.rel(p)
+		r := t.rel(ctx, p)
 		if filter != nil && !filter.MatchString(r) && !filter.MatchString(filepath.Base(p)) {
 			return nil
 		}

@@ -105,7 +105,10 @@ model as `mcp__<server>__<tool>`.
 Declaring a server is the authorization to run it, so keep the file to servers
 you trust. The child process gets only what you list: `env` verbatim, the
 names in `inherit`, and `PATH`. Your provider API keys are not visible to it.
-Its working directory is `policy.workspace`.
+Its working directory is `policy.workspace` — the ceiling, not any one
+session's root. One MCP host process is shared by every session. Unlike
+the filesystem tools, MCP tool path arguments are not currently checked
+against the calling session's workspace.
 
 Tool calls are subject to the same policy as everything else — `mcp__*` is
 asked by default, and denied outright for the `remote` trust profile, so a
@@ -132,6 +135,14 @@ Every call is checked before it runs:
 
     [web]
     brave_api_key = "${BRAVE_API_KEY}"
+
+`[policy] workspace` is a **ceiling**, not a working directory. Each session
+records the directory it is rooted at: `spore chat` and `spore once` send the
+directory you ran them in, and a creator with no directory of its own — the
+web UI, the scheduler, the Discord bridge — gets `~/.spore/sessions/<id>`,
+created on that session's first turn. A session rooted outside the ceiling is
+refused at creation. `--workspace <dir>` roots a new session elsewhere and,
+on a resume, re-roots an existing one.
 
 Rules are `tool` or `tool(predicate)`, where a predicate is
 `path outside workspace`, `path matches <globs>`, or `matches <text>`. Tool
