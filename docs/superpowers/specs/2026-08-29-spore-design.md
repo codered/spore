@@ -813,12 +813,13 @@ plan is written only once its predecessor completes.
 5. **Memory and recall**, split for the same reason stage 4 was. **5a**
    (shipped) is fact files, the `memory` tool, context budgeting, FTS5 search
    and the `Recall` interface with its `sqlitefts` backend: pure Go and SQLite,
-   no daemon, testable end to end offline. **5b** is the Weaviate backend and
-   `recall setup|status|teardown`. **5c** is `trace setup` for Phoenix. 5b and
-   5c were one stage until it became clear they share only the shape of a
-   pinned compose file: a review of a new search backend should not also have
-   to weigh a tracing sidecar. 5b introduces the first dependency on Docker, a
-   container lifecycle and a network backfill, which is review enough.
+   no daemon, testable end to end offline. **5b** (shipped) is the Weaviate
+   backend and `recall setup|status|teardown`. **5c** (shipped) is
+   `trace setup` for Phoenix. 5b and 5c were one stage until it became clear
+   they share only the shape of a pinned compose file: a review of a new search
+   backend should not also have to weigh a tracing sidecar. 5b introduced the
+   first dependency on Docker, a container lifecycle and a network backfill,
+   which was review enough.
 6. **Per-session workspace** — the workspace stops being one value per daemon
    and becomes a property of a session: recorded at creation, carried on the
    turn context beside the trust profile, and honoured by the filesystem
