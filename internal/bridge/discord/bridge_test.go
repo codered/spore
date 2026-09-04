@@ -158,6 +158,17 @@ func testDiscordConfig() config.DiscordConfig {
 	}
 }
 
+// fakeSessions creates sessions directly against a real store, standing in
+// for the daemon's CreateSession. These tests exercise the bridge's own
+// routing (threads, bindings, dedupe), not workspace confinement -- that is
+// covered where the ceiling and ProfileRemote actually matter, so this fake
+// ignores both and just opens a row.
+type fakeSessions struct{ store *store.Store }
+
+func (f *fakeSessions) CreateSession(ctx context.Context, title, requested string, profile policy.Profile) (string, error) {
+	return f.store.CreateSession(ctx, title, requested)
+}
+
 // bridgeWithStore wires a bridge over the given client and store, with a
 // fresh fakeTurns and broker. Every other constructor in this file is a thin
 // wrapper over this one.
@@ -166,7 +177,7 @@ func bridgeWithStore(t *testing.T, f *fakeClient, st *store.Store) (*Bridge, *fa
 	turns := newFakeTurns()
 	broker := daemon.NewBroker(daemon.NewHub())
 	b, err := New(Options{
-		Cfg: testDiscordConfig(), Client: f, Turns: turns, Store: st,
+		Cfg: testDiscordConfig(), Client: f, Turns: turns, Sessions: &fakeSessions{store: st}, Store: st,
 		Broker: broker, Guard: nil, // no tools run in these tests
 		Throttle: -1, // flush on every event; never wait on a clock
 	})

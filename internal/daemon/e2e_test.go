@@ -332,3 +332,120 @@ func TestEndToEndScheduledJobOpensAFreshSession(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// Every other test in this file that asserts a tool call succeeds hands the
+// model a RELATIVE path ("note.txt"). policy.Resolve joins a relative path
+// onto whatever workspace it is given, so those tests pass no matter which
+// directory the session is actually rooted at -- a session rooted at the
+// wrong place entirely would not fail a single one of them. An absolute path
+// is the only shape that exercises the session's own workspace bound rather
+// than the path-joining behind it, which is why this test builds the whole
+// stack around one.
+func TestEndToEndAbsolutePathInsideOwnWorkspaceIsAllowed(t *testing.T) {
+	ceiling := t.TempDir()
+	own := filepath.Join(ceiling, "session-a")
+	if err := os.MkdirAll(own, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	notePath := filepath.Join(own, "note.txt")
+	if err := os.WriteFile(notePath, []byte("hello from disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input, err := json.Marshal(map[string]string{"path": notePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	policyTOML := `[policy]
+workspace = "` + ceiling + `"
+default = "deny"
+allow = ["fs_read", "fs_list"]
+ask = ["fs_write"]
+`
+	srv, ts, _ := newFullServerWithPolicy(t, policyTOML,
+		provider.ScriptTurn{ToolCalls: []provider.Block{{
+			Type: provider.BlockToolUse, ID: "call-1", Name: "fs_read", Input: input,
+		}}},
+		provider.ScriptTurn{Text: "the note says hello"},
+	)
+
+	// The session is rooted at its own directory under the ceiling, not at
+	// the ceiling itself -- if the guard were checking the ceiling instead
+	// of the session's row, this test could not tell the difference.
+	id, err := srv.Store().CreateSession(t.Context(), "abs-inside", own)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	r := attachStream(t, ts, id)
+	post := postJSON(t, ts.URL+"/api/sessions/"+id+"/messages", map[string]string{"text": "read the absolute path"})
+	post.Body.Close()
+
+	events := readSSE(t, r, 4) // tool_call, tool_result, text, turn_done
+	if events[1].Type != WireToolResult || events[1].IsError {
+		t.Fatalf("an absolute path inside the session's own workspace was refused: %+v", events[1])
+	}
+	if !strings.Contains(events[1].Content, "hello from disk") {
+		t.Errorf("tool result = %q, want the file's real content", events[1].Content)
+	}
+}
+
+// The companion to the allowed case above: an absolute path that lands
+// outside the CALLING session's own workspace, but still inside the
+// configured ceiling. If this were denied only by the ceiling, rooting the
+// session anywhere under it would wrongly succeed; it must be the session
+// bound in the row that refuses this, which is what proves the whole stage
+// -- record, expose, honour -- is actually wired together.
+func TestEndToEndAbsolutePathOutsideOwnWorkspaceIsDenied(t *testing.T) {
+	ceiling := t.TempDir()
+	ownA := filepath.Join(ceiling, "session-a")
+	ownB := filepath.Join(ceiling, "session-b")
+	if err := os.MkdirAll(ownA, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(ownB, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	secretPath := filepath.Join(ownA, "secret.txt")
+	if err := os.WriteFile(secretPath, []byte("do not read me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input, err := json.Marshal(map[string]string{"path": secretPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	policyTOML := `[policy]
+workspace = "` + ceiling + `"
+default = "deny"
+allow = ["fs_read", "fs_list"]
+ask = ["fs_write"]
+`
+	srv, ts, _ := newFullServerWithPolicy(t, policyTOML,
+		provider.ScriptTurn{ToolCalls: []provider.Block{{
+			Type: provider.BlockToolUse, ID: "call-1", Name: "fs_read", Input: input,
+		}}},
+		provider.ScriptTurn{Text: "I could not read that"},
+	)
+
+	// sessionB is rooted at its own directory, a sibling of session-a's
+	// under the same ceiling -- the ceiling alone would allow reading
+	// session-a's file, so a denial here can only be the session bound.
+	id, err := srv.Store().CreateSession(t.Context(), "abs-outside", ownB)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	r := attachStream(t, ts, id)
+	post := postJSON(t, ts.URL+"/api/sessions/"+id+"/messages", map[string]string{"text": "read the absolute path"})
+	post.Body.Close()
+
+	events := readSSE(t, r, 4)
+	if !events[1].IsError {
+		t.Fatalf("a read outside the session's own workspace (but inside the ceiling) was allowed: %+v", events[1])
+	}
+	if !strings.Contains(events[1].Content, "path outside workspace") {
+		t.Errorf("refusal text = %q, want it to name the path-outside-workspace rule", events[1].Content)
+	}
+	if _, err := os.ReadFile(secretPath); err != nil {
+		t.Fatalf("the source file should be untouched: %v", err)
+	}
+}

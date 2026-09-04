@@ -67,7 +67,7 @@ user_ids    = ["U"]
 
 	f := newFakeClient()
 	b, err := New(Options{
-		Cfg: cfg.Bridge.Discord, Client: f, Turns: srv,
+		Cfg: cfg.Bridge.Discord, Client: f, Turns: srv, Sessions: srv,
 		Store: st, Broker: srv.Broker(), Guard: srv.Guard(),
 		Throttle: -1, // flush every event; the test should not wait on a clock
 	})
@@ -222,7 +222,7 @@ user_ids    = ["U"]
 
 	f := newFakeClient()
 	b, err := New(Options{
-		Cfg: cfg.Bridge.Discord, Client: f, Turns: srv,
+		Cfg: cfg.Bridge.Discord, Client: f, Turns: srv, Sessions: srv,
 		Store: st, Broker: srv.Broker(), Guard: srv.Guard(), Throttle: -1,
 	})
 	if err != nil {

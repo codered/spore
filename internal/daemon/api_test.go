@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -59,6 +60,38 @@ func postJSON(t *testing.T, url string, body any) *http.Response {
 		t.Fatalf("POST %s: %v", url, err)
 	}
 	return res
+}
+
+func patchJSON(t *testing.T, url string, body any) *http.Response {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest("PATCH", url, strings.NewReader(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH %s: %v", url, err)
+	}
+	return res
+}
+
+func decodeSession(t *testing.T, res *http.Response, want int) SessionJSON {
+	t.Helper()
+	defer res.Body.Close()
+	if res.StatusCode != want {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("status = %d, want %d: %s", res.StatusCode, want, body)
+	}
+	var out SessionJSON
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func TestHealthz(t *testing.T) {
