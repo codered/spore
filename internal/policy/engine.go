@@ -138,9 +138,16 @@ func buildRuleset(def string, allow, ask, deny []string, learned config.LearnedP
 func (e *Engine) Workspace() string              { return e.env.Workspace }
 func (e *Engine) ApprovalTimeout() time.Duration { return e.timeout }
 
-// Evaluate resolves one call. Deny rules are checked first and win outright;
-// then allow and ask rules in configured order; then the profile default.
-func (e *Engine) Evaluate(profile Profile, c Call) Result {
+// Evaluate resolves one call for one session. Deny rules are checked first
+// and win outright; then allow and ask rules in configured order; then the
+// profile default. Path predicates are evaluated against the CALLING
+// session's workspace, so one daemon serving a local session in a project and
+// a bridge session in its own directory applies the right bound to each.
+func (e *Engine) Evaluate(s Session, c Call) Result {
+	env := e.env
+	if s.Workspace != "" {
+		env.Workspace = s.Workspace
+	}
 	// Arguments a predicate cannot inspect are refused outright rather than
 	// matched against tool-name-only rules. This gate is load-bearing
 	// security, not decoration: Rule.Match returns false for every
@@ -154,17 +161,17 @@ func (e *Engine) Evaluate(profile Profile, c Call) Result {
 	if err := json.Unmarshal(c.Args, &argObj); err != nil || argObj == nil {
 		return Result{Decision: DecisionDeny, Rule: "policy.malformed-arguments"}
 	}
-	rs, ok := e.profiles[profile]
+	rs, ok := e.profiles[s.Profile]
 	if !ok {
 		rs = e.base
 	}
 	for _, r := range rs.deny {
-		if r.Match(c, e.env) {
+		if r.Match(c, env) {
 			return Result{Decision: DecisionDeny, Rule: r.Raw}
 		}
 	}
 	for _, r := range rs.allowAndAsk {
-		if r.Match(c, e.env) {
+		if r.Match(c, env) {
 			return Result{Decision: r.Decision, Rule: r.Raw}
 		}
 	}

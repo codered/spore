@@ -42,8 +42,8 @@ import (
 // passed in here just to register the two memory tools around it.
 func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recallBackend recall.Recall, approver policy.Approver) (*policy.Guard, *mcphost.Host, error) {
 	reg := tool.NewRegistry(cfg.Policy.MaxOutput)
-	tools := fs.New(cfg.Policy.Workspace, cfg.Policy.MaxOutput)
-	tools = append(tools, shell.New(cfg.Policy.Workspace,
+	tools := fs.New(cfg.Policy.MaxOutput)
+	tools = append(tools, shell.New(
 		time.Duration(cfg.Shell.TimeoutSeconds)*time.Second, cfg.Policy.MaxOutput))
 	tools = append(tools, web.New(cfg.Web, cfg.Policy.MaxOutput)...)
 	tools = append(tools, schedule.New(st)...)
@@ -160,7 +160,7 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	}
 	a := agent.New(st, reg, rt, cfg, tools)
 	a.Facts = facts
-	a.Env = workspace.NewDescriber(cfg.Policy.Workspace).Describe
+	a.Env = workspace.NewDescribers().Describe
 	return a, host, mir, nil
 }
 
@@ -195,7 +195,7 @@ func buildBridge(cfg *config.Config, srv *daemon.Server) (*discord.Bridge, error
 		return nil, err
 	}
 	return discord.New(discord.Options{
-		Cfg: d, Client: client, Turns: srv,
+		Cfg: d, Client: client, Turns: srv, Sessions: srv,
 		Store: srv.Store(), Broker: srv.Broker(), Guard: srv.Guard(),
 	})
 }

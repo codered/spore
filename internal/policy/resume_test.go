@@ -25,7 +25,7 @@ func TestSuspensionSurvivesARestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sid, err := st1.CreateSession(ctx, "restart test")
+	sid, err := st1.CreateSession(ctx, "restart test", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestSuspensionSurvivesARestart(t *testing.T) {
 		Ask:             []string{"fs_write"},
 		ApprovalTimeout: "50ms",
 	}), ap, st1, nil)
-	res := g1.Run(WithSession(ctx, sid, ProfileLocal), toolCall("fs_write", "c1", `{"path":"/ws/a.go"}`))
+	res := g1.Run(WithSession(ctx, Session{ID: sid, Profile: ProfileLocal, Workspace: "/ws"}), toolCall("fs_write", "c1", `{"path":"/ws/a.go"}`))
 	if !res.IsError {
 		t.Fatal("the unanswered call was allowed")
 	}
@@ -113,7 +113,7 @@ func TestResolveAdmitsExactlyOneConcurrentAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	sid, _ := st.CreateSession(ctx, "race")
+	sid, _ := st.CreateSession(ctx, "race", "")
 	id, err := st.AddPendingCall(ctx, store.PendingCall{
 		SessionID: sid, ToolUseID: "c1", Tool: "fs_write",
 		ArgsJSON: json.RawMessage(`{"path":"/ws/a.go"}`), Profile: "local", Rule: "fs_write",
@@ -159,8 +159,8 @@ func TestResolveRejectsAForeignPendingCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	a, _ := st.CreateSession(ctx, "a")
-	b, _ := st.CreateSession(ctx, "b")
+	a, _ := st.CreateSession(ctx, "a", "")
+	b, _ := st.CreateSession(ctx, "b", "")
 	id, _ := st.AddPendingCall(ctx, store.PendingCall{SessionID: a, ToolUseID: "c", Tool: "fs_write", ArgsJSON: []byte(`{}`)})
 
 	g := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{}), nil, st, nil)

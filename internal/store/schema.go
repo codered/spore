@@ -9,6 +9,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS sessions (
   id         TEXT PRIMARY KEY,
   title      TEXT NOT NULL DEFAULT '',
+  workspace  TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );

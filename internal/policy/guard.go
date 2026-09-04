@@ -68,33 +68,39 @@ type Approver interface {
 
 type sessionKey struct{}
 
-type sessionInfo struct {
-	id      string
-	profile Profile
+// Session is what a turn runs under: which session it belongs to, how far its
+// client is trusted, and the directory it is rooted at. One guard and one
+// engine serve every session in the daemon, so all three travel on the
+// context rather than being held by anything.
+type Session struct {
+	ID        string
+	Profile   Profile
+	Workspace string
 }
 
-// WithSession attaches the session and trust profile a turn is running under.
-// The guard reads them from the context so one guard can serve concurrent
-// sessions in the daemon.
-func WithSession(ctx context.Context, sessionID string, p Profile) context.Context {
-	return context.WithValue(ctx, sessionKey{}, sessionInfo{id: sessionID, profile: p})
+// WithSession attaches the session a turn is running under.
+func WithSession(ctx context.Context, s Session) context.Context {
+	return context.WithValue(ctx, sessionKey{}, s)
 }
 
-// SessionFrom returns the session and profile on the context. When nothing is
-// attached it reports the LEAST trusted profile, not the most: a caller that
-// forgot WithSession must fail toward the strictest ruleset, never toward the
-// one that allows the most.
-func SessionFrom(ctx context.Context) (string, Profile) {
-	info, ok := ctx.Value(sessionKey{}).(sessionInfo)
-	if !ok || info.profile == "" {
-		// Both cases are a caller mistake — nothing attached, or a session
-		// attached without naming its trust level — and both resolve to the
-		// strictest ruleset. A profile is only ever trusted because someone
-		// said so explicitly.
-		return info.id, ProfileRemote
+// SessionFrom returns the session on the context. When nothing is attached it
+// reports the LEAST trusted profile, not the most: a caller that forgot
+// WithSession must fail toward the strictest ruleset, never toward the one
+// that allows the most. The workspace is left empty for the same reason --
+// naming a default directory here would hand an unattributed call a place to
+// work, and the tools refuse a call with no workspace instead.
+func SessionFrom(ctx context.Context) Session {
+	s, ok := ctx.Value(sessionKey{}).(Session)
+	if !ok || s.Profile == "" {
+		s.Profile = ProfileRemote
 	}
-	return info.id, info.profile
+	return s
 }
+
+// WorkspaceFrom is the shorthand the filesystem tools and the shell use. An
+// empty string means no session is attached, and every caller treats that as
+// a refusal.
+func WorkspaceFrom(ctx context.Context) string { return SessionFrom(ctx).Workspace }
 
 // Guard evaluates every call before the wrapped runner sees it.
 type Guard struct {
@@ -127,18 +133,30 @@ func denied(id, format string, args ...any) provider.Block {
 // delegates. It never returns an error: a refusal is a tool error the model
 // can read and route around.
 func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
-	sessionID, profile := SessionFrom(ctx)
+	sess := SessionFrom(ctx)
 	// Checked BEFORE evaluation, not on the ask branch: a call with no session
 	// cannot be audited, attributed, or routed to a human, so it must not run
 	// at all — not even a tool policy would allow outright. Leaving this until
 	// the ask branch would let an allowed call through unattributed.
-	if sessionID == "" {
+	if sess.ID == "" {
 		sporetrace.RecordPolicy(ctx, "deny", "policy.no-session")
 		return denied(call.ID, "refusing %s: no session on the context, so the call cannot be audited", call.Name)
 	}
+	// Engine.Evaluate falls back to the configured ceiling when a session
+	// names no directory -- a fallback that exists for `spore policy check`,
+	// which has no session at all. A real session with no workspace is a
+	// different case: a row whose workspace was never backfilled, or a caller
+	// that forgot to set it. Falling back silently there would judge an MCP
+	// tool's path arguments against the ceiling and then run it in the MCP
+	// server's own working directory -- a mismatch between what was checked
+	// and what actually ran. Refuse instead of guessing.
+	if sess.Workspace == "" {
+		sporetrace.RecordPolicy(ctx, "deny", "policy.no-workspace")
+		return denied(call.ID, "refusing %s: no workspace on the session context. Do not retry this call; choose another approach.", call.Name)
+	}
 
 	c := Call{Tool: call.Name, Args: call.Input}
-	res := g.engine.Evaluate(profile, c)
+	res := g.engine.Evaluate(sess, c)
 	sporetrace.RecordPolicy(ctx, string(res.Decision), res.Rule)
 
 	switch res.Decision {
@@ -151,7 +169,7 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 	}
 
 	// From here the decision is ask.
-	if remembered, ok, err := g.store.SessionDecision(ctx, sessionID, call.Name); err == nil && ok {
+	if remembered, ok, err := g.store.SessionDecision(ctx, sess.ID, call.Name); err == nil && ok {
 		if remembered == string(DecisionAllow) {
 			sporetrace.RecordPolicy(ctx, "allow", "approved earlier this session")
 			return g.inner.Run(ctx, call)
@@ -169,11 +187,11 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 	// be offered for this call.
 	pattern, patternOK := PatternFor(c)
 	pendingID, err := g.store.AddPendingCall(ctx, store.PendingCall{
-		SessionID: sessionID,
+		SessionID: sess.ID,
 		ToolUseID: call.ID,
 		Tool:      call.Name,
 		ArgsJSON:  call.Input,
-		Profile:   string(profile),
+		Profile:   string(sess.Profile),
 		Rule:      res.Rule,
 	})
 	if err != nil {
@@ -193,7 +211,7 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 	defer cancel()
 
 	answer, err := g.approver.Ask(askCtx, Ask{
-		SessionID: sessionID,
+		SessionID: sess.ID,
 		Tool:      call.Name,
 		Args:      call.Input,
 		Rule:      res.Rule,
@@ -206,7 +224,7 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 		// elsewhere), write the audit row. If not, skip — another path already
 		// recorded this decision and we must not add a second contradictory row.
 		if claimed, err := g.store.ResolvePendingCall(book, pendingID, "timeout"); err == nil && claimed {
-			_ = g.store.RecordApproval(book, sessionID, call.Name, call.Input, "deny", "timeout")
+			_ = g.store.RecordApproval(book, sess.ID, call.Name, call.Input, "deny", "timeout")
 		}
 		sporetrace.RecordPolicy(ctx, "deny", "approval timed out")
 		return denied(call.ID, "approval for %s timed out after %s and was denied", call.Name, g.engine.ApprovalTimeout())
@@ -239,7 +257,7 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 			scope = ScopeOnce
 			sporetrace.RecordPolicy(ctx, string(decision), "pattern answer degraded to once: no pattern for this call")
 		}
-		_ = g.store.RecordApproval(book, sessionID, call.Name, call.Input, string(decision), string(scope))
+		_ = g.store.RecordApproval(book, sess.ID, call.Name, call.Input, string(decision), string(scope))
 
 		if scope == ScopePattern && g.learn != nil {
 			if err := g.learn(decision, pattern); err != nil {

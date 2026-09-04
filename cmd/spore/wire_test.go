@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,7 +133,7 @@ workspace = "`+dir+`"
 		t.Fatal(err)
 	}
 	decide := func(p policy.Profile, name string) policy.Decision {
-		return engine.Evaluate(p, policy.Call{Tool: name, Args: json.RawMessage(`{}`)}).Decision
+		return engine.Evaluate(policy.Session{ID: "test", Profile: p, Workspace: dir}, policy.Call{Tool: name, Args: json.RawMessage(`{}`)}).Decision
 	}
 	if d := decide(policy.ProfileRemote, "memory"); d != policy.DecisionDeny {
 		t.Fatalf("remote memory decision = %v, want deny", d)
@@ -189,7 +191,7 @@ workspace = "`+dir+`"
 	}
 
 	ctx := context.Background()
-	sid, err := a.Store.CreateSession(ctx, "t")
+	sid, err := a.Store.CreateSession(ctx, "t", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +200,7 @@ workspace = "`+dir+`"
 	// call needs a session and profile on the context the way a real turn's
 	// dispatch would attach one, and it needs the allowApprover above to get
 	// past the ask.
-	runCtx := policy.WithSession(ctx, sid, policy.ProfileLocal)
+	runCtx := policy.WithSession(ctx, policy.Session{ID: sid, Profile: policy.ProfileLocal, Workspace: dir})
 	call := provider.Block{
 		Type: provider.BlockToolUse,
 		ID:   "call-1",
@@ -384,5 +386,24 @@ func TestBuildRecallRejectsAnUnusableWeaviateURL(t *testing.T) {
 	cfg.Recall.URL = "not-a-url"
 	if _, _, err := buildRecall(cfg, st, quietLogger()); err == nil {
 		t.Fatal("an unusable url wired without error")
+	}
+}
+
+func TestCreateSessionSendsTheWorkspace(t *testing.T) {
+	var got struct {
+		Title     string `json:"title"`
+		Workspace string `json:"workspace"`
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		json.NewEncoder(w).Encode(map[string]string{"id": "s1"})
+	}))
+	defer ts.Close()
+	c := &client{base: ts.URL, short: ts.Client(), streamClient: ts.Client()}
+	if _, err := c.createSession(context.Background(), "chat", "/ws/a"); err != nil {
+		t.Fatal(err)
+	}
+	if got.Workspace != "/ws/a" {
+		t.Fatalf("workspace sent = %q, want /ws/a", got.Workspace)
 	}
 }

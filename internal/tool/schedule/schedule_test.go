@@ -116,14 +116,14 @@ func TestDefaultPolicyGating(t *testing.T) {
 	}
 
 	// schedule_list should resolve to allow
-	result := engine.Evaluate(policy.ProfileLocal, policy.Call{Tool: "schedule_list", Args: json.RawMessage(`{}`)})
+	result := engine.Evaluate(policy.Session{ID: "test", Profile: policy.ProfileLocal, Workspace: "."}, policy.Call{Tool: "schedule_list", Args: json.RawMessage(`{}`)})
 	if result.Decision != policy.DecisionAllow {
 		t.Errorf("schedule_list: got decision %v, want %v", result.Decision, policy.DecisionAllow)
 	}
 
 	// schedule_create and schedule_cancel should resolve to ask
 	for _, name := range []string{"schedule_create", "schedule_cancel"} {
-		result := engine.Evaluate(policy.ProfileLocal, policy.Call{Tool: name, Args: json.RawMessage(`{}`)})
+		result := engine.Evaluate(policy.Session{ID: "test", Profile: policy.ProfileLocal, Workspace: "."}, policy.Call{Tool: name, Args: json.RawMessage(`{}`)})
 		if result.Decision != policy.DecisionAsk {
 			t.Errorf("%s: got decision %v, want %v", name, result.Decision, policy.DecisionAsk)
 		}

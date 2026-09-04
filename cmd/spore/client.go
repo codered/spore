@@ -78,14 +78,23 @@ func (c *client) health(ctx context.Context) error {
 	return c.do(ctx, "GET", "/healthz", nil, nil)
 }
 
-func (c *client) createSession(ctx context.Context, title string) (string, error) {
+func (c *client) createSession(ctx context.Context, title, workspace string) (string, error) {
 	var out struct {
 		ID string `json:"id"`
 	}
-	if err := c.do(ctx, "POST", "/api/sessions", map[string]string{"title": title}, &out); err != nil {
+	if err := c.do(ctx, "POST", "/api/sessions",
+		map[string]string{"title": title, "workspace": workspace}, &out); err != nil {
 		return "", err
 	}
 	return out.ID, nil
+}
+
+// setWorkspace re-roots an existing session. It is the deliberate exception
+// to "the root is fixed at creation": --workspace on a resume rewrites the
+// row, because the human asking for it is the one who chose the original.
+func (c *client) setWorkspace(ctx context.Context, sessionID, workspace string) error {
+	return c.do(ctx, "PATCH", "/api/sessions/"+sessionID,
+		map[string]string{"workspace": workspace}, nil)
 }
 
 func (c *client) send(ctx context.Context, sessionID, text string) error {

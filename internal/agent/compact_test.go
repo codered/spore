@@ -41,7 +41,7 @@ func TestMaybeCompactSummarisesAndShrinksContext(t *testing.T) {
 	a.Cfg.Context.CompactAt = 0.5
 	a.Cfg.Context.KeepRecent = 2
 
-	sid, _ := st.CreateSession(ctx, "long")
+	sid, _ := st.CreateSession(ctx, "long", "")
 	seedMessages(t, st, sid, 12)
 
 	if err := a.MaybeCompact(ctx, sid); err != nil {
@@ -84,7 +84,7 @@ func TestMaybeCompactIsANoOpUnderBudget(t *testing.T) {
 	a, st := harness(t, script, nil)
 	a.Cfg.Context.MaxTokens = 200_000
 
-	sid, _ := st.CreateSession(ctx, "short")
+	sid, _ := st.CreateSession(ctx, "short", "")
 	seedMessages(t, st, sid, 2)
 
 	if err := a.MaybeCompact(ctx, sid); err != nil {
@@ -103,7 +103,7 @@ func TestMaybeCompactPreservesOriginalMessages(t *testing.T) {
 	a.Cfg.Context.CompactAt = 0.5
 	a.Cfg.Context.KeepRecent = 2
 
-	sid, _ := st.CreateSession(ctx, "long")
+	sid, _ := st.CreateSession(ctx, "long", "")
 	seedMessages(t, st, sid, 12)
 	if err := a.MaybeCompact(ctx, sid); err != nil {
 		t.Fatal(err)
@@ -125,7 +125,7 @@ func TestMaybeCompactIsIdempotentAtTheBoundary(t *testing.T) {
 	a.Cfg.Context.CompactAt = 0.5
 	a.Cfg.Context.KeepRecent = 2
 
-	sid, _ := st.CreateSession(ctx, "long")
+	sid, _ := st.CreateSession(ctx, "long", "")
 	seedMessages(t, st, sid, 4) // Only one turn, so after first compact there's only one turn left
 
 	// First compact should succeed
@@ -156,7 +156,7 @@ func TestMaybeCompactErrorEndsLLMSpan(t *testing.T) {
 	a.Cfg.Context.CompactAt = 0.5
 	a.Cfg.Context.KeepRecent = 2
 
-	sid, _ := st.CreateSession(ctx, "t")
+	sid, _ := st.CreateSession(ctx, "t", "")
 	seedMessages(t, st, sid, 12)
 
 	// Call MaybeCompact with a script that will error

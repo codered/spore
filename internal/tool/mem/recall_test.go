@@ -39,7 +39,7 @@ func hit(kind, id, session, text, excerpt string) recall.Hit {
 }
 
 func localCtx(sid string) context.Context {
-	return policy.WithSession(context.Background(), sid, policy.ProfileLocal)
+	return policy.WithSession(context.Background(), policy.Session{ID: sid, Profile: policy.ProfileLocal, Workspace: "."})
 }
 
 func TestRecallSearchRendersHits(t *testing.T) {
@@ -94,7 +94,7 @@ func TestRecallSearchLocalProfileIsUnscoped(t *testing.T) {
 // a remote session must never search another session's history or any fact.
 func TestRecallSearchRemoteProfileIsScoped(t *testing.T) {
 	f := &fakeRecall{}
-	ctx := policy.WithSession(context.Background(), "remote-sess", policy.ProfileRemote)
+	ctx := policy.WithSession(context.Background(), policy.Session{ID: "remote-sess", Profile: policy.ProfileRemote, Workspace: "."})
 	if _, err := NewRecallSearch(f).Call(ctx, json.RawMessage(`{"query":"x"}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestRecallSearchRemoteProfileIsScoped(t *testing.T) {
 // would send it down the day a third profile exists.
 func TestRecallSearchUnknownProfileIsScopedLikeRemote(t *testing.T) {
 	f := &fakeRecall{}
-	ctx := policy.WithSession(context.Background(), "guest-sess", policy.Profile("guest"))
+	ctx := policy.WithSession(context.Background(), policy.Session{ID: "guest-sess", Profile: policy.Profile("guest"), Workspace: "."})
 	if _, err := NewRecallSearch(f).Call(ctx, json.RawMessage(`{"query":"x"}`)); err != nil {
 		t.Fatal(err)
 	}

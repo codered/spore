@@ -36,7 +36,7 @@ func TestDenyBeatsAllowRegardlessOfOrder(t *testing.T) {
 		Deny:  []string{"shell_exec(matches sudo)"},
 	})
 	args, _ := json.Marshal(map[string]string{"command": "sudo rm x"})
-	got := e.Evaluate(ProfileLocal, Call{Tool: "shell_exec", Args: args})
+	got := e.Evaluate(Session{Profile: ProfileLocal}, Call{Tool: "shell_exec", Args: args})
 	if got.Decision != DecisionDeny {
 		t.Fatalf("Decision = %q, want deny (rule %q)", got.Decision, got.Rule)
 	}
@@ -45,7 +45,7 @@ func TestDenyBeatsAllowRegardlessOfOrder(t *testing.T) {
 	}
 	// A shell call that trips no deny rule still reaches the allow rule.
 	args, _ = json.Marshal(map[string]string{"command": "ls"})
-	if got := e.Evaluate(ProfileLocal, Call{Tool: "shell_exec", Args: args}); got.Decision != DecisionAllow {
+	if got := e.Evaluate(Session{Profile: ProfileLocal}, Call{Tool: "shell_exec", Args: args}); got.Decision != DecisionAllow {
 		t.Errorf("Decision = %q, want allow", got.Decision)
 	}
 }
@@ -55,17 +55,17 @@ func TestFirstMatchWinsBetweenAllowAndAsk(t *testing.T) {
 		Allow: []string{"fs_read"},
 		Ask:   []string{"fs_*"},
 	})
-	if got := e.Evaluate(ProfileLocal, Call{Tool: "fs_read", Args: json.RawMessage(`{}`)}); got.Decision != DecisionAllow {
+	if got := e.Evaluate(Session{Profile: ProfileLocal}, Call{Tool: "fs_read", Args: json.RawMessage(`{}`)}); got.Decision != DecisionAllow {
 		t.Errorf("fs_read = %q, want allow (the earlier list wins)", got.Decision)
 	}
-	if got := e.Evaluate(ProfileLocal, Call{Tool: "fs_write", Args: json.RawMessage(`{}`)}); got.Decision != DecisionAsk {
+	if got := e.Evaluate(Session{Profile: ProfileLocal}, Call{Tool: "fs_write", Args: json.RawMessage(`{}`)}); got.Decision != DecisionAsk {
 		t.Errorf("fs_write = %q, want ask", got.Decision)
 	}
 }
 
 func TestUnmatchedFallsBackToDefault(t *testing.T) {
 	e := engine(t, config.PolicyConfig{Default: "deny", Allow: []string{"fs_read"}})
-	got := e.Evaluate(ProfileLocal, Call{Tool: "mcp__x__y", Args: json.RawMessage(`{}`)})
+	got := e.Evaluate(Session{Profile: ProfileLocal}, Call{Tool: "mcp__x__y", Args: json.RawMessage(`{}`)})
 	if got.Decision != DecisionDeny || got.Rule != "policy.default" {
 		t.Errorf("got %+v, want deny via policy.default", got)
 	}
@@ -78,7 +78,7 @@ func TestLearnedRulesApplyAfterConfiguredOnes(t *testing.T) {
 	})
 	// The hand-written ask rule is listed first, so it still wins: a learned
 	// rule cannot silently loosen an explicit one.
-	if got := e.Evaluate(ProfileLocal, Call{Tool: "fs_write", Args: json.RawMessage(`{}`)}); got.Decision != DecisionAsk {
+	if got := e.Evaluate(Session{Profile: ProfileLocal}, Call{Tool: "fs_write", Args: json.RawMessage(`{}`)}); got.Decision != DecisionAsk {
 		t.Errorf("Decision = %q, want ask", got.Decision)
 	}
 }
@@ -88,7 +88,7 @@ func TestLearnedDenyIsAbsoluteToo(t *testing.T) {
 		Allow:   []string{"fs_write"},
 		Learned: config.LearnedPolicy{Deny: []string{"fs_write"}},
 	})
-	if got := e.Evaluate(ProfileLocal, Call{Tool: "fs_write", Args: json.RawMessage(`{}`)}); got.Decision != DecisionDeny {
+	if got := e.Evaluate(Session{Profile: ProfileLocal}, Call{Tool: "fs_write", Args: json.RawMessage(`{}`)}); got.Decision != DecisionDeny {
 		t.Errorf("Decision = %q, want deny", got.Decision)
 	}
 }
@@ -99,12 +99,12 @@ func TestLearnedAllowDoesNotCrossIntoAnotherProfile(t *testing.T) {
 		Profiles: map[string]config.ProfilePolicy{"remote": {Default: "ask"}},
 	})
 	args := json.RawMessage(`{"path":"/ws/a"}`)
-	if got := e.Evaluate(ProfileLocal, Call{Tool: "fs_write", Args: args}); got.Decision != DecisionAllow {
+	if got := e.Evaluate(Session{Profile: ProfileLocal}, Call{Tool: "fs_write", Args: args}); got.Decision != DecisionAllow {
 		t.Errorf("local = %q, want allow — the learned rule applies to the base ruleset", got.Decision)
 	}
 	// An approval answered at the terminal must not silently extend the
 	// permission to a bridge running under a different trust profile.
-	if got := e.Evaluate(ProfileRemote, Call{Tool: "fs_write", Args: args}); got.Decision != DecisionAsk {
+	if got := e.Evaluate(Session{Profile: ProfileRemote}, Call{Tool: "fs_write", Args: args}); got.Decision != DecisionAsk {
 		t.Errorf("remote = %q, want ask — a rule learned in one trust context must not carry to another", got.Decision)
 	}
 }
@@ -116,7 +116,7 @@ func TestLearnedDenyCrossesEveryProfile(t *testing.T) {
 	})
 	args := json.RawMessage(`{"path":"/ws/a"}`)
 	for _, p := range []Profile{ProfileLocal, ProfileRemote} {
-		if got := e.Evaluate(p, Call{Tool: "fs_write", Args: args}); got.Decision != DecisionDeny {
+		if got := e.Evaluate(Session{Profile: p}, Call{Tool: "fs_write", Args: args}); got.Decision != DecisionDeny {
 			t.Errorf("profile %q = %q, want deny — learned deny is global", p, got.Decision)
 		}
 	}
@@ -131,15 +131,15 @@ func TestProfileOverridesAllowButNotDeny(t *testing.T) {
 		},
 	})
 	plain, _ := json.Marshal(map[string]string{"path": "/ws/main.go"})
-	if got := e.Evaluate(ProfileLocal, Call{Tool: "fs_write", Args: plain}); got.Decision != DecisionAllow {
+	if got := e.Evaluate(Session{Profile: ProfileLocal}, Call{Tool: "fs_write", Args: plain}); got.Decision != DecisionAllow {
 		t.Errorf("local fs_write = %q, want allow", got.Decision)
 	}
-	if got := e.Evaluate(ProfileRemote, Call{Tool: "fs_write", Args: plain}); got.Decision != DecisionAsk {
+	if got := e.Evaluate(Session{Profile: ProfileRemote}, Call{Tool: "fs_write", Args: plain}); got.Decision != DecisionAsk {
 		t.Errorf("remote fs_write = %q, want ask", got.Decision)
 	}
 	dotenv, _ := json.Marshal(map[string]string{"path": "/ws/.env"})
 	for _, p := range []Profile{ProfileLocal, ProfileRemote} {
-		if got := e.Evaluate(p, Call{Tool: "fs_write", Args: dotenv}); got.Decision != DecisionDeny {
+		if got := e.Evaluate(Session{Profile: p}, Call{Tool: "fs_write", Args: dotenv}); got.Decision != DecisionDeny {
 			t.Errorf("profile %q .env write = %q, want deny", p, got.Decision)
 		}
 	}
@@ -168,17 +168,17 @@ func TestDenyOnlyProfileInheritsBaseAllowAndAsk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
-	if got := e.Evaluate(ProfileRemote, Call{Tool: "fs_read", Args: json.RawMessage(`{}`)}); got.Decision != DecisionAllow {
+	if got := e.Evaluate(Session{Profile: ProfileRemote}, Call{Tool: "fs_read", Args: json.RawMessage(`{}`)}); got.Decision != DecisionAllow {
 		t.Errorf("remote fs_read = %q, want allow — a deny-only profile must inherit the base allow/ask, not lose it", got.Decision)
 	}
-	if got := e.Evaluate(ProfileRemote, Call{Tool: "mcp__whatever", Args: json.RawMessage(`{}`)}); got.Decision != DecisionDeny {
+	if got := e.Evaluate(Session{Profile: ProfileRemote}, Call{Tool: "mcp__whatever", Args: json.RawMessage(`{}`)}); got.Decision != DecisionDeny {
 		t.Errorf("remote mcp__whatever = %q, want deny — the profile's own deny rule must still apply", got.Decision)
 	}
 }
 
 func TestUnknownProfileUsesBaseRules(t *testing.T) {
 	e := engine(t, config.PolicyConfig{Allow: []string{"fs_read"}})
-	if got := e.Evaluate(Profile("telegram"), Call{Tool: "fs_read", Args: json.RawMessage(`{}`)}); got.Decision != DecisionAllow {
+	if got := e.Evaluate(Session{Profile: Profile("telegram")}, Call{Tool: "fs_read", Args: json.RawMessage(`{}`)}); got.Decision != DecisionAllow {
 		t.Errorf("Decision = %q, want the base ruleset to apply", got.Decision)
 	}
 }
@@ -188,7 +188,7 @@ func TestMalformedArgsAreNeverAllowed(t *testing.T) {
 	// predicates, so they must not slip through an allow rule.
 	e := engine(t, config.PolicyConfig{Allow: []string{"fs_read"}})
 	for _, args := range []string{`{not json`, ``, `[1,2]`, `"a string"`, `null`} {
-		got := e.Evaluate(ProfileLocal, Call{Tool: "fs_read", Args: json.RawMessage(args)})
+		got := e.Evaluate(Session{Profile: ProfileLocal}, Call{Tool: "fs_read", Args: json.RawMessage(args)})
 		if got.Decision != DecisionDeny {
 			t.Errorf("args %q: Decision = %q, want deny — an argument payload no\n"+
 				"predicate can inspect must never reach a tool", args, got.Decision)
@@ -209,5 +209,51 @@ func TestApprovalTimeoutParsed(t *testing.T) {
 	e := engine(t, config.PolicyConfig{ApprovalTimeout: "90s"})
 	if e.ApprovalTimeout() != 90*time.Second {
 		t.Errorf("ApprovalTimeout = %v, want 90s", e.ApprovalTimeout())
+	}
+}
+
+// One engine serves every session, so the bound is the calling session's own
+// workspace and not the ceiling: a daemon serving a session in /ws/a and one
+// in /ws/b applies the right bound to each.
+func TestEvaluateUsesTheCallingSessionsWorkspace(t *testing.T) {
+	cfg := config.PolicyConfig{
+		Workspace:       "/ws",
+		Default:         "allow",
+		ApprovalTimeout: "1m",
+		Deny:            []string{"fs_*(path outside workspace)"},
+	}
+	e, err := NewEngine(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := Call{Tool: "fs_read", Args: json.RawMessage(`{"path":"/ws/a/notes.md"}`)}
+
+	inA := e.Evaluate(Session{ID: "s1", Profile: ProfileLocal, Workspace: "/ws/a"}, call)
+	if inA.Decision != DecisionAllow {
+		t.Fatalf("inside its own workspace: %+v, want allow", inA)
+	}
+	inB := e.Evaluate(Session{ID: "s2", Profile: ProfileLocal, Workspace: "/ws/b"}, call)
+	if inB.Decision != DecisionDeny {
+		t.Fatalf("a sibling session's path: %+v, want deny", inB)
+	}
+}
+
+// spore policy check has no session. Falling back to the ceiling keeps it
+// answering the question it always answered.
+func TestEvaluateFallsBackToTheCeilingWithNoSessionWorkspace(t *testing.T) {
+	cfg := config.PolicyConfig{
+		Workspace:       "/ws",
+		Default:         "allow",
+		ApprovalTimeout: "1m",
+		Deny:            []string{"fs_*(path outside workspace)"},
+	}
+	e, err := NewEngine(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := e.Evaluate(Session{Profile: ProfileLocal},
+		Call{Tool: "fs_read", Args: json.RawMessage(`{"path":"/ws/anything.md"}`)})
+	if res.Decision != DecisionAllow {
+		t.Fatalf("%+v, want allow: with no session the ceiling is the bound", res)
 	}
 }

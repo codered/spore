@@ -82,8 +82,8 @@ func buildTestGuard(cfg *config.Config, st *store.Store, approver policy.Approve
 // buildTestGuardWithLearnCallback is like buildTestGuard but accepts a learn callback.
 func buildTestGuardWithLearnCallback(cfg *config.Config, st *store.Store, approver policy.Approver, learn func(policy.Decision, string) error) (*policy.Guard, error) {
 	reg := tool.NewRegistry(cfg.Policy.MaxOutput)
-	tools := fs.New(cfg.Policy.Workspace, cfg.Policy.MaxOutput)
-	tools = append(tools, shell.New(cfg.Policy.Workspace,
+	tools := fs.New(cfg.Policy.MaxOutput)
+	tools = append(tools, shell.New(
 		time.Duration(cfg.Shell.TimeoutSeconds)*time.Second, cfg.Policy.MaxOutput))
 	for _, tl := range tools {
 		if err := reg.Register(tl); err != nil {

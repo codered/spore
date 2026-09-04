@@ -5,9 +5,9 @@ records what was asked for -- or what was knowingly left undone -- and the open
 questions that must be answered before it can be specified, so the next
 brainstorm starts where this one stopped rather than from the request.
 
-Nothing here is a commitment to an order. Stages 5a, 5b and 5c have shipped.
-The next stage is 6 (per-session workspace), specified in section 5 of the
-design spec and not yet planned.
+Nothing here is a commitment to an order. Stages 5a, 5b, 5c and 6 have all
+shipped; the staged plan in section 11 of the design spec is complete, and
+everything below is what has been asked for since.
 
 ## Chat commands
 
@@ -129,3 +129,44 @@ neither.
 2. Nothing else. The honesty question these entries used to raise -- whether
    `spore recall setup` and `spore trace setup` were shippable while untested
    -- is answered: both provisioning paths have been exercised end to end.
+
+## MCP path arguments are not checked against the session workspace
+
+Known gap, long-standing. The design spec (section 6) says MCP tool path
+arguments should be evaluated against the calling session's workspace, the
+same way filesystem tools are bounded by policy. The implementation does not:
+`internal/config/config.go` builds `path outside workspace` rules for `fs_*`
+only, and `mcp__*` appears only in the default `ask` list, with no path
+predicate. An MCP tool call naming an absolute path outside the calling
+session's workspace — or outside the ceiling entirely — resolves to `ask`,
+and if a human approves it, the call runs unbounded by the policy engine.
+
+The blast radius is bounded by the ask-gate and profile-based denial. For an
+interactive local session, every MCP call requires human approval before it
+runs, which gives the operator a chance to notice and refuse calls with
+suspicious paths. For a scheduled job — which is also a local session —
+the same ask-gate applies, but there is no one to answer the approval, so the
+call is denied when the approval times out. For the `remote` trust profile,
+which is what the Discord bridge runs under, `mcp__*` is denied outright, so
+a bridge user cannot reach any server at all. This gap predates stage 6 —
+before that change, the workspace was the single ceiling and `mcp__*` was
+equally unchecked then. It is not a regression.
+
+Fixing it properly means adding an `mcp__*` path rule to the baseline deny
+set (the list no approval may override), which is a behaviour change with its
+own blast radius and needs its own design pass.
+
+**Open questions**
+
+1. Does the path-check rule belong in the baseline deny set (so it always
+   applies and no approval can override it) or in the default ask/deny lists
+   (editable by the operator)? The ask-gated behaviour of local sessions
+   already gives the human a chance to refuse; the baseline deny would be a
+   different level of containment.
+2. Path-argument extraction recognises only certain argument names (those
+   listed in the MCP spec as path-shaped). A server using a different name for
+   its path argument would slip past any rule. Does a rule give enough cover
+   to matter, or does it need to extract broader context?
+3. Does a server that legitimately works outside any session's root — a shared
+   index or an external tool — need an opt-out, or is it enough to rely on the
+   ask-gate to let the operator choose?

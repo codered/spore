@@ -103,8 +103,8 @@ func TestAnswererRefusesAnotherSessionsApproval(t *testing.T) {
 	// config.Load, never config.Default: Load is what appends the baseline
 	// deny rules, and a guard without them proves nothing.
 	st, guard := newLoadedGuard(t)
-	victim, _ := st.CreateSession(ctx, "victim")
-	attacker, _ := st.CreateSession(ctx, "attacker")
+	victim, _ := st.CreateSession(ctx, "victim", "")
+	attacker, _ := st.CreateSession(ctx, "attacker", "")
 
 	pendingID, err := st.AddPendingCall(ctx, store.PendingCall{
 		SessionID: victim, ToolUseID: "tu1", Tool: "shell_exec",

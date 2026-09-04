@@ -34,6 +34,10 @@ const (
 	// the listing must not be frozen for the life of the process, but it
 	// need not be rebuilt for every turn either.
 	cacheTTL = 30 * time.Second
+	// idleTTL is how long a describer for a root is kept without use. Roots
+	// are evicted when new roots arrive, so the cache size is bounded by
+	// session activity rather than the uptime of the daemon.
+	idleTTL = time.Hour
 )
 
 // noiseDirs are never descended into or listed. .git is excluded because git

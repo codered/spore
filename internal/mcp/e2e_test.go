@@ -117,7 +117,7 @@ command = %q
 	// pending call keyed by session id, and that insert has a foreign key
 	// into sessions — a call on an unknown session id would fail before
 	// the approver is ever consulted, which would falsely look like a deny.
-	sessionID, err = st.CreateSession(ctx, "e2e test")
+	sessionID, err = st.CreateSession(ctx, "e2e test", "")
 	if err != nil {
 		t.Fatalf("store.CreateSession: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestRemoteProfileDeniedCallNeverReachesTheServer(t *testing.T) {
 	guard, _, workspace, sessionID := harness(t, denyingApprover{t}, "[policy.profile.remote]\ndeny = [\"mcp__*\"]\n")
 	marker := filepath.Join(workspace, "reached-by-remote")
 
-	ctx := policy.WithSession(context.Background(), sessionID, policy.ProfileRemote)
+	ctx := policy.WithSession(context.Background(), policy.Session{ID: sessionID, Profile: policy.ProfileRemote, Workspace: workspace})
 	args, _ := json.Marshal(map[string]string{"path": marker})
 	res := guard.Run(ctx, provider.Block{ID: "1", Name: "mcp__probe__touch", Input: args})
 
@@ -151,7 +151,7 @@ func TestLocalProfileCallReachesTheServer(t *testing.T) {
 	guard, _, workspace, sessionID := harness(t, allowingApprover{}, "")
 	marker := filepath.Join(workspace, "reached-by-local")
 
-	ctx := policy.WithSession(context.Background(), sessionID, policy.ProfileLocal)
+	ctx := policy.WithSession(context.Background(), policy.Session{ID: sessionID, Profile: policy.ProfileLocal, Workspace: workspace})
 	args, _ := json.Marshal(map[string]string{"path": marker})
 	res := guard.Run(ctx, provider.Block{ID: "1", Name: "mcp__probe__touch", Input: args})
 

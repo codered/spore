@@ -59,7 +59,8 @@ func (t recallSearch) Call(ctx context.Context, args json.RawMessage) (string, e
 	// a result, so this restriction has to live in the tool. A remote session
 	// is an admitted chat user, not the operator: it may search its own
 	// conversation and nothing else, and it may not read facts at all.
-	sessionID, profile := policy.SessionFrom(ctx)
+	sess := policy.SessionFrom(ctx)
+	sessionID, profile := sess.ID, sess.Profile
 	// This is deliberately a negative match on the one trusted profile, not a
 	// positive match on the untrusted one. policy.Engine accepts arbitrary
 	// profile names from config, so a future profile this tool has never

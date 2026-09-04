@@ -30,16 +30,24 @@ type Turns interface {
 	Subscribe(sessionID string) (<-chan daemon.WireEvent, func())
 }
 
+// Sessions creates the sessions this bridge binds threads to. It is an
+// interface for the same reason Turns is: the bridge is tested without a
+// daemon.
+type Sessions interface {
+	CreateSession(ctx context.Context, title, requested string, profile policy.Profile) (string, error)
+}
+
 // Options are the bridge's collaborators. Guard may be nil — a bridge built
 // without one still answers approvals through the broker's live-waiter path,
 // it just cannot recover a suspension whose turn is gone (see answer.go).
 type Options struct {
-	Cfg    config.DiscordConfig
-	Client Client
-	Turns  Turns
-	Store  *store.Store
-	Broker *daemon.Broker
-	Guard  *policy.Guard
+	Cfg      config.DiscordConfig
+	Client   Client
+	Turns    Turns
+	Sessions Sessions
+	Store    *store.Store
+	Broker   *daemon.Broker
+	Guard    *policy.Guard
 	// Throttle overrides the render throttle. Zero means defaultThrottle
 	// (New substitutes it); a negative value means "flush on every event"
 	// and is what tests pass so they never wait on a clock.
@@ -56,6 +64,7 @@ type Bridge struct {
 	admit    Admitter
 	client   Client
 	turns    Turns
+	sessions Sessions
 	store    *store.Store
 	answer   *answerer
 	throttle time.Duration
@@ -110,6 +119,9 @@ func New(o Options) (*Bridge, error) {
 	if o.Turns == nil {
 		return nil, errors.New("discord bridge: Turns is required")
 	}
+	if o.Sessions == nil {
+		return nil, errors.New("discord bridge: Sessions is required")
+	}
 	if o.Store == nil {
 		return nil, errors.New("discord bridge: Store is required")
 	}
@@ -125,6 +137,7 @@ func New(o Options) (*Bridge, error) {
 		admit:    NewAdmitter(o.Cfg),
 		client:   o.Client,
 		turns:    o.Turns,
+		sessions: o.Sessions,
 		store:    o.Store,
 		answer:   newAnswerer(o.Broker, o.Guard),
 		throttle: throttle,
@@ -232,7 +245,7 @@ func (b *Bridge) handleNew(in Inbound) {
 		return
 	}
 
-	sessionID, err := b.store.CreateSession(b.ctx, "")
+	sessionID, err := b.sessions.CreateSession(b.ctx, "", "", policy.ProfileRemote)
 	if err != nil {
 		slog.Warn("discord /new: create session", "err", err)
 		return
@@ -273,7 +286,7 @@ func (b *Bridge) resolveSession(in Inbound) (sessionID, replyChannel string, err
 		return sid, in.ChannelID, nil
 	}
 
-	sid, err := b.store.CreateSession(b.ctx, "")
+	sid, err := b.sessions.CreateSession(b.ctx, "", "", policy.ProfileRemote)
 	if err != nil {
 		return "", "", err
 	}
