@@ -65,7 +65,7 @@ allow = ["fs_list"]
 			}
 
 			// Create a session and attach to events
-			id, err := srv.Store().CreateSession(t.Context(), "profile-test")
+			id, err := srv.Store().CreateSession(t.Context(), "profile-test", "")
 			if err != nil {
 				t.Fatalf("CreateSession: %v", err)
 			}
@@ -120,7 +120,7 @@ func TestStartTurnRefusesASecondTurn(t *testing.T) {
 	srv, _, _ := newFullServer(t)
 
 	// Create a session
-	sid, err := srv.Store().CreateSession(t.Context(), "err-running-test")
+	sid, err := srv.Store().CreateSession(t.Context(), "err-running-test", "")
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}

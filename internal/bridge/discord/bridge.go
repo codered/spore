@@ -232,7 +232,7 @@ func (b *Bridge) handleNew(in Inbound) {
 		return
 	}
 
-	sessionID, err := b.store.CreateSession(b.ctx, "")
+	sessionID, err := b.store.CreateSession(b.ctx, "", "")
 	if err != nil {
 		slog.Warn("discord /new: create session", "err", err)
 		return
@@ -273,7 +273,7 @@ func (b *Bridge) resolveSession(in Inbound) (sessionID, replyChannel string, err
 		return sid, in.ChannelID, nil
 	}
 
-	sid, err := b.store.CreateSession(b.ctx, "")
+	sid, err := b.store.CreateSession(b.ctx, "", "")
 	if err != nil {
 		return "", "", err
 	}

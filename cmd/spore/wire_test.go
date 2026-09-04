@@ -189,7 +189,7 @@ workspace = "`+dir+`"
 	}
 
 	ctx := context.Background()
-	sid, err := a.Store.CreateSession(ctx, "t")
+	sid, err := a.Store.CreateSession(ctx, "t", "")
 	if err != nil {
 		t.Fatal(err)
 	}

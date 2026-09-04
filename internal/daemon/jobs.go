@@ -85,7 +85,7 @@ func (s *Server) StartJob(ctx context.Context, job store.Job) (string, error) {
 	if len(title) > 60 {
 		title = title[:60]
 	}
-	sessionID, err := s.store.CreateSession(ctx, title)
+	sessionID, err := s.store.CreateSession(ctx, title, "")
 	if err != nil {
 		return "", err
 	}

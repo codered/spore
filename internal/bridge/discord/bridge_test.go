@@ -323,7 +323,7 @@ func TestAnUnadmittedButtonPressIsDropped(t *testing.T) {
 	b, f, _, st := newTestBridge(t)
 	defer b.Close()
 	b.Start(context.Background())
-	sid, _ := st.CreateSession(context.Background(), "s")
+	sid, _ := st.CreateSession(context.Background(), "s", "")
 
 	f.press(Interaction{
 		ID: "i1", Token: "tok", UserID: "STRANGER", GuildID: "G", ChannelID: "C1",
