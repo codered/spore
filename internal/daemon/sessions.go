@@ -165,9 +165,21 @@ func (s *Server) startTurn(sessionID, text, client string, profile policy.Profil
 	}()
 
 	sess, found, err := s.store.Session(s.base, sessionID)
-	if err != nil || !found {
-		return fmt.Errorf("read session %s: %v (found=%v)", sessionID, err, found)
+	if err != nil {
+		return fmt.Errorf("read session %s: %w", sessionID, err)
 	}
+	if !found {
+		return fmt.Errorf("no session %s", sessionID)
+	}
+	// The session's workspace came from the row at creation time. Until Tasks 4
+	// and 6/7 land, each session is rooted at its own directory within the data
+	// directory, but the policy engine still evaluates filesystem tool calls
+	// against cfg.Policy.Workspace (the ceiling). A session without a workspace
+	// of its own (one created before stage 6) will have an empty string here and
+	// the guard will refuse any tool call until the row is backfilled. An
+	// absolute path under the real project directory is therefore denied "path
+	// outside workspace" until the tools read their own workspace from the
+	// context instead of trusting the configured ceiling alone.
 	ctx := policy.WithSession(s.base, policy.Session{ID: sessionID, Profile: profile, Workspace: sess.Workspace})
 	ctx, turn = sporetrace.StartTurn(ctx, sessionID, client)
 
