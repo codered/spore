@@ -165,11 +165,11 @@ func (s *Server) startTurn(sessionID, text, client string, profile policy.Profil
 	}()
 
 	sess, found, err := s.store.Session(s.base, sessionID)
-	if !found {
-		return fmt.Errorf("no session %s", sessionID)
-	}
 	if err != nil {
 		return fmt.Errorf("could not load session: %w", err)
+	}
+	if !found {
+		return fmt.Errorf("no session %s", sessionID)
 	}
 
 	ctx := policy.WithSession(s.base, policy.Session{ID: sessionID, Profile: profile, Workspace: sess.Workspace})
