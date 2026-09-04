@@ -1,0 +1,25 @@
+{
+  "updated_at": "2026-08-30T10:00:00Z",
+  "entry_count": {
+    "short": 2,
+    "long": 2
+  },
+  "tags": {
+    "implementation": {
+      "short": [
+        "implementation-plans"
+      ],
+      "long": [
+        "implementation-plans"
+      ]
+    },
+    "project": {
+      "short": [
+        "spore-identity"
+      ],
+      "long": [
+        "spore-identity"
+      ]
+    }
+  }
+}

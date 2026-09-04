@@ -469,3 +469,42 @@ func TestDefaultAsksBeforeWritingAFact(t *testing.T) {
 		t.Fatal("memory is not in the default ask list")
 	}
 }
+
+func TestRecallDefaultsToSQLiteFTS(t *testing.T) {
+	cfg := Default()
+	if cfg.Recall.Backend != RecallSQLiteFTS {
+		t.Errorf("backend %q, want %q", cfg.Recall.Backend, RecallSQLiteFTS)
+	}
+	if cfg.Recall.URL != "" {
+		t.Errorf("url %q, want empty so setup owns the address", cfg.Recall.URL)
+	}
+}
+
+func TestWeaviateURLFallsBackToLoopback(t *testing.T) {
+	cfg := Default()
+	if got := cfg.WeaviateURL(); got != "http://127.0.0.1:8080" {
+		t.Errorf("WeaviateURL() = %q, want the provisioned loopback address", got)
+	}
+	cfg.Recall.URL = "http://box.local:8080"
+	if got := cfg.WeaviateURL(); got != "http://box.local:8080" {
+		t.Errorf("WeaviateURL() = %q, want the configured address", got)
+	}
+}
+
+func TestUnknownRecallBackendIsRejected(t *testing.T) {
+	p := write(t, "default_model = \"p/m\"\n[recall]\nbackend = \"pinecone\"\n")
+	if _, err := Load(p); err == nil {
+		t.Fatal("an unknown backend loaded without error")
+	} else if !strings.Contains(err.Error(), "pinecone") {
+		t.Errorf("error %q does not name the offending value", err)
+	}
+}
+
+func TestRecallURLMustParse(t *testing.T) {
+	p := write(t, "default_model = \"p/m\"\n[recall]\nurl = \"://nope\"\n")
+	if _, err := Load(p); err == nil {
+		t.Fatal("an unparseable recall.url loaded without error")
+	} else if !strings.Contains(err.Error(), "recall.url") {
+		t.Errorf("error %q does not point at recall.url", err)
+	}
+}

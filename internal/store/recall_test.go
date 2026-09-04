@@ -303,3 +303,103 @@ func TestOpenBackfillsAnExistingDatabase(t *testing.T) {
 		t.Fatalf("open did not backfill: n=%d", n)
 	}
 }
+
+func TestIndexRowsSinceWalksTheCorpusInOrder(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	id, err := st.CreateSession(ctx, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"first message", "second message", "third message"} {
+		bs := blocks(t, provider.Block{Type: provider.BlockText, Text: text})
+		if _, err := st.AppendMessage(ctx, Message{SessionID: id, Role: "user", BlocksJSON: bs}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rows, err := st.IndexRowsSince(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("got %d rows, want 3", len(rows))
+	}
+	for i := 1; i < len(rows); i++ {
+		if rows[i].RowID <= rows[i-1].RowID {
+			t.Errorf("rows are not ascending by rowid: %+v", rows)
+		}
+	}
+	if rows[0].Text != "first message" || rows[0].Kind != kindMessage {
+		t.Errorf("first row = %+v, want the first message", rows[0])
+	}
+
+	rest, err := st.IndexRowsSince(ctx, rows[0].RowID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rest) != 2 || rest[0].Text != "second message" {
+		t.Errorf("after the cursor: %+v, want the last two rows", rest)
+	}
+}
+
+func TestIndexRowsSinceHonoursTheLimit(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	id, _ := st.CreateSession(ctx, "s")
+	for i := 0; i < 5; i++ {
+		bs := blocks(t, provider.Block{Type: provider.BlockText, Text: "m"})
+		if _, err := st.AppendMessage(ctx, Message{SessionID: id, Role: "user", BlocksJSON: bs}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := st.IndexRowsSince(ctx, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Errorf("got %d rows, want the limit of 2", len(rows))
+	}
+}
+
+func TestIndexRowsSinceCarriesFacts(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	if err := st.IndexFact(ctx, "coffee", "the user takes it black"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.IndexRowsSince(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Kind != kindFact || rows[0].RefID != "coffee" {
+		t.Fatalf("rows = %+v, want one fact row named coffee", rows)
+	}
+}
+
+func TestSyncCursorRoundTripsPerBackend(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	got, err := st.SyncCursor(ctx, "weaviate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 0 {
+		t.Errorf("a backend that never synced has cursor %d, want 0", got)
+	}
+	if err := st.SetSyncCursor(ctx, "weaviate", 42); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.SyncCursor(ctx, "weaviate"); got != 42 {
+		t.Errorf("cursor = %d, want 42", got)
+	}
+	if err := st.SetSyncCursor(ctx, "weaviate", 99); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.SyncCursor(ctx, "weaviate"); got != 99 {
+		t.Errorf("cursor = %d after a second write, want 99", got)
+	}
+	if got, _ := st.SyncCursor(ctx, "other"); got != 0 {
+		t.Errorf("a different backend saw %d, want its own cursor of 0", got)
+	}
+}

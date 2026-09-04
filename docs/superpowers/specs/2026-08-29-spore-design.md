@@ -177,7 +177,8 @@ The call-site discipline is what makes per-session cost attribution possible.
 
 Three layers with distinct jobs. Plan 5 splits along the line between the two
 that need nothing but the binary and the one that provisions a service: **5a**
-is facts, search and the `sqlitefts` backend; **5b** is Weaviate and Phoenix.
+is facts, search and the `sqlitefts` backend; **5b** is Weaviate; **5c** is
+Phoenix.
 
 ### Sessions — SQLite, always on
 
@@ -273,7 +274,9 @@ a narrower slice — and because adding a field later beats changing a signature
 once a second backend implements it.
 
 Backends: `sqlitefts` (default, zero setup, keyword) and `weaviate` (semantic,
-5b). `internal/recall` holds the interface; each backend is a subpackage.
+5b). `sqlitefts` is never switched off: 5b makes Weaviate an additional index
+over the same corpus, not a replacement, which is what makes the fallback below
+correct by construction rather than by care. `internal/recall` holds the interface; each backend is a subpackage.
 `sqlitefts` talks to a narrow queryer interface the store satisfies, so it tests
 against a real in-memory SQLite without dragging in session machinery.
 
@@ -332,6 +335,15 @@ CLI: `spore recall search <query> [--kind] [--session] [-k]`,
 `spore recall status`, `spore recall reindex`; `setup` and `teardown` join them
 in 5b.
 
+**Sync (5b).** The FTS index is written inside `AppendMessage`'s transaction.
+Weaviate cannot join that transaction and must not try -- an HTTP call inside
+an open write transaction is how a database ends up wedged -- so Weaviate is a
+mirror, brought forward from a watermark by an indexer that runs after the
+commit. SQLite stays the record of what is indexed. Backfill, catch-up after
+the container was down, and `recall reindex` are then one code path rather than
+three, and object ids derived from `kind` + `ref_id` make every write an upsert,
+so replaying an overlapping range is harmless.
+
 **Policy.** In `config.Default()`, `recall_search` is allowed and `memory` is
 `ask`. Under the `remote` profile `memory` is denied outright — a fact, once
 written, shapes every future turn in every session, so a single injection
@@ -347,22 +359,35 @@ the bot. The policy engine cannot express this, because it gates tool names and
 predicates and not result scope, so the tool owns it — and that makes it a
 property to test rather than a comment.
 
-**Self-provisioning (5b).** `recall_setup` is exposed both as
-`spore recall setup` and as an agent tool, so "set up my vector store" is
-something spore can do when asked. It: checks for Docker; writes
-`~/.spore/weaviate/compose.yml` pinned to an exact Weaviate version; starts the
-container bound to localhost only; waits for readiness; creates the collection
-with the Ollama vectorizer configured; backfills from SQLite in batches emitting
-progress events; sets `recall.backend = "weaviate"` in config. `spore recall
-status` reports container health, object count and backfill lag; `spore recall
-teardown` reverses it. Because it starts a container, provisioning passes
-through the policy engine.
+**Provisioning (5b).** `spore recall setup` checks for Docker; writes
+`~/.spore/weaviate/compose.yml` pinned to exact versions; starts the services
+bound to loopback only; waits for readiness; creates the collection; backfills
+from SQLite in batches, reporting progress; and sets `recall.backend =
+"weaviate"` in config. `spore recall status` reports container health, object
+counts and backfill lag; `spore recall teardown` reverses it. Setting
+`recall.url` to an instance you run yourself skips provisioning entirely --
+`setup` is a convenience, never the only way in.
 
-Vectors are computed Weaviate-side via `text2vec-ollama` pointed at the local
-Ollama, so spore ships no embedding model and holds no embedding API key.
+Exposing provisioning as an agent tool as well as a CLI verb is deferred. An
+agent that can start containers is a trust surface of its own and earns a
+review that is not also weighing a new search backend.
+
+Vectors are computed Weaviate-side. The compose file carries a second service,
+`text2vec-model2vec`, because no Weaviate vectorizer runs in-process: every
+local option is either a second container or an external service, and the only
+module-free path computes vectors client-side, which would mean spore holding
+an embedding API key. Two containers and no key beats one container and a key.
+Static embeddings rank below a full sentence transformer and far above keyword
+matching, which is the comparison that matters here -- the fallback is
+`sqlitefts`.
 
 **Degradation.** If Weaviate is configured but unreachable, recall falls back to
-the `sqlitefts` backend and the turn continues with a warning event.
+`sqlitefts` and the turn continues. The fallback needs no reconciliation
+afterwards because the keyword index was never behind: it is written in the
+message transaction whatever the vector store is doing. Degradation is reported
+in `Status` and noted on the tool result, and it deliberately does not open a
+new wire event type -- that is an append-only API change reaching the web UI
+and both bridges, for a condition nobody can act on mid-turn.
 
 ## 6. Tools, MCP, and policy
 
@@ -557,9 +582,9 @@ Compaction and routing decisions are recorded as span events.
 
 Config: `[trace] enabled` (off by default), `endpoint`, `sample_rate`, and
 `redact` — when redacting, span shapes and token counts are kept and
-prompt/completion text is dropped. `spore trace setup` writes a pinned Phoenix
+prompt/completion text is dropped. `spore trace setup` (5c) writes a pinned Phoenix
 compose file, starts it on localhost and flips the config, with the same
-`status`/`teardown` verbs and policy gate as recall. Export failures are
+`status`/`teardown` verbs as recall. Export failures are
 non-fatal and never block a turn.
 
 ## 8. Clients
@@ -657,6 +682,10 @@ secrets live in the environment or the systemd unit and never in the file.
 Policy rules written back by "always allow this pattern" land in a marked
 section of the same file.
 
+`[recall]` carries `backend` (`sqlitefts` or `weaviate`) and `url`. An empty
+`url` means the instance `spore recall setup` provisions on loopback; setting it
+points spore at one you run yourself and turns provisioning off.
+
 Deployment is `scp` plus a systemd unit; cross-compilation targets linux/amd64,
 linux/arm64, and linux/riscv64.
 
@@ -700,7 +729,15 @@ The seams are chosen so the interesting parts test offline:
   confirms it is gone, then corrupts the table by hand and repairs it with
   `reindex`.
 
-No live API calls in CI.
+- The Weaviate backend splits along what a network can decide. Filter
+  construction, object-id derivation, hit mapping, watermark arithmetic and the
+  fallback decision are pure and run in the default suite against a primary
+  that returns errors on demand. Behaviour against a real Weaviate runs under
+  `-tags weaviate` against a container the test starts, asserting the same
+  properties, so a stub that has drifted from the server is caught by running
+  it rather than by reading it.
+
+No live API calls in CI, and no container in the default suite.
 
 ## 11. Implementation staging
 
@@ -722,12 +759,12 @@ plan is written only once its predecessor completes.
    is the first surface an untrusted party can reach, so it earns a focused
    review of its own rather than one that also has to weigh whether namespaced
    MCP tools work.
-5. **Memory and recall**, split for the same reason stage 4 was. **5a** is
-   fact files, the `memory` tool, context budgeting, FTS5 search and the
-   `Recall` interface with its `sqlitefts` backend: pure Go and SQLite, no
-   daemon, testable end to end offline. **5b** is the Weaviate backend,
-   `recall setup|status|teardown`, and `trace setup` for Phoenix. They share
-   only the `Recall` interface, and 5b introduces a dependency on Docker, a
-   container lifecycle, a network backfill and an agent-callable tool that
-   starts a container — a new policy surface that earns a focused review rather
-   than one also weighing changes to context assembly.
+5. **Memory and recall**, split for the same reason stage 4 was. **5a**
+   (shipped) is fact files, the `memory` tool, context budgeting, FTS5 search
+   and the `Recall` interface with its `sqlitefts` backend: pure Go and SQLite,
+   no daemon, testable end to end offline. **5b** is the Weaviate backend and
+   `recall setup|status|teardown`. **5c** is `trace setup` for Phoenix. 5b and
+   5c were one stage until it became clear they share only the shape of a
+   pinned compose file: a review of a new search backend should not also have
+   to weigh a tracing sidecar. 5b introduces the first dependency on Docker, a
+   container lifecycle and a network backfill, which is review enough.

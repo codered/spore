@@ -20,6 +20,11 @@ import (
 
 // cmdServe runs the daemon, or reports on and stops one that is already
 // running. Flags: --status, --stop, --detach.
+// recallMirrorInterval is how often the vector mirror catches up. It is a
+// background chore, not a turn's business: a message becomes semantically
+// searchable within this window, and is keyword-searchable immediately.
+const recallMirrorInterval = 30 * time.Second
+
 func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []string) error {
 	status, stop, detach := false, false, false
 	for _, a := range args {
@@ -82,7 +87,7 @@ func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []s
 	}
 	defer daemon.ReleasePidFile(pidPath)
 
-	srv, mcpHost, err := buildServer(cfg, st)
+	srv, mcpHost, recallMirror, err := buildServer(cfg, st)
 	if err != nil {
 		return err
 	}
@@ -111,6 +116,18 @@ func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []s
 
 	sched := scheduler.New(st, srv, nil)
 	go sched.Run(ctx, time.Duration(cfg.Daemon.TickSeconds)*time.Second)
+
+	if recallMirror != nil {
+		// The mirror runs for the daemon's lifetime and never inside a turn:
+		// a turn must not wait on a sidecar. Catching up immediately covers
+		// whatever was written while the daemon was down.
+		go func() {
+			if _, err := recallMirror.Once(ctx); err != nil {
+				slog.Default().Warn("recall mirror could not catch up at start", "error", err)
+			}
+			recallMirror.Run(ctx, recallMirrorInterval)
+		}()
+	}
 
 	bridge, err := buildBridge(cfg, srv)
 	if err != nil {

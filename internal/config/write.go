@@ -169,3 +169,51 @@ func renderManaged(l LearnedPolicy) string {
 	b.WriteString("\n")
 	return b.String()
 }
+
+// SetRecallBackend records the backend `spore recall setup` provisioned. It
+// rewrites an existing [recall] section rather than appending a second one:
+// two sections of the same name make the file fail to load, which would turn
+// a successful setup into a broken install.
+func SetRecallBackend(path, backend string) error {
+	learnMu.Lock()
+	defer learnMu.Unlock()
+	switch backend {
+	case RecallSQLiteFTS, RecallWeaviate:
+	default:
+		return fmt.Errorf("recall backend must be %s or %s, got %q", RecallSQLiteFTS, RecallWeaviate, backend)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	lines := strings.Split(string(body), "\n")
+	setting := fmt.Sprintf("backend = %q", backend)
+
+	inRecall, replaced, sectionAt := false, false, -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			inRecall = trimmed == "[recall]"
+			if inRecall {
+				sectionAt = i
+			}
+			continue
+		}
+		if inRecall && strings.HasPrefix(trimmed, "backend") {
+			lines[i] = setting
+			replaced = true
+		}
+	}
+	switch {
+	case replaced:
+	case sectionAt >= 0:
+		rest := append([]string{setting}, lines[sectionAt+1:]...)
+		lines = append(lines[:sectionAt+1], rest...)
+	default:
+		lines = append(lines, "", "[recall]", setting, "")
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
