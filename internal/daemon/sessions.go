@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -14,11 +15,15 @@ import (
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/store"
 	sporetrace "github.com/codered/spore/internal/trace"
+	"github.com/codered/spore/internal/workspace"
 )
 
 type SessionJSON struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	// Workspace is where the session is rooted. Clients show it so a human
+	// can see which directory a detached session is operating on.
+	Workspace string    `json:"workspace"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -43,7 +48,8 @@ type TranscriptJSON struct {
 }
 
 func toSessionJSON(s store.Session) SessionJSON {
-	return SessionJSON{ID: s.ID, Title: s.Title, CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt}
+	return SessionJSON{ID: s.ID, Title: s.Title, Workspace: s.Workspace,
+		CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt}
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
@@ -62,16 +68,64 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Title string `json:"title"`
+		// Workspace is optional. Omitting it is a creator saying it has no
+		// directory of its own -- the web UI, a script -- and it gets a
+		// session directory. Naming one outside the ceiling is an error, not
+		// a fallback: a client that asked for the wrong place must be told.
+		Workspace string `json:"workspace"`
 	}
-	// An empty body is fine — a session with no title is legal.
+	// An empty body is fine -- a session with no title is legal.
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	id, err := s.store.CreateSession(r.Context(), strings.TrimSpace(body.Title), "")
+	id, err := s.CreateSession(r.Context(), strings.TrimSpace(body.Title), strings.TrimSpace(body.Workspace), policy.ProfileLocal)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "create session: %v", err)
+		writeError(w, http.StatusBadRequest, "create session: %v", err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, SessionJSON{ID: id, Title: body.Title,
-		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
+	sess, found, err := s.store.Session(r.Context(), id)
+	if err != nil || !found {
+		writeError(w, http.StatusInternalServerError, "read back session %s: %v", id, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toSessionJSON(sess))
+}
+
+// handlePatchSession re-roots a session. The root is fixed at creation
+// everywhere else; this exists for the CLI's deliberate "--workspace on a
+// resume", and it is bounded by the same ceiling as creation.
+func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, ok := s.findSession(w, r, id); !ok {
+		return
+	}
+	var body struct {
+		Workspace string `json:"workspace"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "decode body: %v", err)
+		return
+	}
+	root, err := workspace.Root(workspace.Request{
+		Requested: strings.TrimSpace(body.Workspace),
+		Ceiling:   s.cfg.Policy.Workspace,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	if root == "" {
+		writeError(w, http.StatusBadRequest, "workspace is required")
+		return
+	}
+	if err := s.store.SetSessionWorkspace(r.Context(), id, root); err != nil {
+		writeError(w, http.StatusInternalServerError, "re-root session: %v", err)
+		return
+	}
+	sess, _, err := s.store.Session(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "read back session %s: %v", id, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toSessionJSON(sess))
 }
 
 // findSession returns the session row, or writes a 404 and reports false.
@@ -164,15 +218,29 @@ func (s *Server) startTurn(sessionID, text, client string, profile policy.Profil
 		}
 	}()
 
+	// The session's root is read once per turn and travels on the context:
+	// the tools, the prompt's environment section and the policy engine all
+	// take it from there, so there is one answer to "where is this session
+	// working" and it comes from the row.
 	sess, found, err := s.store.Session(s.base, sessionID)
 	if err != nil {
-		return fmt.Errorf("could not load session: %w", err)
+		return fmt.Errorf("read session %s: %w", sessionID, err)
 	}
 	if !found {
 		return fmt.Errorf("no session %s", sessionID)
 	}
-
-	ctx := policy.WithSession(s.base, policy.Session{ID: sessionID, Profile: profile, Workspace: sess.Workspace})
+	// A directory spore allocated is spore's to create, and it is created
+	// here rather than at creation so a session that is opened and never used
+	// leaves nothing on disk. A directory a human named is never created:
+	// a typo must fail loudly, not silently make an empty directory.
+	if workspace.Allocated(s.store.SessionsDir(), sess.Workspace) {
+		if err := os.MkdirAll(sess.Workspace, 0o700); err != nil {
+			return fmt.Errorf("create session directory: %w", err)
+		}
+	}
+	ctx := policy.WithSession(s.base, policy.Session{
+		ID: sessionID, Profile: profile, Workspace: sess.Workspace,
+	})
 	ctx, turn = sporetrace.StartTurn(ctx, sessionID, client)
 
 	ch, err := s.agent.Run(ctx, sessionID, text)

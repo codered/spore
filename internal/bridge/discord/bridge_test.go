@@ -148,6 +148,53 @@ func (f *fakeTurns) allStarts() []startedTurn {
 	return out
 }
 
+// fakeSessions records what the bridge asked the daemon to create and also
+// creates the sessions in the store so foreign keys don't fail.
+type fakeSessions struct {
+	mu      sync.Mutex
+	counter int
+	nextID  string // if set, returned by the next CreateSession
+	nextErr error  // if set, returned by the next CreateSession
+	creates []createSessionCall
+	store   *store.Store
+}
+
+type createSessionCall struct {
+	title     string
+	requested string
+	profile   policy.Profile
+}
+
+func newFakeSessions(st *store.Store) *fakeSessions {
+	return &fakeSessions{creates: make([]createSessionCall, 0), store: st}
+}
+
+func (f *fakeSessions) CreateSession(ctx context.Context, title, requested string, profile policy.Profile) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.creates = append(f.creates, createSessionCall{title: title, requested: requested, profile: profile})
+
+	if f.nextErr != nil {
+		err := f.nextErr
+		f.nextErr = nil
+		return "", err
+	}
+
+	if f.nextID != "" {
+		id := f.nextID
+		f.nextID = ""
+		return id, nil
+	}
+
+	// Create the session in the store and return the actual ID.
+	// This ensures foreign key constraints don't fail when the bridge tries to bind it.
+	id, err := f.store.CreateSession(ctx, title, "")
+	if err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
 // testDiscordConfig is the allowlist every bridge test is built on: one
 // guild, one channel, one user, DMs open.
 func testDiscordConfig() config.DiscordConfig {
@@ -164,9 +211,10 @@ func testDiscordConfig() config.DiscordConfig {
 func bridgeWithStore(t *testing.T, f *fakeClient, st *store.Store) (*Bridge, *fakeTurns, *daemon.Broker) {
 	t.Helper()
 	turns := newFakeTurns()
+	sessions := newFakeSessions(st)
 	broker := daemon.NewBroker(daemon.NewHub())
 	b, err := New(Options{
-		Cfg: testDiscordConfig(), Client: f, Turns: turns, Store: st,
+		Cfg: testDiscordConfig(), Client: f, Turns: turns, Sessions: sessions, Store: st,
 		Broker: broker, Guard: nil, // no tools run in these tests
 		Throttle: -1, // flush on every event; never wait on a clock
 	})

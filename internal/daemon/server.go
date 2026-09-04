@@ -13,6 +13,7 @@ import (
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/store"
+	"github.com/codered/spore/internal/workspace"
 )
 
 // Options are the daemon's collaborators. Guard may be nil in tests that do
@@ -69,6 +70,22 @@ func (s *Server) Broker() *Broker      { return s.broker }
 // creates it because it owns the hub the approval events travel over.
 func (s *Server) Approver() policy.Approver { return s.broker }
 
+// CreateSession is the one place a session's root is decided: the HTTP
+// handler, the scheduler and the bridge all come through here, so the ceiling
+// is checked once rather than in three places that can drift.
+func (s *Server) CreateSession(ctx context.Context, title, requested string, profile policy.Profile) (string, error) {
+	root, err := workspace.Root(workspace.Request{
+		Requested:  requested,
+		Ceiling:    s.cfg.Policy.Workspace,
+		RemoteRoot: s.cfg.Policy.Profiles[string(policy.ProfileRemote)].Workspace,
+		Remote:     profile == policy.ProfileRemote,
+	})
+	if err != nil {
+		return "", err
+	}
+	return s.store.CreateSession(ctx, title, root)
+}
+
 // Attach supplies the agent and guard after construction. The daemon owns
 // the approver the guard is built with, so the two cannot both be passed to
 // New; this is the seam where the cycle is broken.
@@ -87,6 +104,7 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
+	mux.HandleFunc("PATCH /api/sessions/{id}", s.handlePatchSession)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleShowSession)
 	mux.HandleFunc("POST /api/sessions/{id}/messages", s.handlePostMessage)
 	mux.HandleFunc("GET /api/sessions/{id}/events", s.handleEvents)
