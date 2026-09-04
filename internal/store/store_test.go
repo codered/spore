@@ -555,3 +555,73 @@ func TestBackfillSessionWorkspaces(t *testing.T) {
 		t.Fatalf("workspace = %q, want /home/user", got.Workspace)
 	}
 }
+
+// Opening a database that still has the legacy sessions table must add the
+// workspace column, be idempotent across repeated Open calls, and preserve
+// existing rows.
+func TestOpenMigratesSessionsWorkspaceColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spore.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := s.db.Exec(`DROP TABLE sessions`); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	// Recreate the pre-stage-6 sessions table without the workspace column
+	if _, err := s.db.Exec(`CREATE TABLE sessions (
+		id         TEXT PRIMARY KEY,
+		title      TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL)`); err != nil {
+		t.Fatalf("recreate legacy table: %v", err)
+	}
+	// Insert a real row in the legacy shape
+	legacyID := "test-legacy-session"
+	if _, err := s.db.Exec(`INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+		legacyID, "legacy session", "2026-09-04T10:00:00Z", "2026-09-04T10:30:00Z"); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+	s.Close()
+
+	// Reopen the store, forcing the migration to run
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen over legacy table: %v", err)
+	}
+	// Verify the legacy row survived the migration
+	sess, found, err := s2.Session(context.Background(), legacyID)
+	if err != nil {
+		t.Fatalf("read legacy session: %v", err)
+	}
+	if !found {
+		t.Fatal("legacy session was lost during migration")
+	}
+	if sess.Title != "legacy session" {
+		t.Fatalf("legacy session title = %q, want 'legacy session'", sess.Title)
+	}
+	// The workspace should be empty (defaulted by the migration)
+	if sess.Workspace != "" {
+		t.Fatalf("legacy session workspace = %q, want empty string", sess.Workspace)
+	}
+	s2.Close()
+
+	// Verify idempotence: re-opening must not destroy the row or re-run the migration incorrectly.
+	// The migration guard runs on every Open, so this is critical: a faulty guard
+	// would fail or corrupt data on daemon restart.
+	s3, err := Open(path)
+	if err != nil {
+		t.Fatalf("second reopen: %v", err)
+	}
+	sess3, found, err := s3.Session(context.Background(), legacyID)
+	if err != nil {
+		t.Fatalf("read session after second reopen: %v", err)
+	}
+	if !found {
+		t.Fatal("session was lost after second Open")
+	}
+	if sess3.Title != "legacy session" || sess3.Workspace != "" {
+		t.Fatalf("session corrupted after second Open: got %+v", sess3)
+	}
+	s3.Close()
+}

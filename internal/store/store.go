@@ -228,6 +228,8 @@ func (s *Store) SetSessionWorkspace(ctx context.Context, id, workspace string) e
 // existed at the configured ceiling, so resuming one behaves exactly as it
 // did when the workspace was a single daemon-wide value.
 func (s *Store) BackfillSessionWorkspaces(ctx context.Context, root string) (int64, error) {
+	// An empty root means the caller has no default to backfill with, so
+	// leave workspaces empty; they will be assigned when the session resumes.
 	if root == "" {
 		return 0, nil
 	}
