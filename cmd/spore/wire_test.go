@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -384,5 +386,24 @@ func TestBuildRecallRejectsAnUnusableWeaviateURL(t *testing.T) {
 	cfg.Recall.URL = "not-a-url"
 	if _, _, err := buildRecall(cfg, st, quietLogger()); err == nil {
 		t.Fatal("an unusable url wired without error")
+	}
+}
+
+func TestCreateSessionSendsTheWorkspace(t *testing.T) {
+	var got struct {
+		Title     string `json:"title"`
+		Workspace string `json:"workspace"`
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		json.NewEncoder(w).Encode(map[string]string{"id": "s1"})
+	}))
+	defer ts.Close()
+	c := &client{base: ts.URL, short: ts.Client(), streamClient: ts.Client()}
+	if _, err := c.createSession(context.Background(), "chat", "/ws/a"); err != nil {
+		t.Fatal(err)
+	}
+	if got.Workspace != "/ws/a" {
+		t.Fatalf("workspace sent = %q, want /ws/a", got.Workspace)
 	}
 }
