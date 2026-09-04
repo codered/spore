@@ -188,6 +188,9 @@ func TestWaitReadyBoundsIndividualAttempts(t *testing.T) {
 	}
 	defer ln.Close()
 
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -197,32 +200,94 @@ func TestWaitReadyBoundsIndividualAttempts(t *testing.T) {
 			if err != nil {
 				return
 			}
-			// Just accept and hold the connection open forever.
+			// Just accept and hold the connection open until stopped.
 			// The client's context timeout should interrupt.
 			go func() {
 				defer conn.Close()
-				select {}
+				<-stop
 			}()
 		}
 	}()
 
 	healthURL := "http://" + ln.Addr().String() + "/healthz"
 
-	start := time.Now()
+	// Run WaitReady in a goroutine so it has a self-bound: if the fix
+	// regresses and WaitReady hangs, the test fails quickly with a clear
+	// message rather than hanging until go test -timeout (10 min default).
 	timeout := 100 * time.Millisecond
-	err = WaitReady(context.Background(), healthURL, timeout)
+	done_wait := make(chan error)
+	go func() {
+		done_wait <- WaitReady(context.Background(), healthURL, timeout)
+	}()
+
+	start := time.Now()
+	var result error
+	select {
+	case result = <-done_wait:
+		// Success - WaitReady returned
+	case <-time.After(timeout * 5):
+		t.Fatal("WaitReady did not return within 5x its timeout; per-attempt context not bounding attempts")
+	}
 	elapsed := time.Since(start)
 
 	ln.Close() // Stop accepting connections
-	<-done     // Wait for goroutine to exit
+	<-done     // Wait for accept goroutine to exit
 
-	if err == nil {
+	if result == nil {
 		t.Fatal("WaitReady returned success against a server that never responded")
 	}
 	// The timeout should bound the wait. Allow generous slack for scheduling,
 	// but a stalled response should not cause WaitReady to hang for seconds.
 	// Without per-attempt context bounding, this could hang for 10+ seconds.
 	if elapsed > timeout*5 {
-		t.Errorf("WaitReady blocked for %v against a %v timeout; per-attempt context not bounding attempts", elapsed, timeout)
+		t.Errorf("WaitReady blocked for %v against a %v timeout", elapsed, timeout)
+	}
+}
+
+func TestWaitReadyWithZeroTimeout(t *testing.T) {
+	// A timeout of zero must still make one attempt and return a real error,
+	// never nil and never with malformed %!w(<nil>).
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("create listener: %v", err)
+	}
+	ln.Close() // Close immediately so connection is refused
+
+	healthURL := "http://" + ln.Addr().String() + "/healthz"
+	err = WaitReady(context.Background(), healthURL, 0)
+
+	if err == nil {
+		t.Fatal("WaitReady with timeout 0 returned nil, expected an error")
+	}
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "%!w") {
+		t.Errorf("WaitReady error message has malformed %%!w: %q", errMsg)
+	}
+	if !strings.Contains(errMsg, healthURL) {
+		t.Errorf("WaitReady error message does not contain health URL: %q", errMsg)
+	}
+}
+
+func TestWaitReadyWithNegativeTimeout(t *testing.T) {
+	// A negative timeout must still make one attempt and return a real error,
+	// never nil and never with malformed %!w(<nil>).
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("create listener: %v", err)
+	}
+	ln.Close() // Close immediately so connection is refused
+
+	healthURL := "http://" + ln.Addr().String() + "/healthz"
+	err = WaitReady(context.Background(), healthURL, -100*time.Millisecond)
+
+	if err == nil {
+		t.Fatal("WaitReady with negative timeout returned nil, expected an error")
+	}
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "%!w") {
+		t.Errorf("WaitReady error message has malformed %%!w: %q", errMsg)
+	}
+	if !strings.Contains(errMsg, healthURL) {
+		t.Errorf("WaitReady error message does not contain health URL: %q", errMsg)
 	}
 }

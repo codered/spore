@@ -142,11 +142,11 @@ func WaitReady(ctx context.Context, healthURL string, timeout time.Duration) err
 	var last error
 	for {
 		// Bound each poll attempt. A connection that is accepted but stalled
-		// cannot outlive the overall deadline.
+		// cannot outlive the overall deadline. Even with timeout <= 0, we
+		// execute at least one attempt: context.WithTimeout with non-positive
+		// duration creates an already-cancelled context, and Ready returns
+		// immediately with the real connection error.
 		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return fmt.Errorf("waiting for phoenix at %s: %w", healthURL, last)
-		}
 		attemptCtx, cancel := context.WithTimeout(ctx, remaining)
 		last = Ready(attemptCtx, healthURL)
 		cancel()
