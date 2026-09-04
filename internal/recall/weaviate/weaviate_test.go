@@ -102,3 +102,20 @@ func TestStatusReportsDegradedWhenUnreachable(t *testing.T) {
 
 // The interface assertion is the contract this package exists to satisfy.
 var _ recall.Recall = (*Backend)(nil)
+
+func TestErrorsDropTheClientsRepeatedBoilerplate(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	st, err := newUnreachable(t).Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This string is what `recall status` prints as the reason search
+	// degraded, so it has to read like a diagnosis.
+	if strings.Contains(st.Reason, "DerivedFromError") {
+		t.Errorf("reason carries the client's boilerplate:\n%s", st.Reason)
+	}
+	if !strings.Contains(st.Reason, "connection refused") {
+		t.Errorf("reason %q drops the actual cause", st.Reason)
+	}
+}

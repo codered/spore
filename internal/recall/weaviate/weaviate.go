@@ -62,7 +62,7 @@ func New(baseURL string) (*Backend, error) {
 func (b *Backend) Ready(ctx context.Context) error {
 	ok, err := b.c.Misc().ReadyChecker().Do(ctx)
 	if err != nil {
-		return fmt.Errorf("%s at %s: %w", Name, b.host, err)
+		return fmt.Errorf("%s at %s: %s", Name, b.host, tidy(err))
 	}
 	if !ok {
 		return fmt.Errorf("%s at %s: not ready", Name, b.host)
@@ -151,7 +151,7 @@ func (b *Backend) Search(ctx context.Context, q recall.Query) ([]recall.Hit, err
 	}
 	resp, err := get.Do(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("%s: search: %w", Name, err)
+		return nil, fmt.Errorf("%s: search: %s", Name, tidy(err))
 	}
 	hits, err := decodeHits(resp)
 	if err != nil {
@@ -184,6 +184,20 @@ func (b *Backend) Status(ctx context.Context) (recall.Status, error) {
 	return st, nil
 }
 
+// tidy strips the client's boilerplate from a transport error. The wrapped
+// form repeats "status code: -1, error: check the DerivedFromError field for
+// more information" once per layer, which buries the one line an operator
+// needs -- and this text is what `recall status` prints as the reason a
+// search degraded.
+func tidy(err error) string {
+	msg := err.Error()
+	const noise = "status code: -1, error: check the DerivedFromError field for more information: "
+	for strings.Contains(msg, noise) {
+		msg = strings.Replace(msg, noise, "", 1)
+	}
+	return msg
+}
+
 func (b *Backend) countKind(ctx context.Context, kind string) (int, error) {
 	resp, err := b.c.GraphQL().Aggregate().
 		WithClassName(Collection).
@@ -191,7 +205,7 @@ func (b *Backend) countKind(ctx context.Context, kind string) (int, error) {
 		WithFields(graphql.Field{Name: "meta", Fields: []graphql.Field{{Name: "count"}}}).
 		Do(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("%s: count %s: %w", Name, kind, err)
+		return 0, fmt.Errorf("%s: count %s: %s", Name, kind, tidy(err))
 	}
 	return decodeCount(resp)
 }
