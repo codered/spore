@@ -25,7 +25,7 @@ func tree(t *testing.T, root string, files map[string]string) {
 
 func listOf(t *testing.T, root string) []string {
 	t.Helper()
-	out, _ := list(root)
+	out, _, _ := list(root)
 	return out
 }
 
@@ -161,7 +161,7 @@ func TestListingIsBoundedAndSaysSo(t *testing.T) {
 	}
 	tree(t, root, files)
 
-	entries, truncated := list(root)
+	entries, truncated, _ := list(root)
 	if len(entries) != maxEntries {
 		t.Errorf("listing length %d, want the cap %d", len(entries), maxEntries)
 	}
@@ -200,5 +200,82 @@ func TestDescriberCachesUntilTTLExpires(t *testing.T) {
 	now = now.Add(cacheTTL + time.Second)
 	if third := d.Describe(); !strings.Contains(third, "second.go") {
 		t.Errorf("describer did not refresh after the TTL:\n%s", third)
+	}
+}
+
+func TestCacheDirectoriesAreNeverListed(t *testing.T) {
+	root := t.TempDir()
+	tree(t, root, map[string]string{
+		".cache/go-build/00/aaaa-a": "",
+		"__pycache__/mod.pyc":       "",
+		".venv/lib/thing.py":        "",
+		"src/main.go":               "",
+	})
+
+	got := listOf(t, root)
+	for _, e := range got {
+		for _, noise := range []string{".cache", "__pycache__", ".venv"} {
+			if strings.HasPrefix(e, noise) {
+				t.Errorf("cache directory leaked into the listing: %q in %v", e, got)
+			}
+		}
+	}
+	if !has(got, "src/main.go") {
+		t.Errorf("real source missing from the listing: %v", got)
+	}
+}
+
+func TestOneFatSubtreeCannotStarveTheRest(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{"slim/keep.txt": "", "zzz.txt": ""}
+	for i := 0; i < maxEntries; i++ {
+		files["fat/f"+itoa(i)+".txt"] = ""
+	}
+	tree(t, root, files)
+
+	got := listOf(t, root)
+	for _, want := range []string{"slim/keep.txt", "zzz.txt"} {
+		if !has(got, want) {
+			t.Errorf("%q was starved by the fat subtree: %v", want, got)
+		}
+	}
+	// Count what fat/ contributed below itself: its own directory line is
+	// not part of the cap, and the overflow marker is allowed on top of it.
+	fat := 0
+	for _, e := range got {
+		if strings.HasPrefix(e, "fat/") && e != "fat/" {
+			fat++
+		}
+	}
+	if fat > maxPerDir+1 {
+		t.Errorf("fat/ contributed %d entries, want at most %d", fat, maxPerDir+1)
+	}
+}
+
+func TestOverflowingDirectorySaysHowMuchIsHidden(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{}
+	for i := 0; i < maxPerDir+25; i++ {
+		files["fat/f"+itoa(i)+".txt"] = ""
+	}
+	tree(t, root, files)
+
+	got := strings.Join(listOf(t, root), "\n")
+	if !strings.Contains(got, "25 more") {
+		t.Errorf("hidden entries were not accounted for:\n%s", got)
+	}
+}
+
+func TestHeaderClaimsGitignoreOnlyWhenOneExists(t *testing.T) {
+	bare := t.TempDir()
+	tree(t, bare, map[string]string{"main.go": ""})
+	if got := Describe(bare); strings.Contains(got, ".gitignore") {
+		t.Errorf("claimed gitignore filtering where no .gitignore exists:\n%s", got)
+	}
+
+	repo := t.TempDir()
+	tree(t, repo, map[string]string{".gitignore": "*.log\n", "main.go": ""})
+	if got := Describe(repo); !strings.Contains(got, ".gitignore") {
+		t.Errorf("should say the listing is gitignore-filtered:\n%s", got)
 	}
 }
