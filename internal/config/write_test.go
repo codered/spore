@@ -226,3 +226,95 @@ func TestSetRecallBackendRejectsAnUnknownBackend(t *testing.T) {
 		t.Fatal("an unknown backend was written into the config")
 	}
 }
+
+func TestSetTraceEnabledAddsSectionWhenAbsent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("default_model = \"p/m\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SetTraceEnabled(path, true); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("config no longer loads: %v", err)
+	}
+	if !cfg.Trace.Enabled {
+		t.Error("trace.enabled was not turned on")
+	}
+}
+
+func TestSetTraceEnabledReplacesExistingKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	body := "default_model = \"p/m\"\n\n[trace]\nenabled = true\nsample_rate = 0.5\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SetTraceEnabled(path, false); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Trace.Enabled {
+		t.Error("trace.enabled was not turned off")
+	}
+	// The rewrite owns one line and must not disturb its neighbours.
+	if cfg.Trace.SampleRate != 0.5 {
+		t.Errorf("sample_rate = %v, want 0.5 preserved", cfg.Trace.SampleRate)
+	}
+}
+
+func TestSetTraceEnabledPreservesTheRestOfTheFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	body := "# a comment the operator wrote\ndefault_model = \"p/m\"\n\n[recall]\nbackend = \"weaviate\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SetTraceEnabled(path, true); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"# a comment the operator wrote", "[recall]", "backend = \"weaviate\""} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("rewrite lost %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestSetSectionKeyLeavesSimilarlyNamedKeysAlone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	body := "default_model = \"p/m\"\n\n[trace]\nenabled_at = \"never\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SetTraceEnabled(path, true); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "enabled_at = \"never\"") {
+		t.Errorf("a key that merely starts with the target name was overwritten:\n%s", out)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Trace.Enabled {
+		t.Errorf("trace.enabled was not set:\n%s", out)
+	}
+}
