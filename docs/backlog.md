@@ -15,8 +15,8 @@ Task 5 added `internal/workspace/describers.go`, which holds one `Describer` per
 workspace root so that N sessions in N directories each keep their own TTL-cached
 environment section instead of fighting over one. The map is keyed by root and
 nothing ever removes an entry, so a long-running daemon accumulates one small
-cache entry — a mutex, a timestamp, and up to a couple of hundred lines of cached
-listing text — for every distinct session directory it has ever described. Each
+cache entry -- a mutex, a timestamp, and up to a couple of hundred lines of cached
+listing text -- for every distinct session directory it has ever described. Each
 entry is individually bounded, and this is never a correctness or isolation
 problem; it is a slow leak proportional to session history rather than to live
 sessions. It shipped that way deliberately: the plan specified no eviction policy,
@@ -25,8 +25,8 @@ detail.
 
 **Open questions**
 
-1. What triggers eviction? Tying it to session lifecycle — dropping a root when
-   no live session is rooted there — keeps the cache bounded by live sessions
+1. What triggers eviction? Tying it to session lifecycle -- dropping a root when
+   no live session is rooted there -- keeps the cache bounded by live sessions
    rather than by history, and spore already tracks session lifecycle. A generic
    LRU or size cap needs no such hook but bounds the wrong thing.
 2. Is a session directory's describer worth keeping at all once its session ends?

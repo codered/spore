@@ -105,7 +105,7 @@ model as `mcp__<server>__<tool>`.
 Declaring a server is the authorization to run it, so keep the file to servers
 you trust. The child process gets only what you list: `env` verbatim, the
 names in `inherit`, and `PATH`. Your provider API keys are not visible to it.
-Its working directory is `policy.workspace`.
+Its working directory is the policy ceiling, not the calling session's workspace: one MCP server process is shared by every session, so it cannot hold a per-session directory. Containment for MCP calls comes from the policy engine judging path arguments against the calling session's workspace.
 
 Tool calls are subject to the same policy as everything else — `mcp__*` is
 asked by default, and denied outright for the `remote` trust profile, so a
