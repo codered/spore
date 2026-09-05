@@ -133,6 +133,14 @@ Every call is checked before it runs:
     [web]
     brave_api_key = "${BRAVE_API_KEY}"
 
+`[policy] workspace` is a **ceiling**, not a working directory. Each session
+records the directory it is rooted at: `spore chat` and `spore once` send the
+directory you ran them in, and a creator with no directory of its own — the
+web UI, the scheduler, the Discord bridge — gets `~/.spore/sessions/<id>`,
+created on that session's first turn. A session rooted outside the ceiling is
+refused at creation. `--workspace <dir>` roots a new session elsewhere and,
+on a resume, re-roots an existing one.
+
 Rules are `tool` or `tool(predicate)`, where a predicate is
 `path outside workspace`, `path matches <globs>`, or `matches <text>`. Tool
 globs accept `fs.read` and `fs_read` interchangeably.

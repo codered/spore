@@ -256,6 +256,9 @@ async function openSession(id) {
       // the user can switch sessions, so a check before it guards nothing.
       if (generation !== gen) return;
       renderTranscript(tr);
+      // Which directory a session operates on is not a detail: two sessions in
+      // two projects look identical without it.
+      el("workspace").textContent = (tr.session && tr.session.workspace) || "";
     } catch (err) {
       if (generation !== gen) return;   // a stale error is noise too
       setStatus(err.message, true);
@@ -282,6 +285,7 @@ async function loadSessions() {
     a.dataset.id = s.id;
     a.textContent = s.title || s.id;
     a.classList.toggle("active", s.id === sessionID);
+    a.title = s.workspace || "";
     a.addEventListener("click", (e) => {
       e.preventDefault();
       openSession(s.id).catch((err) => setStatus(err.message, true));

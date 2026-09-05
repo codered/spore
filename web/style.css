@@ -109,3 +109,11 @@ details.tool pre { margin: 6px 0 0; white-space: pre-wrap; word-wrap: break-word
 
 #status { padding: 0 16px 10px; color: var(--dim); font-size: 12px; min-height: 18px; }
 #status.error { color: var(--error); }
+
+#transcript-header { padding: 8px 16px; border-bottom: 1px solid var(--line); }
+
+.workspace {
+  color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+}
