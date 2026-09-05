@@ -79,8 +79,9 @@ func openStore(ctx context.Context, cfg *config.Config) (*store.Store, error) {
 		return nil, err
 	}
 	if n, err := st.BackfillSessionWorkspaces(ctx, cfg.Policy.Workspace); err != nil {
-		// Not fatal: a session whose root is empty still lists and still
-		// shows, and the daemon refuses only to run a turn for it.
+		// Not fatal: a session whose root is empty still lists and still shows.
+		// On a turn, plain conversation runs normally; only tool calls with path
+		// arguments are denied by "path outside workspace".
 		slog.Default().Warn("backfilling session workspaces failed", "error", err)
 	} else if n > 0 {
 		slog.Default().Info("rooted sessions written before stage 6", "count", n, "workspace", cfg.Policy.Workspace)
@@ -163,7 +164,7 @@ func run(args []string) error {
 		if len(args) < 3 || args[1] != "check" {
 			return fmt.Errorf("usage: spore policy check <tool> [json-args] [-profile local|remote] [-workspace <dir>]")
 		}
-		profile, jsonArgs, workspace := "local", "{}", ""
+		profile, jsonArgs, workspaceFlag := "local", "{}", ""
 		rest := args[3:]
 		for i := 0; i < len(rest); i++ {
 			if rest[i] == "-profile" && i+1 < len(rest) {
@@ -172,11 +173,20 @@ func run(args []string) error {
 				continue
 			}
 			if rest[i] == "-workspace" && i+1 < len(rest) {
-				workspace = rest[i+1]
+				workspaceFlag = rest[i+1]
 				i++
 				continue
 			}
 			jsonArgs = rest[i]
+		}
+		// Make workspace absolute, just like chat and once do.
+		workspace := cfg.Policy.Workspace // default: the ceiling
+		if workspaceFlag != "" {
+			abs, err := filepath.Abs(workspaceFlag)
+			if err != nil {
+				return err
+			}
+			workspace = abs
 		}
 		return cmdPolicyCheck(cfg, profile, workspace, args[2], jsonArgs)
 	case "mcp":

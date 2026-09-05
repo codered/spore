@@ -407,3 +407,73 @@ func TestCreateSessionSendsTheWorkspace(t *testing.T) {
 		t.Fatalf("workspace sent = %q, want /ws/a", got.Workspace)
 	}
 }
+
+func TestOpenStoreBackfillsEmptyWorkspaces(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	ceiling := filepath.Join(dir, "ceiling")
+	if err := os.WriteFile(cfgPath, []byte(`
+default_model = "p/m"
+data_dir = "`+dir+`"
+
+[providers.p]
+kind = "anthropic"
+api_key = "x"
+
+[policy]
+workspace = "`+ceiling+`"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a store and manually insert a session with empty workspace
+	// (simulating a session written before stage 6).
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	const timeFormat = "2006-01-02T15:04:05.000000000Z07:00"
+	now := time.Now().UTC().Format(timeFormat)
+	_, err = st.DB().ExecContext(ctx,
+		`INSERT INTO sessions (id, title, workspace, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+		"s1", "test", "", now, now)
+	if err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	st.Close()
+
+	// Verify the session has an empty workspace.
+	st, err = store.Open(cfg.DBPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, found, err := st.Session(ctx, "s1")
+	if err != nil || !found {
+		t.Fatalf("Session not found after insert: %v", err)
+	}
+	if sess.Workspace != "" {
+		t.Fatalf("session workspace before backfill = %q, want empty", sess.Workspace)
+	}
+	st.Close()
+
+	// Call openStore, which should backfill the empty workspace.
+	st, err = openStore(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// Verify the session now has the ceiling workspace.
+	sess, found, err = st.Session(ctx, "s1")
+	if err != nil || !found {
+		t.Fatalf("Session not found after backfill: %v", err)
+	}
+	if sess.Workspace != ceiling {
+		t.Fatalf("session workspace after backfill = %q, want %q", sess.Workspace, ceiling)
+	}
+}

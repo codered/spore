@@ -25,7 +25,7 @@ func cmdPolicyCheck(cfg *config.Config, profile, workspace, toolName, argsJSON s
 	// check takes one. Without it the ceiling is used, which is the answer for
 	// "would this be allowed anywhere at all".
 	res := engine.Evaluate(policy.Session{ID: "policy-check", Profile: policy.Profile(profile), Workspace: workspace}, policy.Call{Tool: toolName, Args: json.RawMessage(argsJSON)})
-	fmt.Printf("%s\t%s\t%s\n", res.Decision, toolName, res.Rule)
+	fmt.Printf("%s\t%s\t%s\t%s\n", res.Decision, toolName, res.Rule, workspace)
 	if res.Decision == policy.DecisionAsk {
 		pattern, ok := policy.PatternFor(policy.Call{Tool: toolName, Args: json.RawMessage(argsJSON)})
 		if ok {
