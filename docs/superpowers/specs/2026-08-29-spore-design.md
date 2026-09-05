@@ -820,8 +820,8 @@ plan is written only once its predecessor completes.
    backend should not also have to weigh a tracing sidecar. 5b introduced the
    first dependency on Docker, a container lifecycle and a network backfill,
    which was review enough.
-6. **Per-session workspace** — the workspace stops being one value per daemon
-   and becomes a property of a session: recorded at creation, carried on the
+6. **Per-session workspace** (shipped) — the workspace stops being one value
+   per daemon and becomes a property of a session: recorded at creation, carried on the
    turn context beside the trust profile, and honoured by the filesystem
    tools, the shell and the policy engine's `path outside workspace`. It is
    last because it touches every surface at once and reinterprets a documented
