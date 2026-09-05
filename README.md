@@ -3,12 +3,13 @@
 A personal AI agent in a single Go binary: your providers, your tools, your
 policy. Built to run as an always-on daemon on your own machine.
 
-Status: **Plan 4a (Discord bridge)** — everything in Plans 1–3, plus the
-Discord bridge. Messages in Discord channels open threads and sessions; replies
-continue them. A DM is one rolling session. Approvals arrive as button presses.
-Sessions run under the `remote` trust profile, so you can hold them to stricter
-rules than the web UI. The pattern-button is absent for calls with no
-path-shaped argument to generalise to. MCP and Weaviate recall land in Plans 4b–5.
+Status: **Stage 6: workspace as a session property** — everything in Plans 1–5, plus
+each session has its own workspace root rather than one per daemon. The workspace
+is the policy boundary: calls are confined by path predicates to their session's
+root. Sessions in the web UI or Discord operate under the `remote` trust profile,
+the CLI under `local`. MCP servers run with the policy containment of their caller.
+Workspace backfill for pre-stage-6 sessions is non-fatal; a session without a
+workspace is held to strict containment rules and can only do plain conversation.
 
 ## Build
 

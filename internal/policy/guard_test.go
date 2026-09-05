@@ -58,20 +58,21 @@ func (a *scriptedApprover) count() int {
 	return len(a.asked)
 }
 
-func guardFixture(t *testing.T, pc config.PolicyConfig, ap Approver) (*Guard, *recordingRunner, *store.Store, string) {
+func guardFixture(t *testing.T, pc config.PolicyConfig, ap Approver) (*Guard, *recordingRunner, *store.Store, string, string) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	sid, err := st.CreateSession(context.Background(), "guard test", "")
+	workspace := t.TempDir()
+	sid, err := st.CreateSession(context.Background(), "guard test", workspace)
 	if err != nil {
 		t.Fatal(err)
 	}
 	inner := &recordingRunner{}
 	g := NewGuard(inner, engine(t, pc), ap, st, nil)
-	return g, inner, st, sid
+	return g, inner, st, sid, workspace
 }
 
 func toolCall(name, id, args string) provider.Block {
@@ -80,8 +81,8 @@ func toolCall(name, id, args string) provider.Block {
 
 func TestAllowRunsWithoutAsking(t *testing.T) {
 	ap := &scriptedApprover{}
-	g, inner, _, sid := guardFixture(t, config.PolicyConfig{Allow: []string{"fs_read"}}, ap)
-	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal})
+	g, inner, _, sid, ws := guardFixture(t, config.PolicyConfig{Allow: []string{"fs_read"}}, ap)
+	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal, Workspace: ws})
 	got := g.Run(ctx, toolCall("fs_read", "c1", `{"path":"/ws/a"}`))
 	if got.IsError {
 		t.Fatalf("allowed call returned an error: %q", got.Content)
@@ -96,11 +97,11 @@ func TestAllowRunsWithoutAsking(t *testing.T) {
 
 func TestDenyNeverReachesTheTool(t *testing.T) {
 	ap := &scriptedApprover{answer: Answer{Allow: true, Scope: ScopeOnce}}
-	g, inner, _, sid := guardFixture(t, config.PolicyConfig{
+	g, inner, _, sid, ws := guardFixture(t, config.PolicyConfig{
 		Allow: []string{"shell_exec"},
 		Deny:  []string{"shell_exec(matches sudo)"},
 	}, ap)
-	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal})
+	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal, Workspace: ws})
 	got := g.Run(ctx, toolCall("shell_exec", "c1", `{"command":"sudo rm -rf /tmp/x"}`))
 	if !got.IsError {
 		t.Fatal("a denied call must return a tool error")
@@ -118,8 +119,8 @@ func TestDenyNeverReachesTheTool(t *testing.T) {
 
 func TestAskPromptsAndRunsOnApproval(t *testing.T) {
 	ap := &scriptedApprover{answer: Answer{Allow: true, Scope: ScopeOnce}}
-	g, inner, st, sid := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
-	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal})
+	g, inner, st, sid, ws := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
+	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal, Workspace: ws})
 	got := g.Run(ctx, toolCall("fs_write", "c1", `{"path":"/ws/a"}`))
 	if got.IsError {
 		t.Fatalf("approved call errored: %q", got.Content)
@@ -139,8 +140,8 @@ func TestAskPromptsAndRunsOnApproval(t *testing.T) {
 
 func TestAskDeniedReportsBackToTheModel(t *testing.T) {
 	ap := &scriptedApprover{answer: Answer{Allow: false, Scope: ScopeOnce}}
-	g, inner, _, sid := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
-	got := g.Run(WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal}), toolCall("fs_write", "c1", `{"path":"/ws/a"}`))
+	g, inner, _, sid, ws := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
+	got := g.Run(WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal, Workspace: ws}), toolCall("fs_write", "c1", `{"path":"/ws/a"}`))
 	if !got.IsError || !strings.Contains(got.Content, "declined") {
 		t.Errorf("got %+v, want a tool error saying the user declined", got)
 	}
@@ -151,8 +152,8 @@ func TestAskDeniedReportsBackToTheModel(t *testing.T) {
 
 func TestSessionScopeAnswersOnlyOnce(t *testing.T) {
 	ap := &scriptedApprover{answer: Answer{Allow: true, Scope: ScopeSession}}
-	g, inner, _, sid := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
-	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal})
+	g, inner, _, sid, ws := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
+	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal, Workspace: ws})
 	for i := 0; i < 3; i++ {
 		if got := g.Run(ctx, toolCall("fs_write", "c", `{"path":"/ws/a"}`)); got.IsError {
 			t.Fatalf("call %d errored: %q", i, got.Content)
@@ -168,8 +169,8 @@ func TestSessionScopeAnswersOnlyOnce(t *testing.T) {
 
 func TestSessionScopeDenialIsAlsoRemembered(t *testing.T) {
 	ap := &scriptedApprover{answer: Answer{Allow: false, Scope: ScopeSession}}
-	g, inner, _, sid := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
-	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal})
+	g, inner, _, sid, ws := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
+	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal, Workspace: ws})
 	for i := 0; i < 2; i++ {
 		if got := g.Run(ctx, toolCall("fs_write", "c", `{"path":"/ws/a"}`)); !got.IsError {
 			t.Fatalf("call %d was allowed after a session denial", i)
@@ -185,11 +186,11 @@ func TestSessionScopeDenialIsAlsoRemembered(t *testing.T) {
 
 func TestRememberedSessionAllowStillCannotBeatDeny(t *testing.T) {
 	ap := &scriptedApprover{answer: Answer{Allow: true, Scope: ScopeSession}}
-	g, inner, _, sid := guardFixture(t, config.PolicyConfig{
+	g, inner, _, sid, ws := guardFixture(t, config.PolicyConfig{
 		Ask:  []string{"shell_exec"},
 		Deny: []string{"shell_exec(matches sudo)"},
 	}, ap)
-	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal})
+	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal, Workspace: ws})
 	if got := g.Run(ctx, toolCall("shell_exec", "c1", `{"command":"ls"}`)); got.IsError {
 		t.Fatalf("benign call errored: %q", got.Content)
 	}
@@ -211,14 +212,15 @@ func TestPatternScopeLearnsARule(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	sid, _ := st.CreateSession(context.Background(), "t", "")
+	ws := t.TempDir()
+	sid, _ := st.CreateSession(context.Background(), "t", ws)
 	var learned []string
 	g := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{Ask: []string{"fs_write"}}), ap, st,
 		func(d Decision, rule string) error {
 			learned = append(learned, string(d)+" "+rule)
 			return nil
 		})
-	g.Run(WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal}), toolCall("fs_write", "c1", `{"path":"/ws/src/a.go"}`))
+	g.Run(WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal, Workspace: ws}), toolCall("fs_write", "c1", `{"path":"/ws/src/a.go"}`))
 	if len(learned) != 1 {
 		t.Fatalf("learned = %v, want one rule written back", learned)
 	}
@@ -241,11 +243,11 @@ func TestPatternForNarrowsToTheDirectory(t *testing.T) {
 
 func TestUnansweredApprovalDeniesAtTheTimeout(t *testing.T) {
 	ap := &scriptedApprover{block: make(chan struct{})} // never answered
-	g, inner, st, sid := guardFixture(t, config.PolicyConfig{
+	g, inner, st, sid, ws := guardFixture(t, config.PolicyConfig{
 		Ask:             []string{"fs_write"},
 		ApprovalTimeout: "50ms",
 	}, ap)
-	got := g.Run(WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal}), toolCall("fs_write", "c1", `{"path":"/ws/a"}`))
+	got := g.Run(WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal, Workspace: ws}), toolCall("fs_write", "c1", `{"path":"/ws/a"}`))
 	if !got.IsError || !strings.Contains(got.Content, "timed out") {
 		t.Errorf("got %+v, want a timeout denial", got)
 	}
@@ -260,8 +262,8 @@ func TestUnansweredApprovalDeniesAtTheTimeout(t *testing.T) {
 
 func TestApproverErrorDenies(t *testing.T) {
 	ap := &scriptedApprover{err: errors.New("no tty")}
-	g, inner, _, sid := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
-	got := g.Run(WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal}), toolCall("fs_write", "c1", `{"path":"/ws/a"}`))
+	g, inner, _, sid, ws := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
+	got := g.Run(WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal, Workspace: ws}), toolCall("fs_write", "c1", `{"path":"/ws/a"}`))
 	if !got.IsError {
 		t.Error("an approver failure must deny, not allow")
 	}
@@ -272,7 +274,7 @@ func TestApproverErrorDenies(t *testing.T) {
 
 func TestMissingSessionContextDenies(t *testing.T) {
 	ap := &scriptedApprover{answer: Answer{Allow: true, Scope: ScopeOnce}}
-	g, inner, _, _ := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
+	g, inner, _, _, _ := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
 	// No WithSession: the guard cannot persist a suspension, so it refuses
 	// rather than running unaudited.
 	got := g.Run(context.Background(), toolCall("fs_write", "c1", `{"path":"/ws/a"}`))
@@ -286,7 +288,7 @@ func TestMissingSessionContextDenies(t *testing.T) {
 
 func TestMissingSessionDeniesEvenAnAllowedTool(t *testing.T) {
 	ap := &scriptedApprover{}
-	g, inner, _, _ := guardFixture(t, config.PolicyConfig{Allow: []string{"fs_read"}}, ap)
+	g, inner, _, _, _ := guardFixture(t, config.PolicyConfig{Allow: []string{"fs_read"}}, ap)
 	// fs_read is allowed outright by policy, so this call never reaches the
 	// ask branch. With no session on the context it must still be refused: an
 	// unattributable call cannot be audited, and must not reach a tool.
@@ -296,6 +298,39 @@ func TestMissingSessionDeniesEvenAnAllowedTool(t *testing.T) {
 	}
 	if len(inner.calls) != 0 {
 		t.Error("the tool executed without a session")
+	}
+}
+
+func TestMissingWorkspaceDenies(t *testing.T) {
+	ap := &scriptedApprover{answer: Answer{Allow: true, Scope: ScopeOnce}}
+	g, inner, _, sid, _ := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
+	// Session exists but we explicitly omit the workspace from the context: the
+	// guard cannot confine the call by policy, so it refuses rather than running
+	// uncontained.
+	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal})
+	got := g.Run(ctx, toolCall("fs_write", "c1", `{"path":"/ws/a"}`))
+	if !got.IsError {
+		t.Error("a call with no workspace was allowed")
+	}
+	if len(inner.calls) != 0 {
+		t.Error("the tool ran without a workspace")
+	}
+}
+
+func TestMissingWorkspaceDeniesEvenAnAllowedTool(t *testing.T) {
+	ap := &scriptedApprover{}
+	g, inner, _, sid, _ := guardFixture(t, config.PolicyConfig{Allow: []string{"fs_read"}}, ap)
+	// fs_read is allowed outright by policy, so this call never reaches the
+	// ask branch. With no workspace the session cannot confine the call, so it
+	// must still be refused: an unconfined call cannot meet the containment
+	// constraint, and must not reach a tool.
+	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal})
+	got := g.Run(ctx, toolCall("fs_read", "c1", `{"path":"/ws/a"}`))
+	if !got.IsError {
+		t.Fatal("an allowed tool ran with no workspace")
+	}
+	if len(inner.calls) != 0 {
+		t.Error("the tool executed without a workspace")
 	}
 }
 
@@ -312,7 +347,7 @@ func TestSessionWithoutAProfileGetsTheStrictestRuleset(t *testing.T) {
 
 func TestGuardDelegatesSpecsAndReadOnly(t *testing.T) {
 	ap := &scriptedApprover{}
-	g, _, _, _ := guardFixture(t, config.PolicyConfig{}, ap)
+	g, _, _, _, _ := guardFixture(t, config.PolicyConfig{}, ap)
 	if !g.ReadOnly("anything") {
 		t.Error("ReadOnly must delegate to the wrapped runner")
 	}

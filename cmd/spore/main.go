@@ -80,8 +80,8 @@ func openStore(ctx context.Context, cfg *config.Config) (*store.Store, error) {
 	}
 	if n, err := st.BackfillSessionWorkspaces(ctx, cfg.Policy.Workspace); err != nil {
 		// Not fatal: a session whose root is empty still lists and still shows.
-		// On a turn, plain conversation runs normally; only tool calls with path
-		// arguments are denied by "path outside workspace".
+		// On a turn, plain conversation runs normally; every tool call is refused
+		// by the guard before evaluation because the session has no workspace.
 		slog.Default().Warn("backfilling session workspaces failed", "error", err)
 	} else if n > 0 {
 		slog.Default().Info("rooted sessions written before stage 6", "count", n, "workspace", cfg.Policy.Workspace)

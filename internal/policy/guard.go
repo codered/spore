@@ -142,6 +142,15 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 		sporetrace.RecordPolicy(ctx, "deny", "policy.no-session")
 		return denied(call.ID, "refusing %s: no session on the context, so the call cannot be audited", call.Name)
 	}
+	// Same as above: a call with no workspace cannot be confined by policy.
+	// The engine's fallback to the configured ceiling (for direct Evaluate
+	// callers in spore policy check) is correct for diagnostics but wrong for
+	// a turn. Only real turns reach Guard.Run, and they must fail closed: a
+	// turn whose session's workspace is empty is held to the stricter rule.
+	if sess.Workspace == "" {
+		sporetrace.RecordPolicy(ctx, "deny", "policy.no-workspace")
+		return denied(call.ID, "refusing %s: the session has no workspace, so the call cannot be confined by policy", call.Name)
+	}
 
 	c := Call{Tool: call.Name, Args: call.Input}
 	res := g.engine.Evaluate(sess, c)

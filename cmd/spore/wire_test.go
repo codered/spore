@@ -191,7 +191,7 @@ workspace = "`+dir+`"
 	}
 
 	ctx := context.Background()
-	sid, err := a.Store.CreateSession(ctx, "t", "")
+	sid, err := a.Store.CreateSession(ctx, "t", dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ workspace = "`+dir+`"
 	// call needs a session and profile on the context the way a real turn's
 	// dispatch would attach one, and it needs the allowApprover above to get
 	// past the ask.
-	runCtx := policy.WithSession(ctx, policy.Session{ID: sid, Profile: policy.ProfileLocal})
+	runCtx := policy.WithSession(ctx, policy.Session{ID: sid, Profile: policy.ProfileLocal, Workspace: dir})
 	call := provider.Block{
 		Type: provider.BlockToolUse,
 		ID:   "call-1",
