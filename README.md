@@ -3,12 +3,15 @@
 A personal AI agent in a single Go binary: your providers, your tools, your
 policy. Built to run as an always-on daemon on your own machine.
 
-Status: **Plan 4a (Discord bridge)** — everything in Plans 1–3, plus the
-Discord bridge. Messages in Discord channels open threads and sessions; replies
-continue them. A DM is one rolling session. Approvals arrive as button presses.
-Sessions run under the `remote` trust profile, so you can hold them to stricter
-rules than the web UI. The pattern-button is absent for calls with no
-path-shaped argument to generalise to. MCP and Weaviate recall land in Plans 4b–5.
+Status: **Stage 6 (per-session workspace)** — everything in Plans 1–5, plus the
+workspace as a property of a session rather than one value per daemon. `spore
+chat` and `spore once` root a session at the directory you ran them in, so two
+sessions in two projects each see their own files. A creator with no directory
+of its own — the web UI, the scheduler, the Discord bridge — gets
+`~/.spore/sessions/<id>`, created on that session's first turn. `[policy]
+workspace` is the ceiling a new session's root is checked against, and a call
+whose session has no workspace is refused rather than quietly judged against
+that ceiling.
 
 ## Build
 
