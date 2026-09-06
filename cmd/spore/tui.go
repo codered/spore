@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"context"
+	"strconv"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -24,6 +26,10 @@ type (
 	streamEndMsg struct{ err error }
 	sendErrMsg   struct{ err error }
 	resolveErr   struct{ err error }
+	slashErrMsg    struct{ err error }
+	slashDoneMsg   struct{ msg string }
+	slashContextMsg struct { data map[string]any; showCost bool }
+	slashUsageMsg  struct { data map[string]any; showCost bool }
 )
 
 type chatState int
@@ -84,6 +90,8 @@ type chatUI struct {
 	// browsing", which is why draft is kept alongside.
 	histIdx int
 	draft   string
+	// slashHandler runs slash commands; nil when no client context is available.
+	slashHandler func(input string) tea.Cmd
 
 	// fatal is the error the program exits with, read by the caller once the
 	// program has stopped.
@@ -182,6 +190,17 @@ func (m *chatUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case resolveErr:
 		return m, m.flush(styDanger.Render("  ✗ could not answer the approval: " + msg.err.Error()))
 
+	case slashErrMsg:
+		return m, m.flush(styDanger.Render("  ✗ command failed: " + msg.err.Error()))
+
+	case slashDoneMsg:
+		return m, m.flush(styAccent.Render("  ✓ " + msg.msg))
+
+	case slashContextMsg:
+		return m, m.renderContext(msg.data, msg.showCost)
+
+	case slashUsageMsg:
+		return m, m.renderUsage(msg.data, msg.showCost)
 	case tea.KeyMsg:
 		return m, m.handleKey(msg)
 	}
@@ -312,12 +331,14 @@ func (m *chatUI) handleKey(msg tea.KeyMsg) tea.Cmd {
 		m.history = append(m.history, text)
 		m.histIdx = len(m.history)
 		m.draft = ""
+		if strings.HasPrefix(text, "/") {
+			return m.runSlash(text)
+		}
 		if m.state != stateIdle {
 			m.queued = append(m.queued, text)
 			return m.flush(styMuted.Render("  · queued: " + firstLine(text)))
 		}
 		return m.submit(text)
-
 	case "up":
 		if m.ta.Line() == 0 && len(m.history) > 0 {
 			if m.histIdx == len(m.history) {
@@ -346,6 +367,18 @@ func (m *chatUI) handleKey(msg tea.KeyMsg) tea.Cmd {
 	m.ta, cmd = m.ta.Update(msg)
 	m.resizeInput()
 	return cmd
+}
+// runSlash dispatches slash commands entered in the chat input. It clears
+// the textarea, displays a confirmation or error in the transcript, and
+// delegates to slashHandler when one is wired (production). Without it,
+// the command is displayed as an error so the operator knows the daemon
+// does not support it on this surface.
+func (m *chatUI) runSlash(input string) tea.Cmd {
+	cmd := m.slashHandler
+	if cmd != nil {
+		return cmd(input)
+	}
+	return m.flush(styDanger.Render("  ✗ slash commands require the daemon"))
 }
 
 // handleApprovalKey answers the approval on screen. Only the offered keys do
@@ -515,4 +548,144 @@ func firstLine(s string) string {
 		s = s[:60] + "…"
 	}
 	return s
+}
+// handleClear moves the summary boundary to "now" so all messages are folded.
+func (m *chatUI) handleClear(ctx context.Context, c *client, sessionID string) tea.Cmd {
+	return tea.Sequence(
+		m.flush(styMuted.Render("  · clearing…")),
+		func() tea.Msg {
+			if err := c.setSummaryThrough(ctx, sessionID, 0); err != nil {
+				return slashErrMsg{err}
+			}
+			return slashDoneMsg{"cleared"}
+		},
+	)
+}
+
+// handleCompact triggers a manual compaction (summary) of the session.
+func (m *chatUI) handleCompact(ctx context.Context, c *client, sessionID string) tea.Cmd {
+	return tea.Sequence(
+		m.flush(styMuted.Render("  · compacting…")),
+		func() tea.Msg {
+			if err := c.compact(ctx, sessionID); err != nil {
+				return slashErrMsg{err}
+			}
+			return slashDoneMsg{"compacted"}
+		},
+	)
+}
+
+// handleContext shows a token breakdown for the current session.
+func (m *chatUI) handleContext(ctx context.Context, c *client, sessionID string, showCost bool) tea.Cmd {
+	return tea.Sequence(
+		m.flush(styMuted.Render("  · loading context…")),
+		func() tea.Msg {
+			data, err := c.getTranscript(ctx, sessionID)
+			if err != nil {
+				return slashErrMsg{err}
+			}
+			return slashContextMsg{data: data, showCost: showCost}
+		},
+	)
+}
+
+// handleUsage shows token and cost totals for the session.
+func (m *chatUI) handleUsage(ctx context.Context, c *client, sessionID string, showCost bool) tea.Cmd {
+	return tea.Sequence(
+		m.flush(styMuted.Render("  · loading usage…")),
+		func() tea.Msg {
+			data, err := c.getTranscript(ctx, sessionID)
+			if err != nil {
+				return slashErrMsg{err}
+			}
+			return slashUsageMsg{data: data, showCost: showCost}
+		},
+	)
+}
+// renderContext displays a token breakdown for the session transcript.
+func (m *chatUI) renderContext(data map[string]any, showCost bool) tea.Cmd {
+	msgs := data["messages"]
+	totalTokens := 0
+	count := 0
+	if msgs != nil {
+		if arr, ok := msgs.([]any); ok {
+			for _, raw := range arr {
+				if msg, ok := raw.(map[string]any); ok {
+					inVal := 0
+					outVal := 0
+					if v := msg["tokens_in"]; v != nil {
+						inVal = castInt(v)
+					}
+					if v := msg["tokens_out"]; v != nil {
+						outVal = castInt(v)
+					}
+					totalTokens += inVal + outVal
+					count++
+				}
+			}
+		}
+	}
+	var b strings.Builder
+	b.WriteString("  context snapshot\n")
+	b.WriteString("    messages: " + strconv.Itoa(count) + "\n")
+	b.WriteString("    tokens: ~" + strconv.Itoa(totalTokens) + "\n")
+	if showCost {
+		b.WriteString("    cost: see session totals\n")
+	}
+	return m.flush(b.String())
+}
+
+// renderUsage displays token and cost totals for the session.
+func (m *chatUI) renderUsage(data map[string]any, showCost bool) tea.Cmd {
+	msgs := data["messages"]
+	tokensIn := 0
+	tokensOut := 0
+	cost := 0.0
+	count := 0
+	if msgs != nil {
+		if arr, ok := msgs.([]any); ok {
+			for _, raw := range arr {
+				if msg, ok := raw.(map[string]any); ok {
+					inVal := 0
+					outVal := 0
+					costVal := 0.0
+					if v := msg["tokens_in"]; v != nil {
+						inVal = castInt(v)
+					}
+					if v := msg["tokens_out"]; v != nil {
+						outVal = castInt(v)
+					}
+					if v := msg["cost_usd"]; v != nil {
+						costVal = castFloat(v)
+					}
+					tokensIn += inVal
+					tokensOut += outVal
+					cost += costVal
+					count++
+				}
+			}
+		}
+	}
+	var b strings.Builder
+	b.WriteString("  usage\n")
+	b.WriteString("    turns: " + strconv.Itoa(count) + "\n")
+	b.WriteString("    tokens in: " + strconv.Itoa(tokensIn) + "\n")
+	b.WriteString("    tokens out: " + strconv.Itoa(tokensOut) + "\n")
+	if showCost {
+		b.WriteString("    cost: $" + fmt.Sprintf("%.4f", cost) + "\n")
+	}
+	return m.flush(b.String())
+}
+// castInt safely converts an any to int, returning 0 on failure.
+func castInt(v any) int {
+	if i, ok := v.(int); ok { return i }
+	if f, ok := v.(float64); ok { return int(f) }
+	return 0
+}
+
+// castFloat safely converts an any to float64, returning 0.0 on failure.
+func castFloat(v any) float64 {
+	if f, ok := v.(float64); ok { return f }
+	if i, ok := v.(int); ok { return float64(i) }
+	return 0.0
 }

@@ -68,6 +68,26 @@ func chatTUI(ctx context.Context, cfg *config.Config, c *client, sessionID strin
 		return c.resolve(streamCtx, sessionID, pendingID, ans)
 	}
 
+
+	// slashHandler intercepts /clear, /compact, /context and /usage.
+	ui.slashHandler = func(input string) tea.Cmd {
+		cmd, _ := strings.CutPrefix(input, "/")
+		cmd = strings.ToLower(cmd)
+		switch cmd {
+		case "clear":
+			return ui.handleClear(streamCtx, c, sessionID)
+		case "compact":
+			return ui.handleCompact(streamCtx, c, sessionID)
+		case "context":
+			return ui.handleContext(streamCtx, c, sessionID, cfg.ShowCost)
+		case "usage":
+			return ui.handleUsage(streamCtx, c, sessionID, cfg.ShowCost)
+		default:
+			return tea.Sequence(
+				ui.flush(styDanger.Render("  ✗ unknown command: /" + cmd)),
+			)
+		}
+	}
 	p := tea.NewProgram(ui)
 
 	// Attach before running the program, and wait for the connection: an

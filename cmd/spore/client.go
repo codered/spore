@@ -108,6 +108,27 @@ func (c *client) resolve(ctx context.Context, sessionID string, pendingID int64,
 		map[string]any{"allow": ans.Allow, "scope": string(ans.Scope)}, nil)
 }
 
+
+// setSummaryThrough moves the summary boundary for /clear. It patches the
+// session with summary_through so Snapshot skips messages at or below it.
+func (c *client) setSummaryThrough(ctx context.Context, sessionID string, throughSeq int) error {
+	return c.do(ctx, "PATCH", "/api/sessions/" + sessionID,
+		map[string]int{"summary_through": throughSeq}, nil)
+}
+
+// compact triggers a manual compaction of the session via POST /compact.
+func (c *client) compact(ctx context.Context, sessionID string) error {
+	return c.do(ctx, "POST", "/api/sessions/" + sessionID + "/compact", nil, nil)
+}
+
+// getTranscript fetches the full transcript for /context and /usage.
+func (c *client) getTranscript(ctx context.Context, sessionID string) (map[string]any, error) {
+	var out map[string]any
+	if err := c.do(ctx, "GET", "/api/sessions/" + sessionID, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 // streamFrom reads the session's server-sent events until ctx is cancelled,
 // the connection drops, or fn returns an error. It closes `connected` once
 // the stream is actually open, which is what lets a caller post a message

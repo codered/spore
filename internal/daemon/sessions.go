@@ -236,6 +236,21 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "running"})
 }
 
+// handleCompact triggers a manual compaction (summary) of the session.
+// It calls MaybeCompact on demand, so /compact is a manual override and
+// does not change the auto-threshold that runs at the end of every turn.
+func (s *Server) handleCompact(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, ok := s.findSession(w, r, id); !ok {
+		return
+	}
+	if err := s.agent.MaybeCompact(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, "compact: %v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 // startTurn runs one turn on the SERVER's context and pumps its events into
 // the hub. The caller must already hold the session's turn slot; startTurn
 // releases it when the turn ends. The profile is the caller's trust level and
