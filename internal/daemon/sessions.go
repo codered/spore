@@ -111,36 +111,52 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toSessionJSON(sess))
 }
 
-// handlePatchSession re-roots a session. The root is fixed at creation
-// everywhere else; this exists for the CLI's deliberate "--workspace on a
-// resume", and it is bounded by the same ceiling as creation.
+// handlePatchSession re-roots a session, or moves its summary boundary.
+// The two fields are independent: a caller (the chat CLI) can send either or both.
 func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if _, ok := s.findSession(w, r, id); !ok {
 		return
 	}
 	var body struct {
-		Workspace string `json:"workspace"`
+		Workspace      *string `json:"workspace"`
+		SummaryThrough *int    `json:"summary_through"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "decode body: %v", err)
 		return
 	}
-	root, err := workspace.Root(workspace.Request{
-		Requested: strings.TrimSpace(body.Workspace),
-		Ceiling:   s.cfg.Policy.Workspace,
-	})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "%v", err)
+	if body.Workspace == nil && body.SummaryThrough == nil {
+		writeError(w, http.StatusBadRequest, "at least one of workspace or summary_through is required")
 		return
 	}
-	if root == "" {
-		writeError(w, http.StatusBadRequest, "workspace is required")
-		return
+	if body.Workspace != nil {
+		root, err := workspace.Root(workspace.Request{
+			Requested: strings.TrimSpace(*body.Workspace),
+			Ceiling:   s.cfg.Policy.Workspace,
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+		if root == "" {
+			writeError(w, http.StatusBadRequest, "workspace is required")
+			return
+		}
+		if err := s.store.SetSessionWorkspace(r.Context(), id, root); err != nil {
+			writeError(w, http.StatusInternalServerError, "re-root session: %v", err)
+			return
+		}
 	}
-	if err := s.store.SetSessionWorkspace(r.Context(), id, root); err != nil {
-		writeError(w, http.StatusInternalServerError, "re-root session: %v", err)
-		return
+	if body.SummaryThrough != nil {
+		if *body.SummaryThrough < 0 {
+			writeError(w, http.StatusBadRequest, "summary_through must be >= 0")
+			return
+		}
+		if err := s.store.SetSummaryThrough(r.Context(), id, *body.SummaryThrough); err != nil {
+			writeError(w, http.StatusInternalServerError, "move summary boundary: %v", err)
+			return
+		}
 	}
 	sess, _, err := s.store.Session(r.Context(), id)
 	if err != nil {

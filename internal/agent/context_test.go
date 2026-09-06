@@ -4,7 +4,10 @@ import (
 	"strings"
 	"testing"
 
+	"fmt"
+
 	"github.com/codered/spore/internal/config"
+	"github.com/codered/spore/internal/skill"
 	"github.com/codered/spore/internal/memory"
 	"github.com/codered/spore/internal/provider"
 )
@@ -249,5 +252,68 @@ func TestSnapshotTokensCountsEnvironment(t *testing.T) {
 	withEnv := SnapshotTokens(Snapshot{System: "s", Environment: strings.Repeat("x", 400)}, cfg)
 	if withEnv <= bare {
 		t.Errorf("environment not counted: %d <= %d", withEnv, bare)
+	}
+}
+
+
+func TestSkillsSectionListsNamesAndDescriptions(t *testing.T) {
+	snap := Snapshot{Skills: []skill.Skill{
+		{Name: "release-checklist", Description: "How to cut a release", Body: "long body here"},
+	}}
+	req := Assemble(snap, config.ContextConfig{MaxTokens: 1000, SkillBudget: 500})
+	if !strings.Contains(req.System, "release-checklist") ||
+		!strings.Contains(req.System, "How to cut a release") {
+		t.Fatalf("the skills index must carry name and description:\n%s", req.System)
+	}
+	if strings.Contains(req.System, "long body here") {
+		t.Fatal("a skill body must never be assembled; it arrives as a skill_load result")
+	}
+	if !strings.Contains(req.System, "skill_load") {
+		t.Fatal("the index must tell the model how to load a skill")
+	}
+}
+
+func TestSkillsSectionOverflowStatesTheCount(t *testing.T) {
+	var many []skill.Skill
+	for i := 0; i < 50; i++ {
+		many = append(many, skill.Skill{
+			Name:        fmt.Sprintf("skill-%02d", i),
+			Description: strings.Repeat("x", 100),
+		})
+	}
+	req := Assemble(Snapshot{Skills: many}, config.ContextConfig{MaxTokens: 1000, SkillBudget: 200})
+	if !strings.Contains(req.System, "more skills did not fit") {
+		t.Fatalf("overflow must be stated:\n%s", req.System)
+	}
+	if strings.Contains(req.System, "skill-49") {
+		t.Fatal("the budget must actually drop skills")
+	}
+}
+
+func TestSkillsSectionEmptyWhenNoSkills(t *testing.T) {
+	req := Assemble(Snapshot{}, config.ContextConfig{MaxTokens: 1000, SkillBudget: 500})
+	if strings.Contains(req.System, "Skills") {
+		t.Fatalf("no skills means no section:\n%s", req.System)
+	}
+}
+
+func TestBreakdownSumsToSnapshotTokens(t *testing.T) {
+	cfg := config.ContextConfig{MaxTokens: 10000, FactBudget: 200, SkillBudget: 200}
+	snap := Snapshot{
+		System:      "you are spore",
+		Environment: "cwd: /tmp",
+		Summary:     "we talked about go",
+		Facts:       []memory.Fact{{Name: "prefers-tabs", Description: "d", Type: "user", Body: "tabs"}},
+		Skills:      []skill.Skill{{Name: "release-checklist", Description: "How to cut a release", Body: "b"}},
+		Messages: []provider.Message{
+			{Role: provider.RoleUser, Blocks: []provider.Block{{Type: provider.BlockText, Text: "hello"}}},
+		},
+	}
+	b := SnapshotBreakdown(snap, cfg)
+	if b.Total() != SnapshotTokens(snap, cfg) {
+		t.Fatalf("the breakdown must sum to the total: %d vs %d", b.Total(), SnapshotTokens(snap, cfg))
+	}
+	if b.System == 0 || b.Environment == 0 || b.Facts == 0 || b.Skills == 0 || b.Summary == 0 || b.Messages == 0 {
+		t.Fatalf("every part with content must be counted: %+v", b)
 	}
 }

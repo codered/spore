@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/memory"
 	"github.com/codered/spore/internal/provider"
+	"github.com/codered/spore/internal/skill"
 )
 
 // Snapshot is everything context assembly is allowed to see. Taking it as a
@@ -18,8 +20,11 @@ type Snapshot struct {
 	// as it is now, not as it was when the session started.
 	Environment string
 	Facts       []memory.Fact
-	Summary     string
-	Messages    []provider.Message
+	// Skills is the index of loadable skills: names and descriptions only.
+	// Bodies enter the prompt as skill_load tool results, never here.
+	Skills   []skill.Skill
+	Summary  string
+	Messages []provider.Message
 }
 
 // EstimateTokens approximates tokens as bytes/4. It is deliberately crude:
@@ -40,16 +45,44 @@ func messageTokens(m provider.Message) int {
 	return n
 }
 
-// SnapshotTokens estimates the assembled size of a snapshot.
-// It estimates the fact section using the same rendering code as Assemble
-// to ensure the estimate stays synchronized with the actual output.
-func SnapshotTokens(snap Snapshot, cfg config.ContextConfig) int {
-	n := EstimateTokens(snap.System) + EstimateTokens(snap.Environment) + EstimateTokens(snap.Summary)
-	n += EstimateTokens(factsSection(snap.Facts, cfg.FactBudget))
+// Breakdown is the assembled size, part by part. /context reports it, and
+// SnapshotTokens is defined as its total, so the number that drives
+// compaction and the number the user is shown can never drift.
+type Breakdown struct {
+	System      int
+	Environment int
+	Facts       int
+	Skills      int
+	Summary     int
+	Messages    int
+}
+
+func (b Breakdown) Total() int {
+	return b.System + b.Environment + b.Facts + b.Skills + b.Summary + b.Messages
+}
+
+// SnapshotBreakdown builds a Breakdown using the same rendering functions as
+// Assemble, so the estimate is synchronized with the actual output.
+func SnapshotBreakdown(snap Snapshot, cfg config.ContextConfig) Breakdown {
+	msgTotal := 0
 	for _, m := range snap.Messages {
-		n += messageTokens(m)
+		msgTotal += messageTokens(m)
 	}
-	return n
+	return Breakdown{
+		System:      EstimateTokens(snap.System),
+		Environment: EstimateTokens(snap.Environment),
+		Facts:       EstimateTokens(factsSection(snap.Facts, cfg.FactBudget)),
+		Skills:      EstimateTokens(skillsSection(snap.Skills, cfg.SkillBudget)),
+		Summary:     EstimateTokens(snap.Summary),
+		Messages:    msgTotal,
+	}
+}
+
+// SnapshotTokens estimates the assembled size of a snapshot.
+// It is defined as SnapshotBreakdown(...).Total(), so compaction and UI
+// agree on the number that matters.
+func SnapshotTokens(snap Snapshot, cfg config.ContextConfig) int {
+	return SnapshotBreakdown(snap, cfg).Total()
 }
 
 // factInlineCost estimates the token cost of a fact if it were inlined:
@@ -101,16 +134,45 @@ func factsSection(facts []memory.Fact, budget int) string {
 	return section.String()
 }
 
+// skillsSection renders the index. Only names and descriptions: a body is
+// pulled in with skill_load, which keeps the cost of an unused skill at one
+// line and makes loading visible in the transcript.
+func skillsSection(skills []skill.Skill, budget int) string {
+	if len(skills) == 0 {
+		return ""
+	}
+	var section strings.Builder
+	section.WriteString("\n\n## Skills you can load\n")
+	section.WriteString("\nCall skill_load with a name to read one in full before you act on it.\n\n")
+	used, dropped := 0, 0
+	for _, s := range skills {
+		line := "- " + s.Name + ": " + s.Description + "\n"
+		cost := EstimateTokens(line)
+		if used+cost > budget {
+			dropped++
+			continue
+		}
+		used += cost
+		section.WriteString(line)
+	}
+	if dropped > 0 {
+		fmt.Fprintf(&section, "\n(%d more skills did not fit this budget.)\n", dropped)
+	}
+	return section.String()
+}
+
 // Assemble builds the request in the spec's fixed order: system prompt,
-// environment, memory facts, compaction summary, then the live message tail. Facts and the
-// summary ride in the system block so they stay pinned regardless of message
-// count. The assembled request includes every live message; compaction is
-// responsible for keeping the live tail within the token budget.
+// environment, memory facts, skills, compaction summary, then the live message
+// tail. Facts and the summary ride in the system block so they stay pinned
+// regardless of message count. The assembled request includes every live
+// message; compaction is responsible for keeping the live tail within the
+// token budget.
 func Assemble(snap Snapshot, cfg config.ContextConfig) provider.Request {
 	var sys strings.Builder
 	sys.WriteString(snap.System)
 	sys.WriteString(snap.Environment)
 	sys.WriteString(factsSection(snap.Facts, cfg.FactBudget))
+	sys.WriteString(skillsSection(snap.Skills, cfg.SkillBudget))
 	if snap.Summary != "" {
 		sys.WriteString("\n\n## Earlier in this conversation\n")
 		sys.WriteString(snap.Summary)
