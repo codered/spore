@@ -2,6 +2,8 @@
 
 > A personal AI agent in a single Go binary: your providers, your tools, your policy.
 
+![spore mascot](assets/spore.png)
+
 [![Go](https://img.shields.io/badge/go-1.26+-blue)](https://golang.org)
 [![Build](https://img.shields.io/github/actions/workflows/status/codered/spore/main.svg?branch=master)]()
 [![Release](https://img.shields.io/github/v/release/codered/spore)]()
