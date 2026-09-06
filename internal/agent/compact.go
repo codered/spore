@@ -16,9 +16,9 @@ Keep decisions, file paths, names, numbers and open questions. Drop pleasantries
 Write at most 300 words of plain prose, no preamble.`
 
 // MaybeCompact summarises the older part of a session once its assembled size
-// passes context.compact_at of context.max_tokens. Original messages are never
-// deleted: only the summary boundary moves, and Snapshot skips rows at or
-// below it.
+// passes context.compact_at of context.max_tokens. It is the turn path's
+// entry point; /compact calls Compact directly, which is the only difference
+// between the two.
 func (a *Agent) MaybeCompact(ctx context.Context, sessionID string) error {
 	snap, err := a.Snapshot(ctx, sessionID)
 	if err != nil {
@@ -28,14 +28,29 @@ func (a *Agent) MaybeCompact(ctx context.Context, sessionID string) error {
 	if SnapshotTokens(snap, a.Cfg.Context) <= budget {
 		return nil
 	}
+	_, _, _, err = a.Compact(ctx, sessionID)
+	return err
+}
+
+// Compact folds everything outside the protected recent window into the
+// summary, whatever the session's size. Original messages are never deleted:
+// only the summary boundary moves, and Snapshot skips rows at or below it.
+// It reports how many messages were folded and the estimated size before and
+// after, which is what /compact shows.
+func (a *Agent) Compact(ctx context.Context, sessionID string) (folded, before, after int, err error) {
+	snap, err := a.Snapshot(ctx, sessionID)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	before = SnapshotTokens(snap, a.Cfg.Context)
 
 	rows, err := a.Store.Messages(ctx, sessionID)
 	if err != nil {
-		return err
+		return 0, before, before, err
 	}
 	_, through, err := a.Store.Summary(ctx, sessionID)
 	if err != nil {
-		return err
+		return 0, before, before, err
 	}
 
 	// live rows are those not already folded into the summary; they line up
@@ -47,7 +62,7 @@ func (a *Agent) MaybeCompact(ctx context.Context, sessionID string) error {
 		}
 	}
 	if len(live) <= a.Cfg.Context.KeepRecent {
-		return nil // nothing outside the protected window
+		return 0, before, before, nil // nothing outside the protected window
 	}
 	foldCount := len(live) - a.Cfg.Context.KeepRecent
 	cut := live[foldCount-1].Seq
@@ -78,7 +93,7 @@ func (a *Agent) MaybeCompact(ctx context.Context, sessionID string) error {
 	ref := a.Router.Model(router.SiteCompaction)
 	p, model, price, err := a.Registry.Resolve(ref)
 	if err != nil {
-		return err
+		return 0, before, before, err
 	}
 	_, span := sporetrace.StartLLM(ctx, router.SiteCompaction, ref)
 	ch, err := p.Stream(ctx, provider.Request{
@@ -93,7 +108,7 @@ func (a *Agent) MaybeCompact(ctx context.Context, sessionID string) error {
 	if err != nil {
 		span.RecordError(err)
 		span.End()
-		return fmt.Errorf("compaction provider %s: %w", ref, err)
+		return 0, before, before, fmt.Errorf("compaction provider %s: %w", ref, err)
 	}
 
 	var summary string
@@ -109,16 +124,26 @@ func (a *Agent) MaybeCompact(ctx context.Context, sessionID string) error {
 		case provider.EventError:
 			span.RecordError(ev.Err)
 			span.End()
-			return ev.Err
+			return 0, before, before, ev.Err
 		}
 	}
 	if strings.TrimSpace(summary) == "" {
 		err := fmt.Errorf("compaction produced an empty summary")
 		span.RecordError(err)
 		span.End()
-		return err
+		return 0, before, before, err
 	}
 	sporetrace.EndLLM(span, transcript.String(), summary, usage, price.Cost(usage))
 
-	return a.Store.SetSummary(ctx, sessionID, summary, cut)
+	if err := a.Store.SetSummary(ctx, sessionID, summary, cut); err != nil {
+		return 0, before, before, err
+	}
+
+	// Re-snapshot to compute the after size.
+	newSnap, err := a.Snapshot(ctx, sessionID)
+	if err != nil {
+		return foldCount, before, before, err
+	}
+	after = SnapshotTokens(newSnap, a.Cfg.Context)
+	return foldCount, before, after, nil
 }

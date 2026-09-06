@@ -30,6 +30,19 @@ func seedMessages(t *testing.T, st *store.Store, sid string, n int) {
 	}
 }
 
+func compactFixture(t *testing.T, messages int) (*Agent, string) {
+	t.Helper()
+	script := provider.NewScript(provider.ScriptTurn{Text: "SUMMARY: conversation summary"})
+	a, st := harness(t, script, nil)
+	a.Cfg.Context.MaxTokens = 100_000
+	a.Cfg.Context.CompactAt = 0.75
+	a.Cfg.Context.KeepRecent = 12
+	ctx := context.Background()
+	sid, _ := st.CreateSession(ctx, "t", "")
+	seedMessages(t, st, sid, messages)
+	return a, sid
+}
+
 func TestMaybeCompactSummarisesAndShrinksContext(t *testing.T) {
 	ctx := context.Background()
 	script := provider.NewScript(
@@ -170,5 +183,44 @@ func TestMaybeCompactErrorEndsLLMSpan(t *testing.T) {
 	}
 	if llmSpans != 1 {
 		t.Errorf("expected exactly 1 ended llm span after a compaction provider error, got %d", llmSpans)
+	}
+}
+
+func TestCompactFoldsBelowTheThreshold(t *testing.T) {
+	// A session far below compact_at: MaybeCompact must do nothing, and
+	// Compact must fold anyway. That difference is the whole command.
+	a, id := compactFixture(t, 30) // 30 messages, tiny bodies
+	if err := a.MaybeCompact(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if _, through, _ := a.Store.Summary(context.Background(), id); through != 0 {
+		t.Fatal("MaybeCompact must not fold a session below the threshold")
+	}
+	folded, before, after, err := a.Compact(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if folded != 30-a.Cfg.Context.KeepRecent {
+		t.Fatalf("want %d folded, got %d", 30-a.Cfg.Context.KeepRecent, folded)
+	}
+	if after >= before {
+		t.Fatalf("compaction must shrink the estimate: %d -> %d", before, after)
+	}
+	if _, through, _ := a.Store.Summary(context.Background(), id); through == 0 {
+		t.Fatal("the summary boundary must have moved")
+	}
+}
+
+func TestCompactWithNothingOutsideTheProtectedWindow(t *testing.T) {
+	a, id := compactFixture(t, 3) // fewer than KeepRecent
+	folded, before, after, err := a.Compact(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if folded != 0 {
+		t.Fatalf("nothing should fold, got %d", folded)
+	}
+	if before != after {
+		t.Fatal("a no-op compaction must not change the estimate")
 	}
 }

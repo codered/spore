@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -318,8 +319,10 @@ func (s *Store) SetSummary(ctx context.Context, sessionID, summary string, throu
 	if err := deleteIndex(ctx, tx, kindSummary, sessionID); err != nil {
 		return err
 	}
-	if err := insertIndex(ctx, tx, kindSummary, sessionID, sessionID, now, summary); err != nil {
-		return err
+	if strings.TrimSpace(summary) != "" {
+		if err := insertIndex(ctx, tx, kindSummary, sessionID, sessionID, now, summary); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
