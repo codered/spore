@@ -402,8 +402,8 @@ func Default() *Config {
 			Default:         "ask",
 			ApprovalTimeout: "5m",
 			MaxOutput:       30_000,
-			Allow:           []string{"fs_read", "fs_list", "fs_glob", "fs_grep", "web_*", "schedule_list", "recall_search"},
-			Ask:             []string{"fs_write", "fs_edit", "shell_exec", "schedule_create", "schedule_cancel", "mcp__*", "memory"},
+			Allow:           []string{"fs_read", "fs_list", "fs_glob", "fs_grep", "web_*", "schedule_list", "recall_search", "skill_load"},
+			Ask:             []string{"fs_write", "fs_edit", "shell_exec", "schedule_create", "schedule_cancel", "mcp__*", "memory", "skill_install"},
 			// The remote profile denies MCP outright: a Discord user is not
 			// the operator who declared the server, and an MCP server is
 			// reached through credentials that operator supplied. It denies
@@ -414,7 +414,7 @@ func Default() *Config {
 			// deliberately NOT part of baselineDeny, which is reserved for the
 			// rules no approval may ever talk past.
 			Profiles: map[string]ProfilePolicy{
-				"remote": {Deny: []string{"mcp__*", "memory"}},
+				"remote": {Deny: []string{"mcp__*", "memory", "skill_install"}},
 			},
 		},
 		Web:    WebConfig{SearchProvider: "brave", UserAgent: "spore/0.1"},
