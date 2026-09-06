@@ -35,6 +35,45 @@ type Config struct {
 	Bridge    BridgeConfig              `toml:"bridge"`
 	MCP       MCPConfig                 `toml:"mcp"`
 	Recall    RecallConfig              `toml:"recall"`
+	Skills    SkillsConfig              `toml:"skills"`
+}
+
+// SkillsConfig chooses where skills are read from and installed to.
+type SkillsConfig struct {
+	// Scope is "global" -- one directory for every session, the default --
+	// or "workspace", a directory under each session's own root.
+	//
+	// Workspace scope is opt-in for a reason: a session rooted at a cloned
+	// repository would load text the operator did not write into its prompt
+	// index, and spore's policy model assumes the prompt is yours.
+	Scope string `toml:"scope"`
+	// Dir overrides the global directory. It is ignored under workspace
+	// scope, where the session's root decides.
+	Dir string `toml:"dir"`
+}
+
+// Skills scope names.
+const (
+	SkillsGlobal    = "global"
+	SkillsWorkspace = "workspace"
+)
+
+// SkillsDir is the skills directory for a session rooted at workspace. Under
+// the default global scope every session shares one directory and workspace
+// is ignored. Under workspace scope a session with no root of its own -- the
+// web UI, the scheduler, a bridge -- has no skills, reported as an empty path
+// rather than as an error.
+func (c *Config) SkillsDir(workspace string) string {
+	if c.Skills.Scope == SkillsWorkspace {
+		if workspace == "" {
+			return ""
+		}
+		return filepath.Join(workspace, ".spore", "skills")
+	}
+	if c.Skills.Dir != "" {
+		return c.Skills.Dir
+	}
+	return filepath.Join(c.DataDir, "skills")
 }
 
 // Recall backend names. sqlitefts ships in every build and needs nothing;
@@ -82,6 +121,11 @@ type ContextConfig struct {
 	// the budget still appear, as one name-and-description line each, so the
 	// model always knows they exist.
 	FactBudget int `toml:"fact_budget"`
+	// SkillBudget caps the estimated tokens of the skills index, which
+	// carries one name-and-description line per skill. Skills past the
+	// budget are dropped from the index with the count stated, so a long
+	// list never crowds out the conversation.
+	SkillBudget int `toml:"skill_budget"`
 }
 
 type TraceConfig struct {
@@ -349,7 +393,8 @@ func Default() *Config {
 			"Never name or speculate about the underlying model or provider that powers you.",
 		DataDir:   filepath.Join(home, ".spore"),
 		Providers: map[string]ProviderConfig{},
-		Context:   ContextConfig{MaxTokens: 180_000, CompactAt: 0.75, KeepRecent: 12, FactBudget: 2000},
+		Context:   ContextConfig{MaxTokens: 180_000, CompactAt: 0.75, KeepRecent: 12, FactBudget: 2000, SkillBudget: 500},
+		Skills:    SkillsConfig{Scope: SkillsGlobal},
 		Trace:     TraceConfig{Endpoint: "http://localhost:6006/v1/traces", SampleRate: 1.0},
 		Recall:    RecallConfig{Backend: RecallSQLiteFTS},
 		Policy: PolicyConfig{
@@ -452,6 +497,15 @@ func Load(path string) (*Config, error) {
 	if cfg.Context.KeepRecent == 0 {
 		cfg.Context.KeepRecent = Default().Context.KeepRecent
 	}
+	if cfg.Context.SkillBudget == 0 {
+		cfg.Context.SkillBudget = Default().Context.SkillBudget
+	}
+	if cfg.Skills.Scope == "" {
+		cfg.Skills.Scope = Default().Skills.Scope
+	}
+	if expanded, err := expandHome(cfg.Skills.Dir); err == nil {
+		cfg.Skills.Dir = expanded
+	}
 	d := Default()
 	if cfg.Policy.Workspace == "" {
 		cfg.Policy.Workspace = d.Policy.Workspace
@@ -549,6 +603,14 @@ func (c *Config) Validate() error {
 	}
 	if c.Context.FactBudget < 0 {
 		return fmt.Errorf("context.fact_budget must not be negative")
+	}
+	if c.Context.SkillBudget < 0 {
+		return fmt.Errorf("context.skill_budget must not be negative")
+	}
+	switch c.Skills.Scope {
+	case "", SkillsGlobal, SkillsWorkspace:
+	default:
+		return fmt.Errorf("skills.scope must be %s or %s, got %q", SkillsGlobal, SkillsWorkspace, c.Skills.Scope)
 	}
 	switch c.Policy.Default {
 	case "allow", "ask", "deny":

@@ -541,3 +541,84 @@ func TestProfileWorkspaceExpandsHome(t *testing.T) {
 		t.Fatalf("remote workspace = %q, want %q", got, filepath.Join(home, "shared"))
 	}
 }
+
+func TestSkillsDirGlobalIgnoresWorkspace(t *testing.T) {
+	c := Default()
+	c.DataDir = "/data"
+	if got := c.SkillsDir("/some/project"); got != "/data/skills" {
+		t.Fatalf("global scope must ignore the session workspace, got %q", got)
+	}
+	if got := c.SkillsDir(""); got != "/data/skills" {
+		t.Fatalf("global scope needs no workspace, got %q", got)
+	}
+}
+
+func TestSkillsDirGlobalHonoursExplicitDir(t *testing.T) {
+	c := Default()
+	c.DataDir = "/data"
+	c.Skills.Dir = "/elsewhere/skills"
+	if got := c.SkillsDir("/some/project"); got != "/elsewhere/skills" {
+		t.Fatalf("an explicit dir must win, got %q", got)
+	}
+}
+
+func TestSkillsDirWorkspaceScope(t *testing.T) {
+	c := Default()
+	c.DataDir = "/data"
+	c.Skills.Scope = "workspace"
+	if got := c.SkillsDir("/some/project"); got != filepath.Join("/some/project", ".spore", "skills") {
+		t.Fatalf("workspace scope must root at the session, got %q", got)
+	}
+	if got := c.SkillsDir(""); got != "" {
+		t.Fatalf("a session with no root has no skills under workspace scope, got %q", got)
+	}
+	c.Skills.Dir = "/elsewhere/skills"
+	if got := c.SkillsDir("/some/project"); got != filepath.Join("/some/project", ".spore", "skills") {
+		t.Fatalf("dir is meaningless under workspace scope, got %q", got)
+	}
+}
+
+func TestValidateRejectsUnknownSkillsScope(t *testing.T) {
+	c := Default()
+	c.Skills.Scope = "everywhere"
+	if err := c.Validate(); err == nil {
+		t.Fatal("an unknown skills scope must be rejected")
+	}
+}
+
+func TestValidateRejectsNegativeSkillBudget(t *testing.T) {
+	c := Default()
+	c.Context.SkillBudget = -1
+	if err := c.Validate(); err == nil {
+		t.Fatal("a negative skill budget must be rejected")
+	}
+}
+
+func TestDefaultSkills(t *testing.T) {
+	d := Default()
+	if d.Context.SkillBudget != 500 {
+		t.Fatalf("want a default skill budget of 500, got %d", d.Context.SkillBudget)
+	}
+	if d.Skills.Scope != "global" {
+		t.Fatalf("skills must be global by default, got %q", d.Skills.Scope)
+	}
+}
+
+func TestLoadExpandsSkillsDir(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	body := "default_model = \"anthropic/claude-opus-5\"\n\n[skills]\ndir = \"~/my-skills\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.SkillsDir(""); got != filepath.Join(home, "my-skills") {
+		t.Fatalf("skills.dir = %q, want the expanded path", got)
+	}
+}
