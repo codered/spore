@@ -24,12 +24,14 @@ import (
 	"github.com/codered/spore/internal/recall/sqlitefts"
 	weaviaterecall "github.com/codered/spore/internal/recall/weaviate"
 	"github.com/codered/spore/internal/router"
+	skillfiles "github.com/codered/spore/internal/skill"
 	"github.com/codered/spore/internal/store"
 	"github.com/codered/spore/internal/tool"
 	"github.com/codered/spore/internal/tool/fs"
 	"github.com/codered/spore/internal/tool/mem"
 	"github.com/codered/spore/internal/tool/schedule"
 	"github.com/codered/spore/internal/tool/shell"
+	"github.com/codered/spore/internal/tool/skill"
 	"github.com/codered/spore/internal/tool/web"
 	"github.com/codered/spore/internal/workspace"
 )
@@ -48,6 +50,8 @@ func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recall
 	tools = append(tools, web.New(cfg.Web, cfg.Policy.MaxOutput)...)
 	tools = append(tools, schedule.New(st)...)
 	tools = append(tools, mem.NewRecallSearch(recallBackend), mem.NewMemory(facts, st))
+	skillsCache := skillfiles.NewCaches()
+	tools = append(tools, skill.New(cfg, skillsCache)...)
 	for _, t := range tools {
 		if err := reg.Register(t); err != nil {
 			return nil, nil, err
