@@ -283,7 +283,23 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 // for the tool, bounded only by the baseline deny list. Rather than return
 // something that reads like a narrow rule and behaves like a wide one, this
 // reports false and callers suppress the option.
+// nonLearnable are tools whose approval must never widen into a standing
+// rule, whatever their arguments look like. A skill written once shapes every
+// later turn in every session, so each install is approved on its own: the
+// permission is granted for one write and is gone afterwards.
+//
+// These would not produce a pattern today either -- their arguments are not
+// path-shaped -- but resting a security property on that accident is how it
+// gets lost to a later argument rename.
+var nonLearnable = map[string]bool{
+	"skill_install": true,
+	"memory":        true,
+}
+
 func PatternFor(c Call) (string, bool) {
+	if nonLearnable[c.Tool] {
+		return "", false
+	}
 	paths := argPaths(c)
 	if len(paths) != 1 {
 		return "", false

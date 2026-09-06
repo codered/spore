@@ -525,4 +525,58 @@ func TestPatternForReportsDegradation(t *testing.T) {
 			}
 		})
 	}
+
+}
+
+// TestSkillInstallIsNeverLearnable checks that PatternFor never returns a
+// pattern scope for skill_install, even when its arguments look path-shaped.
+func TestSkillInstallIsNeverLearnable(t *testing.T) {
+	cfg := config.PolicyConfig{
+		Workspace:         "/ws",
+		Default:           "ask",
+		ApprovalTimeout:   "5m",
+		Allow:             []string{"skill_load"},
+		Ask:               []string{"skill_install"},
+	}
+	_, err := NewEngine(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pattern, learnable := PatternFor(Call{
+		Tool: "skill_install",
+		Args: json.RawMessage(`{"path":"/tmp/foo"}`),
+	})
+	if learnable {
+		t.Fatalf("skill_install must never offer a pattern scope, even with a path-shaped argument")
+	}
+	if pattern != "" {
+		t.Fatalf("expected empty pattern for skill_install, got %q", pattern)
+	}
+}
+
+// TestSkillInstallDeniedUnderRemote checks that the remote profile denies
+// skill_install outright.
+func TestSkillInstallDeniedUnderRemote(t *testing.T) {
+	cfg := config.PolicyConfig{
+		Workspace:         "/ws",
+		Default:           "ask",
+		ApprovalTimeout:   "5m",
+		Allow:             []string{"skill_load"},
+		Ask:               []string{"skill_install"},
+		Profiles:          map[string]config.ProfilePolicy{
+			"remote": {Deny: []string{"skill_install"}},
+		},
+	}
+	eng, err := NewEngine(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := eng.Evaluate(Session{
+		ID:        "s",
+		Profile:   ProfileRemote,
+		Workspace: "/ws",
+	}, Call{Tool: "skill_install", Args: json.RawMessage(`{"name":"x"}`)})
+	if res.Decision != DecisionDeny {
+		t.Fatalf("a bridge session must not install a skill, got %v", res.Decision)
+	}
 }
