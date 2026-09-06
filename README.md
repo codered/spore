@@ -1,61 +1,151 @@
 # spore
 
-A personal AI agent in a single Go binary: your providers, your tools, your
-policy. Built to run as an always-on daemon on your own machine.
+> A personal AI agent in a single Go binary: your providers, your tools, your policy.
 
-Status: **Stage 6 (per-session workspace)** — everything in Plans 1–5, plus the
-workspace as a property of a session rather than one value per daemon. `spore
-chat` and `spore once` root a session at the directory you ran them in, so two
-sessions in two projects each see their own files. A creator with no directory
-of its own — the web UI, the scheduler, the Discord bridge — gets
-`~/.spore/sessions/<id>`, created on that session's first turn. `[policy]
-workspace` is the ceiling a new session's root is checked against, and a call
-whose session has no workspace is refused rather than quietly judged against
-that ceiling.
+[![Go](https://img.shields.io/badge/go-1.26+-blue)](https://golang.org)
+[![Build](https://img.shields.io/github/actions/workflows/status/codered/spore/main.svg?branch=master)]()
+[![Release](https://img.shields.io/github/v/release/codered/spore)]()
+[![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-green.svg)](LICENSE)
 
-## Build
+**spore** runs as an always-on daemon on your own machine — a personal AI agent
+that uses **your** providers, **your** tools, and enforces **your** policy.
+Everything stays local; secrets are interpolated from the environment and never
+stored in config files.
 
-Every build and test needs the FTS5 tag:
+## Quick Start
 
-    make build    # go build -tags sqlite_fts5 -o spore ./cmd/spore
-    make test
-    make vet
+```bash
+# Build & install to ~/.local/bin (or set PREFIX)
+make build && make install
 
-## Configure
+# Point at your model provider
+cat > ~/.spore/config.toml << 'EOF'
+default_model = "anthropic/claude-opus-5"
 
-spore reads `~/.spore/config.toml` and keeps everything else in
-`~/.spore/spore.db`. Secrets are interpolated from the environment with
-`${VAR}` and never stored in the file.
+[providers.anthropic]
+kind      = "anthropic"
+api_key   = "${ANTHROPIC_API_KEY}"
+price_in  = 5.0
+price_out = 25.0
+EOF
 
-    default_model = "anthropic/claude-opus-5"
-    show_cost     = false   # true appends " · $0.0038" to each turn footer
+# One-shot query
+spore once "what is this repo?"
 
-    [providers.anthropic]
-    kind      = "anthropic"
-    api_key   = "${ANTHROPIC_API_KEY}"
-    price_in  = 5.0
-    price_out = 25.0
+# Interactive chat (runs a daemon automatically)
+spore chat
+```
 
-    [providers.ollama]
-    kind     = "openai"
-    base_url = "http://localhost:11434/v1"
+See [Installation](#installation) and [Configuration](#configure) for details.
 
-    [[route]]
-    when  = "compaction|title|classify"
-    model = "ollama/qwen3:8b"
+---
 
-Anthropic requests carry no workspace by default, so the API acts in the
-key's default workspace. An identity-linked key spanning several workspaces
-rejects that; spore then adopts the default workspace the API names in the
-response and retries. To pin one explicitly, set `workspace_id` on the
-provider (or export `ANTHROPIC_WORKSPACE_ID`) to the `wrkspc_...` value from
-the Console workspace URL.
+## Contents
 
-Routing rules match a **call site** — `chat`, `compaction`, `title`, or
-`classify` — so mechanical work runs on a cheap local model while
-conversation runs on the good one.
+- [Features](#features)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Chat interface](#the-chat-interface)
+  - [One-shot queries](#one-shot-queries)
+  - [Sessions](#sessions)
+  - [Scheduled jobs](#scheduled-jobs)
+  - [Discord bridge](#discord-bridge)
+- [Configuration](#configuration)
+  - [Providers & routing](#providers--routing)
+  - [Policy & tools](#policy--tools)
+  - [MCP servers](#mcp-servers)
+  - [Memory & recall](#memory--recall)
+  - [Semantic search](#semantic-search)
+  - [Tracing](#tracing)
+- [Daemon](#daemon)
+- [Web UI](#web-ui)
+- [Design](#design)
 
-## Discord
+---
+
+## Features
+
+| Feature | Description |
+| --- | --- |
+| **Multi-provider** | Anthropic, OpenAI-compatible (Ollama, etc.), with per-call routing |
+| **Policy engine** | Fine-grained allow/deny/ask rules; baseline deny is always enforced |
+| **Workspace ceiling** | Filesystem tools are confined to a configurable workspace tree |
+| **MCP hosting** | Declare MCP servers; their tools are offered to the model as `mcp__<server>__<tool>` |
+| **Discord bridge** | Drive spore from Discord with thread-per-session and approval buttons |
+| **Memory & recall** | Hand-written facts + keyword search (always on); optional Weaviate for semantic search |
+| **Tracing** | Optional OpenTelemetry spans via Phoenix UI (`spore trace setup`) |
+| **Scheduled jobs** | Cron-based or one-shot prompts that fire new sessions |
+| **Single binary** | No build step, no dependencies — just `go build` and you're in |
+
+---
+
+## Installation
+
+Every build needs the FTS5 tag:
+
+```bash
+make build    # go build -tags sqlite_fts5 -o spore ./cmd/spore
+make test
+make vet
+```
+
+`make install` puts the binary in `$(PREFIX)/bin` — `~/.local/bin` by default.
+
+---
+
+## Usage
+
+### One-shot queries
+
+```bash
+spore once "what is this repo?"
+```
+
+### Sessions
+
+```bash
+spore session list
+spore session show <id>
+```
+
+### The chat interface
+
+`spore chat` runs a full-screen-free interface: the prompt stays at the bottom,
+finished replies scroll away above it in your normal scrollback, and assistant
+prose is rendered as markdown.
+
+| Key | Action |
+| --- | --- |
+| `enter` | send |
+| `ctrl+j` / `alt+enter` | newline in the message |
+| `↑` / `↓` | previous and next message you sent |
+| `y` `n` `s` `p` | answer an approval: once, deny, this session, always |
+| `ctrl+c` | quit (a turn already running finishes in the daemon) |
+
+Messages typed while a turn is running are queued and sent when it ends.
+With stdin or stdout redirected, `spore chat` falls back to a plain
+line-at-a-time loop, so pipes and scripts behave as they always did.
+
+### Scheduled jobs
+
+A job is a prompt plus a schedule — a five-field cron expression (UTC) or an
+RFC3339 instant for a one-off. Each firing starts a **new** session, so a
+recurring job never grows one unbounded thread, and policy applies to it
+exactly as it does to a turn you typed — a job that trips an `ask` rule
+suspends and waits for you.
+
+```bash
+curl -s localhost:7777/api/jobs \
+  -d '{"spec":"0 9 * * 1-5","prompt":"summarise yesterday'\''s commits"}'
+```
+
+The model can manage jobs itself through `schedule_create`, `schedule_list`
+and `schedule_cancel`, which are in the default `ask` list.
+
+If the daemon was down when a job was due, it fires once on the next start.
+Missed runs are never backfilled.
+
+### Discord bridge
 
 spore can be driven from Discord. Create an application and bot at
 <https://discord.com/developers/applications>, enable the **Message Content**
@@ -64,13 +154,15 @@ server only you are in with the `bot` scope and the Send Messages, Create
 Public Threads, Send Messages in Threads, Read Message History and Embed Links
 permissions.
 
-    [bridge.discord]
-    enabled     = true
-    token       = "${DISCORD_BOT_TOKEN}"
-    guild_id    = "your server id"
-    channel_ids = ["the channel spore listens in"]
-    user_ids    = ["your user id"]
-    allow_dms   = true
+```toml
+[bridge.discord]
+enabled     = true
+token       = "${DISCORD_BOT_TOKEN}"
+guild_id    = "your server id"
+channel_ids = ["the channel spore listens in"]
+user_ids    = ["your user id"]
+allow_dms   = true
+```
 
 `guild_id`, `channel_ids` and `user_ids` are an allowlist, not a filter:
 anything not named is dropped without a reply. Turn on Discord's Developer
@@ -83,45 +175,65 @@ Approvals arrive as buttons.
 Discord sessions run under the `remote` trust profile, so you can hold them to
 a stricter ruleset than the local web UI:
 
-    [policy.profile.remote]
-    default = "ask"
-    allow   = ["fs_read", "fs_list", "fs_glob", "fs_grep"]
+```toml
+[policy.profile.remote]
+default = "ask"
+allow   = ["fs_read", "fs_list", "fs_glob", "fs_grep"]
+```
 
-## MCP servers
+---
 
-spore hosts MCP servers declared in its config and offers their tools to the
-model as `mcp__<server>__<tool>`.
+## Configuration
 
-    [[mcp.server]]
-    name      = "notion"
-    transport = "stdio"
-    command   = "npx"
-    args      = ["-y", "@notionhq/notion-mcp-server"]
-    env       = { NOTION_TOKEN = "${NOTION_TOKEN}" }
-    inherit   = ["HOME"]
+spore reads `~/.spore/config.toml` and keeps everything else in
+`~/.spore/spore.db`. Secrets are interpolated from the environment with
+`${VAR}` and never stored in the file.
 
-    [[mcp.server]]
-    name      = "docs"
-    transport = "http"
-    url       = "https://mcp.example.com/mcp"
+```toml
+default_model = "anthropic/claude-opus-5"
+show_cost     = false   # true appends " · $0.0038" to each turn footer
 
-Declaring a server is the authorization to run it, so keep the file to servers
-you trust. The child process gets only what you list: `env` verbatim, the
-names in `inherit`, and `PATH`. Your provider API keys are not visible to it.
-Its working directory is `policy.workspace` — the ceiling, not any one
-session's root. One MCP host process is shared by every session. Unlike
-the filesystem tools, MCP tool path arguments are not currently checked
-against the calling session's workspace.
+[providers.anthropic]
+kind      = "anthropic"
+api_key   = "${ANTHROPIC_API_KEY}"
+price_in  = 5.0
+price_out = 25.0
 
-Tool calls are subject to the same policy as everything else — `mcp__*` is
-asked by default, and denied outright for the `remote` trust profile, so a
-Discord user cannot reach your servers. A server that fails to start is logged
-and retried; its tools are simply absent until it comes back.
+[providers.ollama]
+kind     = "openai"
+base_url = "http://localhost:11434/v1"
 
-Run `spore mcp list` to see what each server contributed, and why a tool is
-missing.
+[[route]]
+when  = "compaction|title|classify"
+model = "ollama/qwen3:8b"
+```
 
-## Tools and policy
+Anthropic requests carry no workspace by default, so the API acts in the
+key's default workspace. An identity-linked key spanning several workspaces
+rejects that; spore then adopts the default workspace the API names in the
+response and retries. To pin one explicitly, set `workspace_id` on the
+provider (or export `ANTHROPIC_WORKSPACE_ID`) to the `wrkspc_...` value from
+the Console workspace URL.
+
+Routing rules match a **call site** — `chat`, `compaction`, `title`, or
+`classify` — so mechanical work runs on a cheap local model while
+conversation runs on the good one.
+
+### Providers & routing
+
+Declare named providers and route call sites to specific ones:
+
+```toml
+[providers.anthropic]
+kind      = "anthropic"
+api_key   = "${ANTHROPIC_API_KEY}"
+
+[[route]]
+when  = "compaction|title|classify"
+model = "ollama/qwen3:8b"
+```
+
+### Policy & tools
 
 spore ships six filesystem tools (`fs_read`, `fs_write`, `fs_edit`,
 `fs_list`, `fs_glob`, `fs_grep`), `shell_exec`, and `web_fetch` —
@@ -129,15 +241,17 @@ plus `web_search` when a search key is configured.
 
 Every call is checked before it runs:
 
-    [policy]
-    workspace = "~/dev"       # filesystem tools may not leave this tree
-    default   = "ask"
-    allow     = ["fs_read", "fs_list", "fs_glob", "fs_grep", "web_*"]
-    ask       = ["fs_write", "fs_edit", "shell_exec", "mcp__*"]
-    deny      = ["shell_exec(matches terraform destroy)"]
+```toml
+[policy]
+workspace = "~/dev"       # filesystem tools may not leave this tree
+default   = "ask"
+allow     = ["fs_read", "fs_list", "fs_glob", "fs_grep", "web_*"]
+ask       = ["fs_write", "fs_edit", "shell_exec", "mcp__*"]
+deny      = ["shell_exec(matches terraform destroy)"]
 
-    [web]
-    brave_api_key = "${BRAVE_API_KEY}"
+[web]
+brave_api_key = "${BRAVE_API_KEY}"
+```
 
 `[policy] workspace` is a **ceiling**, not a working directory. Each session
 records the directory it is rooted at: `spore chat` and `spore once` send the
@@ -158,7 +272,9 @@ answer can override it.
 
 An `ask` decision suspends the turn and prompts:
 
-    allow? [y]es once  [n]o  [s]ession  [p]attern
+```
+allow? [y]es once  [n]o  [s]ession  [p]attern
+```
 
 `s` remembers the answer for the rest of the session; `p` writes a rule into
 a marked block at the end of `config.toml`, which you can edit or delete.
@@ -166,9 +282,47 @@ An approval nobody answers within `approval_timeout` (default 5m) is denied.
 
 Check a ruleset without running anything:
 
-    spore policy check fs_write '{"path":"/etc/hosts"}'
+```bash
+spore policy check fs_write '{"path":"/etc/hosts"}'
+```
 
-## Memory and recall
+### MCP servers
+
+spore hosts MCP servers declared in its config and offers their tools to the
+model as `mcp__<server>__<tool>`.
+
+```toml
+[[mcp.server]]
+name      = "notion"
+transport = "stdio"
+command   = "npx"
+args      = ["-y", "@notionhq/notion-mcp-server"]
+env       = { NOTION_TOKEN = "${NOTION_TOKEN}" }
+inherit   = ["HOME"]
+
+[[mcp.server]]
+name      = "docs"
+transport = "http"
+url       = "https://mcp.example.com/mcp"
+```
+
+Declaring a server is the authorization to run it, so keep the file to servers
+you trust. The child process gets only what you list: `env` verbatim, the
+names in `inherit`, and `PATH`. Your provider API keys are not visible to it.
+Its working directory is `policy.workspace` — the ceiling, not any one
+session's root. One MCP host process is shared by every session. Unlike
+the filesystem tools, MCP tool path arguments are not currently checked
+against the calling session's workspace.
+
+Tool calls are subject to the same policy as everything else — `mcp__*` is
+asked by default, and denied outright for the `remote` trust profile, so a
+Discord user cannot reach your servers. A server that fails to start is logged
+and retried; its tools are simply absent until it comes back.
+
+Run `spore mcp list` to see what each server contributed, and why a tool is
+missing.
+
+### Memory & recall
 
 spore keeps two kinds of long-term memory: **facts**, hand-written notes about
 you and your projects, and a **keyword index** over everything spore has
@@ -178,13 +332,15 @@ Facts live one-per-file under `<data_dir>/memory/*.md`, a plain Markdown file
 with YAML-shaped frontmatter for three fixed keys, parsed by a small
 hand-written reader rather than a general YAML library:
 
-    ---
-    name: prefers-tabs
-    description: How the user wants Go code formatted
-    type: user
-    ---
+```toml
+---
+name: prefers-tabs
+description: How the user wants Go code formatted
+type: user
+---
 
-    Gofmt defaults, tabs, no line-length limit.
+Gofmt defaults, tabs, no line-length limit.
+```
 
 `name`, `description` and `type` are required; `type` is one of `user`,
 `feedback`, `project` or `reference`. The file is the source of truth — spore
@@ -198,8 +354,10 @@ push the section over budget is not dropped: it falls back to a one-line
 `name: description` entry, and the model can pull the full body back with
 `recall_search`.
 
-    [context]
-    fact_budget = 2000
+```toml
+[context]
+fact_budget = 2000
+```
 
 `memory` (write and delete a fact — there is no read operation, since every
 fact is already inlined into the prompt) is `ask` by default, and denied
@@ -212,32 +370,36 @@ own messages and summaries, with facts excluded entirely.
 
 These CLI verbs give you, the operator, the same index unscoped:
 
-    spore recall search <query>     # search messages, summaries and facts
-    spore recall status             # backend name, indexed counts, degradation
-    spore recall reindex            # rebuild from spore.db and the fact files
-    spore recall setup              # provision the vector store and backfill it
-    spore recall teardown           # stop it and return to keyword search
+```bash
+spore recall search <query>     # search messages, summaries and facts
+spore recall status             # backend name, indexed counts, degradation
+spore recall reindex            # rebuild from spore.db and the fact files
+spore recall setup              # provision the vector store and backfill it
+spore recall teardown           # stop it and return to keyword search
 
-    $ spore recall search backoff
-    message  482  2026-08-30
-        ...tried exponential backoff and jitter before...
+$ spore recall search backoff
+message  482  2026-08-30
+    ...tried exponential backoff and jitter before...
 
-    $ spore recall status
-    backend: sqlitefts
-    KIND     INDEXED
-    fact     3
-    message  482
-    summary  11
+$ spore recall status
+backend: sqlitefts
+KIND     INDEXED
+fact     3
+message  482
+summary  11
 
-    $ spore recall reindex
-    reindexed 482 messages and summaries, 3 facts
+$ spore recall reindex
+reindexed 482 messages and summaries, 3 facts
+```
 
-### Semantic recall
+#### Semantic search
 
 Keyword search (SQLite FTS5) needs nothing and is always on. For semantic
 search:
 
-    spore recall setup
+```bash
+spore recall setup
+```
 
 That writes `~/.spore/weaviate/compose.yml`, starts Weaviate and a small
 embedding container on loopback, backfills your history, and switches
@@ -248,16 +410,20 @@ the alternative would be spore holding a key.
 
 Already run Weaviate yourself? Set `recall.url` and skip setup entirely.
 
-    [recall]
-    backend = "weaviate"
-    url = "http://box.local:8080"
+```toml
+[recall]
+backend = "weaviate"
+url = "http://box.local:8080"
+```
 
 Weaviate being down is never fatal. Search falls back to the keyword index
 and the turn continues:
 
-    $ spore recall status
-    backend: sqlitefts
-    degraded: weaviate at 127.0.0.1:8080: dial tcp: connect: connection refused
+```bash
+$ spore recall status
+backend: sqlitefts
+degraded: weaviate at 127.0.0.1:8080: dial tcp: connect: connection refused
+```
 
 The fallback needs no repair afterwards, because the keyword index was never
 behind: it is written inside the same transaction as the message it indexes.
@@ -272,7 +438,9 @@ search, keeping the data volume unless you pass `--purge`.
 
 Off by default. To see turns, LLM calls, tool calls and retrievals as spans:
 
-    spore trace setup
+```bash
+spore trace setup
+```
 
 This writes `~/.spore/phoenix/compose.yml`, starts Phoenix on loopback, waits
 for it, and sets `trace.enabled = true`. Restart the daemon afterwards. The UI
@@ -290,11 +458,15 @@ span shapes, token counts and costs while dropping the text.
 If you already run a collector, point `trace.endpoint` at it and skip setup
 entirely. Export failures never block a turn.
 
-## Running as a daemon
+---
 
-    spore serve                  # HTTP API, web UI and scheduler on 127.0.0.1:7777
-    spore serve --status         # is one running?
-    spore serve --stop           # stop it
+## Daemon
+
+```bash
+spore serve                  # HTTP API, web UI and scheduler on 127.0.0.1:7777
+spore serve --status         # is one running?
+spore serve --stop           # stop it
+```
 
 `spore chat` and `spore once` are thin clients against that API — the same
 path the web UI uses. If nothing is listening they start a daemon themselves
@@ -305,9 +477,13 @@ not answered yet survives closing the terminal. Its log is at
 The daemon binds loopback and has no authentication: spore serves one person
 on one machine. A non-loopback `addr` is rejected at load.
 
-    [daemon]
-    addr = "127.0.0.1:7777"
-    tick_seconds = 30
+```toml
+[daemon]
+addr = "127.0.0.1:7777"
+tick_seconds = 30
+```
+
+---
 
 ## Web UI
 
@@ -315,49 +491,7 @@ on one machine. A non-loopback `addr` is rejected at load.
 calls, inline approval buttons, and the model and cost for each turn. It is
 served out of the binary; there is no build step and nothing to install.
 
-## Scheduled jobs
-
-A job is a prompt plus a schedule: a five-field cron expression (UTC) or an
-RFC3339 instant for a one-off. Each firing starts a **new** session, so a
-recurring job never grows one unbounded thread, and policy applies to it
-exactly as it does to a turn you typed — a job that trips an `ask` rule
-suspends and waits for you.
-
-    curl -s localhost:7777/api/jobs \
-      -d '{"spec":"0 9 * * 1-5","prompt":"summarise yesterday'\''s commits"}'
-
-The model can manage jobs itself through `schedule_create`, `schedule_list`
-and `schedule_cancel`, which are in the default `ask` list.
-
-If the daemon was down when a job was due, it fires once on the next start.
-Missed runs are never backfilled.
-
-## Use
-
-    spore once "what is this repo?"
-    spore chat
-    spore session list
-    spore session show <id>
-
-`make install` puts the binary in `$(PREFIX)/bin`, `~/.local/bin` by default.
-
-### The chat interface
-
-On a terminal, `spore chat` runs a full-screen-free interface: the prompt
-stays at the bottom, finished replies scroll away above it in your normal
-scrollback, and assistant prose is rendered as markdown.
-
-| key | does |
-| --- | --- |
-| `enter` | send |
-| `ctrl+j` / `alt+enter` | newline in the message |
-| `↑` / `↓` | previous and next message you sent |
-| `y` `n` `s` `p` | answer an approval: once, deny, this session, always |
-| `ctrl+c` | quit (a turn already running finishes in the daemon) |
-
-Messages typed while a turn is running are queued and sent when it ends.
-With stdin or stdout redirected, `spore chat` falls back to a plain
-line-at-a-time loop, so pipes and scripts behave as they always did.
+---
 
 ## Design
 
