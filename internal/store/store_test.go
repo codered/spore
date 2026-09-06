@@ -71,6 +71,29 @@ func TestAppendAndReadMessagesInOrder(t *testing.T) {
 		t.Errorf("round-trip lost fields: %+v", msgs[1])
 	}
 }
+func TestSetSummaryThroughMovesTheBoundary(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	id, err := s.CreateSession(ctx, "boundary", "")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := s.SetSummaryThrough(ctx, id, 12); err != nil {
+		t.Fatalf("SetSummaryThrough: %v", err)
+	}
+	text, through, err := s.Summary(ctx, id)
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if through != 12 {
+		t.Errorf("summary boundary %d, want 12", through)
+	}
+	if text != "" {
+		t.Errorf("summary text %q; SetSummaryThrough must not write text", text)
+	}
+}
+
 
 func TestSummaryRoundTripAndSessionListing(t *testing.T) {
 	ctx := context.Background()

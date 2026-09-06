@@ -208,6 +208,29 @@ func TestPatchSessionReRoots(t *testing.T) {
 	}
 }
 
+func TestPatchSessionMovesSummaryBoundary(t *testing.T) {
+	srv, ts := newTestServer(t)
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+
+	res := patchJSON(t, ts.URL+"/api/sessions/"+created.ID,
+		map[string]int{"summary_through": 8})
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH summary_through: status = %d, want 200", res.StatusCode)
+	}
+	text, through, err := srv.store.Summary(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	if through != 8 {
+		t.Errorf("summary boundary %d, want 8", through)
+	}
+	if text != "" {
+		t.Errorf("summary text %q; boundary move must not write text", text)
+	}
+}
+
 // spore allocated the directory, so spore creates it -- on the first turn,
 // not at creation.
 func TestFirstTurnCreatesAnAllocatedSessionDirectory(t *testing.T) {
