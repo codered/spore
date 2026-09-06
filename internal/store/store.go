@@ -324,6 +324,19 @@ func (s *Store) SetSummary(ctx context.Context, sessionID, summary string, throu
 	return tx.Commit()
 }
 
+// SetSummaryThrough moves the summary boundary without writing summary text.
+// It is narrower than SetSummary: the caller adds no summary row, only moves
+// the cut point, which is enough for /clear.
+func (s *Store) SetSummaryThrough(ctx context.Context, sessionID string, throughSeq int) error {
+	now := nowString()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO summaries (session_id, text, through_seq, created_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(session_id) DO UPDATE SET through_seq = excluded.through_seq, created_at = excluded.created_at`,
+		sessionID, "", throughSeq, now)
+	return err
+}
+
+// Summary returns ("", 0, nil) when the session has never been compacted.
 // Summary returns ("", 0, nil) when the session has never been compacted.
 func (s *Store) Summary(ctx context.Context, sessionID string) (string, int, error) {
 	var text string
