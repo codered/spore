@@ -3,9 +3,10 @@ package main
 import (
 	"fmt"
 	"strings"
-	"time"
+	"math"
 
 	"context"
+	"time"
 	"strconv"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -92,6 +93,7 @@ type chatUI struct {
 	draft   string
 	// slashHandler runs slash commands; nil when no client context is available.
 	slashHandler func(input string) tea.Cmd
+	slashHint  string
 
 	// fatal is the error the program exits with, read by the caller once the
 	// program has stopped.
@@ -505,6 +507,9 @@ func (m *chatUI) View() string {
 }
 
 func (m *chatUI) hint() string {
+	if val := m.ta.Value(); strings.HasPrefix(val, "/") {
+		return m.renderSlashHint(val)
+	}
 	parts := []string{
 		styKey.Render("enter") + styMuted.Render(" send"),
 		styKey.Render("ctrl+j") + styMuted.Render(" newline"),
@@ -516,6 +521,35 @@ func (m *chatUI) hint() string {
 		line += styMuted.Render(fmt.Sprintf("  ·  %d queued", n))
 	}
 	return line
+}
+
+// slashHint shows available slash commands based on what the user has typed.
+func (m *chatUI) renderSlashHint(val string) string {
+	parts := []string{
+		styKey.Render("enter") + styMuted.Render(" send"),
+	}
+	cmds := []string{"clear", "compact", "context", "usage"}
+	for _, cmd := range cmds {
+		if strings.HasPrefix(cmd, val[1:]) || val[1:] == "" {
+			parts = append(parts, styKey.Render("/"+cmd) + styMuted.Render(" "+slashDesc(cmd)))
+		}
+	}
+	return "  " + strings.Join(parts, styMuted.Render("  ·  "))
+}
+
+func slashDesc(cmd string) string {
+	switch cmd {
+	case "clear":
+		return "clear conversation"
+	case "compact":
+		return "compact summary"
+	case "context":
+		return "show context tokens"
+	case "usage":
+		return "show usage stats"
+	default:
+		return ""
+	}
 }
 
 func (m *chatUI) approvalView() string {
@@ -554,7 +588,7 @@ func (m *chatUI) handleClear(ctx context.Context, c *client, sessionID string) t
 	return tea.Sequence(
 		m.flush(styMuted.Render("  · clearing…")),
 		func() tea.Msg {
-			if err := c.setSummaryThrough(ctx, sessionID, 0); err != nil {
+			if err := c.setSummaryThrough(ctx, sessionID, math.MaxInt32); err != nil {
 				return slashErrMsg{err}
 			}
 			return slashDoneMsg{"cleared"}
