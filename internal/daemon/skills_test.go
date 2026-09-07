@@ -49,13 +49,31 @@ func TestSkillsEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A loaded skill has both the skill_load tool_use and its successful
+	// tool_result. A call without a result was interrupted and must not be
+	// reported as loaded.
 	blocks := []provider.Block{
 		{Type: provider.BlockToolUse, ID: "call_1", Name: "skill_load",
 			Input: json.RawMessage(`{"name":"alpha"}`)},
+		{Type: provider.BlockToolResult, ID: "call_1", Content: "# alpha\n\ndo alpha things"},
 	}
 	raw, _ := json.Marshal(blocks)
 	if _, err := s.store.AppendMessage(ctx, store.Message{
 		SessionID: sid, Role: "assistant", BlocksJSON: raw,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// An interrupted load and an error result must not mark beta loaded.
+	failed := []provider.Block{
+		{Type: provider.BlockToolUse, ID: "call_2", Name: "skill_load",
+			Input: json.RawMessage(`{"name":"beta"}`)},
+		{Type: provider.BlockToolResult, ID: "call_2", Content: "no skill named beta", IsError: true},
+		{Type: provider.BlockToolUse, ID: "call_3", Name: "skill_load",
+			Input: json.RawMessage(`{"name":"beta"}`)},
+	}
+	failedRaw, _ := json.Marshal(failed)
+	if _, err := s.store.AppendMessage(ctx, store.Message{
+		SessionID: sid, Role: "assistant", BlocksJSON: failedRaw,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -91,5 +109,20 @@ func TestSkillsEndpoint(t *testing.T) {
 	}
 	if len(out.Errors) != 1 {
 		t.Fatalf("errors = %d, want 1 (gamma has bad frontmatter): %+v", len(out.Errors), out.Errors)
+	}
+	if err := s.store.SetSummaryThrough(ctx, sid, 2); err != nil {
+		t.Fatal(err)
+	}
+	res, err = http.Get(ts.URL + "/api/sessions/" + sid + "/skills")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var afterClear SkillsJSON
+	if err := json.NewDecoder(res.Body).Decode(&afterClear); err != nil {
+		t.Fatal(err)
+	}
+	if afterClear.Skills[0].Loaded {
+		t.Error("alpha must not be loaded after its tool result is folded out of the live context")
 	}
 }

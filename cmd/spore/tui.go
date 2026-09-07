@@ -796,10 +796,13 @@ func (m *chatUI) renderUsage(data map[string]any, showCost bool) tea.Cmd {
 	return m.flush(b.String())
 }
 
-// renderSkills formats the /skills listing: one line per skill with name,
-// description, body token estimate and a loaded marker, then one line per
-// load error. Both the Bubble Tea loop and the plain loop print it.
+// renderSkills formats the /skills listing for the Bubble Tea transcript.
 func (m *chatUI) renderSkills(list skillListJSON) tea.Cmd {
+	return m.flush(formatSkills(list))
+}
+
+// formatSkills is shared by the Bubble Tea and plain chat loops.
+func formatSkills(list skillListJSON) string {
 	var b strings.Builder
 	b.WriteString("  skills\n")
 	if len(list.Skills) == 0 && len(list.Errors) == 0 {
@@ -815,7 +818,7 @@ func (m *chatUI) renderSkills(list skillListJSON) tea.Cmd {
 	for _, e := range list.Errors {
 		fmt.Fprintf(&b, "  ! %s\n", e)
 	}
-	return m.flush(b.String())
+	return b.String()
 }
 
 // loadedSuffix marks a skill already pulled into the transcript.

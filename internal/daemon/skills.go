@@ -37,29 +37,45 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// loaded: scan the transcript for skill_load tool_use blocks. The marker
-	// is derived from what the model actually called, not from bookkeeping, so
-	// it cannot drift from the transcript.
 	rows, err := s.store.Messages(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "read messages: %v", err)
 		return
 	}
+	_, through, err := s.store.Summary(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "read summary boundary: %v", err)
+		return
+	}
+
+	// A skill is loaded only when skill_load has a successful tool_result. A
+	// tool_use with no result means the turn was interrupted; an error result
+	// means the load failed. Pair calls and results by ID so either case stays
+	// unmarked.
+	pending := make(map[string]string)
 	loaded := make(map[string]bool)
 	for _, m := range rows {
+		if m.Seq <= through {
+			continue // folded messages are no longer in the live model context
+		}
 		var blocks []provider.Block
 		if err := json.Unmarshal(m.BlocksJSON, &blocks); err != nil {
-			continue // a message that will not decode is not a skill_load
+			continue
 		}
 		for _, b := range blocks {
-			if b.Type != provider.BlockToolUse || b.Name != "skill_load" {
-				continue
-			}
-			var args struct {
-				Name string `json:"name"`
-			}
-			if json.Unmarshal(b.Input, &args) == nil && args.Name != "" {
-				loaded[args.Name] = true
+			switch {
+			case b.Type == provider.BlockToolUse && b.Name == "skill_load":
+				var args struct {
+					Name string `json:"name"`
+				}
+				if json.Unmarshal(b.Input, &args) == nil && args.Name != "" {
+					pending[b.ID] = args.Name
+				}
+			case b.Type == provider.BlockToolResult && !b.IsError:
+				if name, ok := pending[b.ID]; ok {
+					loaded[name] = true
+					delete(pending, b.ID)
+				}
 			}
 		}
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -122,6 +123,21 @@ func chatTUI(ctx context.Context, cfg *config.Config, c *client, sessionID strin
 	return nil
 }
 
+// runPlainSlash handles commands that have a direct daemon API in the
+// line-oriented loop. It reports whether text was a command; true means the
+// caller must not send it as a model turn.
+func runPlainSlash(ctx context.Context, c *client, sessionID, text string, out io.Writer) (bool, error) {
+	if text != "/skills" {
+		return false, nil
+	}
+	list, err := c.listSkills(ctx, sessionID)
+	if err != nil {
+		return true, err
+	}
+	_, err = fmt.Fprint(out, formatSkills(list))
+	return true, err
+}
+
 // chatPlain is the line-oriented loop used when stdin or stdout is not a
 // terminal. It has no line editing and no styling on purpose: it must behave
 // exactly like a pipe consumer.
@@ -206,6 +222,12 @@ func chatPlain(ctx context.Context, cfg *config.Config, c *client, sessionID str
 			}
 			text := strings.TrimSpace(line)
 			if text == "" {
+				continue
+			}
+			if handled, err := runPlainSlash(ctx, c, sessionID, text, os.Stdout); handled {
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "command failed:", err)
+				}
 				continue
 			}
 			if err := c.send(ctx, sessionID, text); err != nil {

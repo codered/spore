@@ -555,6 +555,10 @@ func TestSnapshotIncludesSkillsFromTheCache(t *testing.T) {
 	if len(snap.Skills) != 1 || snap.Skills[0].Name != "review" {
 		t.Fatalf("skills not loaded into the snapshot: %+v", snap.Skills)
 	}
+	req := Assemble(snap, a.Cfg.Context)
+	if !strings.Contains(req.System, "review: check a change") {
+		t.Fatalf("assembled system prompt does not contain the skills index: %q", req.System)
+	}
 }
 
 func TestSnapshotDescribesTheSessionsWorkspace(t *testing.T) {
