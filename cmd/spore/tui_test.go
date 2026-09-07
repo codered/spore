@@ -398,6 +398,18 @@ func TestRenderedMarkdownHasNoTrailingWhitespace(t *testing.T) {
 	}
 }
 
+func TestCompactSummaryDistinguishesAFoldFromANoOp(t *testing.T) {
+	if got := compactSummary(daemon.CompactJSON{Folded: 0, Before: 900, After: 900}); !strings.Contains(got, "nothing") {
+		t.Fatalf("a no-op must say so, got %q", got)
+	}
+	got := compactSummary(daemon.CompactJSON{Folded: 14, Before: 38_104, After: 9_002})
+	for _, want := range []string{"14", "38.1k", "9.0k"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("summary %q is missing %q", got, want)
+		}
+	}
+}
+
 func TestNewestSeqReadsTheLastMessage(t *testing.T) {
 	transcript := map[string]any{
 		"messages": []any{

@@ -248,19 +248,42 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "running"})
 }
 
-// handleCompact triggers a manual compaction (summary) of the session.
-// It calls MaybeCompact on demand, so /compact is a manual override and
-// does not change the auto-threshold that runs at the end of every turn.
+// CompactJSON is what a manual compaction reports back: how many messages
+// were folded, and the assembled estimate either side of the fold. A client
+// that only knew it succeeded could not tell a fold from a no-op.
+type CompactJSON struct {
+	Folded int `json:"folded"`
+	Before int `json:"before"`
+	After  int `json:"after"`
+}
+
+// handleCompact folds the session now. It calls Compact rather than
+// MaybeCompact on purpose: /compact is a manual override, so it must fold
+// whatever lies outside the protected recent window even when the session is
+// far below the auto-compaction threshold. MaybeCompact keeps its own job,
+// which is the threshold test at the end of every turn.
 func (s *Server) handleCompact(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, ok := s.findSession(w, r, id); !ok {
+	sess, ok := s.findSession(w, r, id)
+	if !ok {
 		return
 	}
-	if err := s.agent.MaybeCompact(r.Context(), id); err != nil {
+	// Compaction rewrites the summary boundary a running turn is reading, so
+	// it waits for the turn rather than moving the ground under it.
+	if s.hub.Running(id) {
+		writeError(w, http.StatusConflict, "session %s already has a turn running", id)
+		return
+	}
+	// The session's own root, exactly as a turn supplies it: Snapshot renders
+	// the environment section and the skills index from it, and both are part
+	// of the estimate this reports.
+	ctx := policy.WithSession(s.base, policy.Session{ID: id, Workspace: sess.Workspace})
+	folded, before, after, err := s.agent.Compact(ctx, id)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "compact: %v", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, CompactJSON{Folded: folded, Before: before, After: after})
 }
 
 // startTurn runs one turn on the SERVER's context and pumps its events into

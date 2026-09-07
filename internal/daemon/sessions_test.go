@@ -271,6 +271,82 @@ func TestPatchSessionClampsSummaryBoundaryToTheNewestMessage(t *testing.T) {
 	}
 }
 
+// /compact is a manual override, so it must fold whatever sits outside the
+// protected recent window even when the session is nowhere near the
+// auto-compaction threshold. Calling MaybeCompact here did nothing at all
+// below the threshold while still answering "ok".
+func TestCompactFoldsBelowTheAutoThreshold(t *testing.T) {
+	srv, ts := newTestServer(t, provider.ScriptTurn{Text: "SUMMARY: the user rambled"})
+	srv.cfg.Context.MaxTokens = 200_000 // far above anything this session assembles
+	srv.cfg.Context.KeepRecent = 2
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+	seedSessionMessages(t, srv, created.ID, 6)
+
+	res := postJSON(t, ts.URL+"/api/sessions/"+created.ID+"/compact", nil)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("POST compact: status = %d, want 200", res.StatusCode)
+	}
+	var out CompactJSON
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Folded != 4 {
+		t.Fatalf("folded = %d, want the 4 messages outside the protected window", out.Folded)
+	}
+	if out.After >= out.Before {
+		t.Fatalf("compaction must shrink the estimate: %d -> %d", out.Before, out.After)
+	}
+	_, through, err := srv.store.Summary(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if through != 4 {
+		t.Fatalf("summary boundary = %d, want 4", through)
+	}
+}
+
+// Nothing outside the protected window is a legitimate answer, not a failure
+// -- but it must be reported, or the client says "compacted" over a no-op.
+func TestCompactWithNothingToFoldSaysSo(t *testing.T) {
+	srv, ts := newTestServer(t) // no turns: a provider call would error
+	srv.cfg.Context.KeepRecent = 12
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+	seedSessionMessages(t, srv, created.ID, 3)
+
+	res := postJSON(t, ts.URL+"/api/sessions/"+created.ID+"/compact", nil)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("POST compact: status = %d, want 200", res.StatusCode)
+	}
+	var out CompactJSON
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Folded != 0 {
+		t.Fatalf("folded = %d, want 0", out.Folded)
+	}
+}
+
+// Compaction rewrites the summary boundary a running turn is reading.
+func TestCompactConflictsWithARunningTurn(t *testing.T) {
+	srv, ts := newTestServer(t)
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+	if !srv.hub.Begin(created.ID) {
+		t.Fatal("could not mark the session running")
+	}
+	defer srv.hub.End(created.ID)
+
+	res := postJSON(t, ts.URL+"/api/sessions/"+created.ID+"/compact", nil)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("compact during a turn: status = %d, want 409", res.StatusCode)
+	}
+}
+
 // seedSessionMessages appends n plain user messages to a session.
 func seedSessionMessages(t *testing.T, srv *Server, sessionID string, n int) {
 	t.Helper()

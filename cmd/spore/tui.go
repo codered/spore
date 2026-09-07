@@ -636,15 +636,36 @@ func (m *chatUI) handleClear(ctx context.Context, c *client, sessionID string) t
 	)
 }
 
+// compactSummary says what a compaction actually did. A session with nothing
+// outside the protected recent window folds nothing, and reporting that as
+// "compacted" would be a lie the operator acts on.
+func compactSummary(res daemon.CompactJSON) string {
+	if res.Folded == 0 {
+		return "nothing outside the protected recent window to fold"
+	}
+	return fmt.Sprintf("compacted: folded %d messages, ~%s → ~%s tokens",
+		res.Folded, humanTokens(res.Before), humanTokens(res.After))
+}
+
+// humanTokens keeps an estimate short: 38k reads better than 38104, and the
+// estimate is crude enough that the digits are noise.
+func humanTokens(n int) string {
+	if n < 1000 {
+		return strconv.Itoa(n)
+	}
+	return fmt.Sprintf("%.1fk", float64(n)/1000)
+}
+
 // handleCompact triggers a manual compaction (summary) of the session.
 func (m *chatUI) handleCompact(ctx context.Context, c *client, sessionID string) tea.Cmd {
 	return tea.Sequence(
 		m.flush(styMuted.Render("  · compacting…")),
 		func() tea.Msg {
-			if err := c.compact(ctx, sessionID); err != nil {
+			res, err := c.compact(ctx, sessionID)
+			if err != nil {
 				return slashErrMsg{err}
 			}
-			return slashDoneMsg{"compacted"}
+			return slashDoneMsg{compactSummary(res)}
 		},
 	)
 }
