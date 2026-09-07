@@ -622,21 +622,12 @@ func newestSeq(transcript map[string]any) int {
 	return newest
 }
 
-// handleClear moves the summary boundary to "now" so all messages are folded.
-// Nothing is deleted: the transcript stays whole and only the boundary moves.
+// handleClear removes all current messages from the live model context.
 func (m *chatUI) handleClear(ctx context.Context, c *client, sessionID string) tea.Cmd {
 	return tea.Sequence(
 		m.flush(styMuted.Render("  · clearing…")),
 		func() tea.Msg {
-			data, err := c.getTranscript(ctx, sessionID)
-			if err != nil {
-				return slashErrMsg{err}
-			}
-			last := newestSeq(data)
-			if last == 0 {
-				return slashDoneMsg{"nothing to clear"}
-			}
-			if err := c.setSummaryThrough(ctx, sessionID, last); err != nil {
+			if err := c.clear(ctx, sessionID); err != nil {
 				return slashErrMsg{err}
 			}
 			return slashDoneMsg{"cleared"}
@@ -725,11 +716,15 @@ func (m *chatUI) handleSkills(ctx context.Context, c *client, sessionID string) 
 func (m *chatUI) renderContext(data map[string]any, showCost bool) tea.Cmd {
 	msgs := data["messages"]
 	totalTokens := 0
+	through := castInt(data["summary_through"])
 	count := 0
 	if msgs != nil {
 		if arr, ok := msgs.([]any); ok {
 			for _, raw := range arr {
 				if msg, ok := raw.(map[string]any); ok {
+					if castInt(msg["seq"]) <= through {
+						continue
+					}
 					inVal := 0
 					outVal := 0
 					if v := msg["tokens_in"]; v != nil {

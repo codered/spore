@@ -339,6 +339,36 @@ func (s *Store) SetSummaryThrough(ctx context.Context, sessionID string, through
 	return err
 }
 
+// ClearThroughLatestMessage moves the summary boundary to the session's
+// current last message. The transaction keeps the selected sequence and the
+// new boundary consistent with concurrent message writes.
+func (s *Store) ClearThroughLatestMessage(ctx context.Context, sessionID string) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var through int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(seq), 0) FROM messages WHERE session_id = ?`, sessionID).Scan(&through); err != nil {
+		return 0, fmt.Errorf("read latest message sequence: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO summaries (session_id, text, through_seq, created_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(session_id) DO UPDATE SET text = excluded.text, through_seq = excluded.through_seq, created_at = excluded.created_at`,
+		sessionID, "", through, nowString()); err != nil {
+		return 0, fmt.Errorf("clear summary boundary: %w", err)
+	}
+	if err := deleteIndex(ctx, tx, kindSummary, sessionID); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return through, nil
+}
+
 // Summary returns ("", 0, nil) when the session has never been compacted.
 // Summary returns ("", 0, nil) when the session has never been compacted.
 func (s *Store) Summary(ctx context.Context, sessionID string) (string, int, error) {

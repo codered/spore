@@ -108,11 +108,10 @@ func (c *client) resolve(ctx context.Context, sessionID string, pendingID int64,
 		map[string]any{"allow": ans.Allow, "scope": string(ans.Scope)}, nil)
 }
 
-// setSummaryThrough moves the summary boundary for /clear. It patches the
-// session with summary_through so Snapshot skips messages at or below it.
-func (c *client) setSummaryThrough(ctx context.Context, sessionID string, throughSeq int) error {
-	return c.do(ctx, "PATCH", "/api/sessions/"+sessionID,
-		map[string]int{"summary_through": throughSeq}, nil)
+// clear moves the live-context boundary through the current last message.
+// The daemon selects the sequence atomically so future messages stay visible.
+func (c *client) clear(ctx context.Context, sessionID string) error {
+	return c.do(ctx, "POST", "/api/sessions/"+sessionID+"/clear", nil, nil)
 }
 
 // compact triggers a manual compaction of the session via POST /compact.

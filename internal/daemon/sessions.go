@@ -41,8 +41,9 @@ type MessageJSON struct {
 }
 
 type TranscriptJSON struct {
-	Session  SessionJSON   `json:"session"`
-	Messages []MessageJSON `json:"messages"`
+	Session        SessionJSON   `json:"session"`
+	Messages       []MessageJSON `json:"messages"`
+	SummaryThrough int           `json:"summary_through"`
 	// Running reports whether a turn is in flight, so a client attaching
 	// mid-turn knows to expect deltas rather than assuming it is idle.
 	Running bool `json:"running"`
@@ -203,7 +204,12 @@ func (s *Server) handleShowSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "read messages: %v", err)
 		return
 	}
-	out := TranscriptJSON{Session: toSessionJSON(sess), Messages: []MessageJSON{}, Running: s.hub.Running(id)}
+	_, through, err := s.store.Summary(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "read summary boundary: %v", err)
+		return
+	}
+	out := TranscriptJSON{Session: toSessionJSON(sess), Messages: []MessageJSON{}, SummaryThrough: through, Running: s.hub.Running(id)}
 	for _, m := range rows {
 		var blocks []provider.Block
 		if err := json.Unmarshal(m.BlocksJSON, &blocks); err != nil {
@@ -255,6 +261,26 @@ type CompactJSON struct {
 	Folded int `json:"folded"`
 	Before int `json:"before"`
 	After  int `json:"after"`
+}
+
+// handleClear removes the current transcript from the live model context.
+// The store chooses the boundary so future message sequences remain visible.
+func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, ok := s.findSession(w, r, id); !ok {
+		return
+	}
+	if !s.hub.Begin(id) {
+		writeError(w, http.StatusConflict, "session %s has a turn running", id)
+		return
+	}
+	defer s.hub.End(id)
+	through, err := s.store.ClearThroughLatestMessage(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "clear session: %v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"summary_through": through})
 }
 
 // handleCompact folds the session now. It calls Compact rather than
