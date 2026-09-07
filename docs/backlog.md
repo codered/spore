@@ -180,3 +180,17 @@ own blast radius and needs its own design pass.
 3. Does a server that legitimately works outside any session's root — a shared
    index or an external tool — need an opt-out, or is it enough to rely on the
    ask-gate to let the operator choose?
+
+## The skill cache evicts idle directories
+
+Closed. `skill.Caches` swept nothing, so under `skills.scope = "workspace"` it
+held one entry per distinct session root the daemon had ever served. It now
+sweeps entries idle beyond an hour on every miss, the same rule
+`internal/workspace/describers.go` uses, which bounds the map by live use
+instead of by session history.
+
+The open question about the right idle window is answered by use rather than by
+argument: a skills directory is read once per turn, so an entry untouched for an
+hour belongs to a session that is over. The other question — whether anything
+else is keyed by session root and unbounded — was checked at the same time, and
+these two were the only ones.
