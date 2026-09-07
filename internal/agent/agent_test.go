@@ -16,6 +16,7 @@ import (
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/router"
+	"github.com/codered/spore/internal/skill"
 	"github.com/codered/spore/internal/store"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -563,5 +564,35 @@ func TestSnapshotHasNoEnvironmentWithoutAWorkspace(t *testing.T) {
 	}
 	if snap.Environment != "root=" {
 		t.Fatalf("environment = %q, want the describer called with an empty root", snap.Environment)
+	}
+}
+
+// The skills index is what tells the model a skill exists at all: skill_load
+// takes a name, and nothing else in the prompt supplies one. Snapshot filling
+// it from the session's root is the whole path from disk to prompt.
+func TestSnapshotCarriesTheSkillsIndexForTheSessionRoot(t *testing.T) {
+	a, st := harness(t, provider.NewScript(), nil)
+	var asked string
+	a.Skills = func(root string) []skill.Skill {
+		asked = root
+		return []skill.Skill{{Name: "release-checklist", Description: "How to cut a release"}}
+	}
+	id, err := st.CreateSession(context.Background(), "", "/ws/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := policy.WithSession(context.Background(), policy.Session{ID: id, Workspace: "/ws/a"})
+	snap, err := a.Snapshot(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asked != "/ws/a" {
+		t.Fatalf("skills asked for root %q, want the session's own root", asked)
+	}
+	if len(snap.Skills) != 1 || snap.Skills[0].Name != "release-checklist" {
+		t.Fatalf("snapshot skills = %+v, want the one installed skill", snap.Skills)
+	}
+	if req := Assemble(snap, a.Cfg.Context); !strings.Contains(req.System, "release-checklist") {
+		t.Fatalf("the assembled prompt must name the skill:\n%s", req.System)
 	}
 }

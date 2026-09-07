@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/provider"
+	"github.com/codered/spore/internal/store"
 )
 
 // TestStartTurnCarriesTheProfile asserts that the profile parameter reaches
@@ -212,6 +214,7 @@ func TestPatchSessionMovesSummaryBoundary(t *testing.T) {
 	srv, ts := newTestServer(t)
 	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
 		map[string]string{}), http.StatusCreated)
+	seedSessionMessages(t, srv, created.ID, 10)
 
 	res := patchJSON(t, ts.URL+"/api/sessions/"+created.ID,
 		map[string]int{"summary_through": 8})
@@ -228,6 +231,135 @@ func TestPatchSessionMovesSummaryBoundary(t *testing.T) {
 	}
 	if text != "" {
 		t.Errorf("summary text %q; boundary move must not write text", text)
+	}
+}
+
+// The boundary is a real message's sequence number, never a sentinel. A
+// boundary past the newest message would hide every message appended after it
+// too -- including the next thing the user types -- and nothing ever moves it
+// back, so the session would assemble an empty prompt for the rest of its
+// life. Clamping here closes that from every client at once.
+func TestPatchSessionClampsSummaryBoundaryToTheNewestMessage(t *testing.T) {
+	srv, ts := newTestServer(t)
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+	seedSessionMessages(t, srv, created.ID, 3)
+
+	res := patchJSON(t, ts.URL+"/api/sessions/"+created.ID,
+		map[string]int{"summary_through": math.MaxInt32})
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH summary_through: status = %d, want 200", res.StatusCode)
+	}
+	_, through, err := srv.store.Summary(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	if through != 3 {
+		t.Fatalf("boundary = %d, want it clamped to the newest message (3)", through)
+	}
+
+	// The next message the user sends must be visible to the model again.
+	seedSessionMessages(t, srv, created.ID, 1)
+	snap, err := srv.agent.Snapshot(policy.WithSession(context.Background(),
+		policy.Session{ID: created.ID, Workspace: created.Workspace}), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Messages) != 1 {
+		t.Fatalf("after a clear, the next message must reach the prompt; assembled %d", len(snap.Messages))
+	}
+}
+
+// /compact is a manual override, so it must fold whatever sits outside the
+// protected recent window even when the session is nowhere near the
+// auto-compaction threshold. Calling MaybeCompact here did nothing at all
+// below the threshold while still answering "ok".
+func TestCompactFoldsBelowTheAutoThreshold(t *testing.T) {
+	srv, ts := newTestServer(t, provider.ScriptTurn{Text: "SUMMARY: the user rambled"})
+	srv.cfg.Context.MaxTokens = 200_000 // far above anything this session assembles
+	srv.cfg.Context.KeepRecent = 2
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+	seedSessionMessages(t, srv, created.ID, 6)
+
+	res := postJSON(t, ts.URL+"/api/sessions/"+created.ID+"/compact", nil)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("POST compact: status = %d, want 200", res.StatusCode)
+	}
+	var out CompactJSON
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Folded != 4 {
+		t.Fatalf("folded = %d, want the 4 messages outside the protected window", out.Folded)
+	}
+	if out.After >= out.Before {
+		t.Fatalf("compaction must shrink the estimate: %d -> %d", out.Before, out.After)
+	}
+	_, through, err := srv.store.Summary(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if through != 4 {
+		t.Fatalf("summary boundary = %d, want 4", through)
+	}
+}
+
+// Nothing outside the protected window is a legitimate answer, not a failure
+// -- but it must be reported, or the client says "compacted" over a no-op.
+func TestCompactWithNothingToFoldSaysSo(t *testing.T) {
+	srv, ts := newTestServer(t) // no turns: a provider call would error
+	srv.cfg.Context.KeepRecent = 12
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+	seedSessionMessages(t, srv, created.ID, 3)
+
+	res := postJSON(t, ts.URL+"/api/sessions/"+created.ID+"/compact", nil)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("POST compact: status = %d, want 200", res.StatusCode)
+	}
+	var out CompactJSON
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Folded != 0 {
+		t.Fatalf("folded = %d, want 0", out.Folded)
+	}
+}
+
+// Compaction rewrites the summary boundary a running turn is reading.
+func TestCompactConflictsWithARunningTurn(t *testing.T) {
+	srv, ts := newTestServer(t)
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+	if !srv.hub.Begin(created.ID) {
+		t.Fatal("could not mark the session running")
+	}
+	defer srv.hub.End(created.ID)
+
+	res := postJSON(t, ts.URL+"/api/sessions/"+created.ID+"/compact", nil)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("compact during a turn: status = %d, want 409", res.StatusCode)
+	}
+}
+
+// seedSessionMessages appends n plain user messages to a session.
+func seedSessionMessages(t *testing.T, srv *Server, sessionID string, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		blocks, err := json.Marshal([]provider.Block{{Type: provider.BlockText, Text: "hello"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := srv.store.AppendMessage(context.Background(), store.Message{
+			SessionID: sessionID, Role: "user", BlocksJSON: blocks,
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

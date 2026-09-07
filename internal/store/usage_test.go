@@ -130,7 +130,7 @@ func TestSetSummaryWithEmptyTextIndexesNothing(t *testing.T) {
 	}
 	var n int
 	if err := st.DB().QueryRowContext(ctx,
-			`SELECT count(*) FROM recall_fts WHERE kind = 'summary' AND ref_id = ?`, id).Scan(&n); err != nil {
+		`SELECT count(*) FROM recall_fts WHERE kind = 'summary' AND ref_id = ?`, id).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {

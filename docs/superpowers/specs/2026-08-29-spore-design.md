@@ -3,8 +3,10 @@
 **Date:** 2026-08-29 (amended 2026-08-31: Discord replaces Telegram as the
 first bridge, Plan 4 splits into 4a and 4b; amended 2026-09-02: the MCP client
 host is designed in full, section 6; amended 2026-09-03: memory and recall are
-designed in full and Plan 5 splits into 5a and 5b, sections 5 and 11)
-**Status:** approved (brainstorming dialogue); Plans 1–4b implemented
+designed in full and Plan 5 splits into 5a and 5b, sections 5 and 11; amended
+2026-09-07: chat commands and the skills subsystem, sections 3, 5, 6, 8, 9
+and 11)
+**Status:** approved (brainstorming dialogue); Plans 1–7 implemented
 
 ## 1. What spore is
 
@@ -105,10 +107,19 @@ Fixed order, each part with a token budget:
    here: recall is reached through the `recall_search` tool, so retrieval is
    visible in the transcript, costs nothing on a turn that does not need it,
    and is gated by the policy engine like any other call.
-3. Compaction summary, if the session has one.
-4. The live message tail.
+3. Skills index — one `name: description` line per installed skill, under the
+   skill budget, with the count of any that did not fit. Bodies never appear
+   here: a skill is pulled in with the `skill_load` tool, for the same reasons
+   recall is, and the loaded body then lives in the transcript as a tool
+   result and ages out through compaction like any other.
+4. Compaction summary, if the session has one.
+5. The live message tail.
 
 Assembly is a pure function over a session snapshot — testable with no network.
+
+`SnapshotBreakdown` reports the estimate part by part and `SnapshotTokens` is
+defined as its total, so the number that triggers compaction and the number
+`/context` shows a human are the same number.
 
 ### Compaction
 
@@ -263,6 +274,34 @@ Name order rather than recency is deliberate: the system block stays
 byte-identical between turns, which preserves the prompt cache. The daemon
 loads facts at startup and re-reads the directory after a `memory` write or
 delete, not on every turn.
+
+### Skills — files, human-editable
+
+`<skills dir>/<name>/SKILL.md`, one directory per skill: two-key frontmatter
+(`name`, `description`, both required, `name` equal to the directory name) and
+a markdown body. `internal/skill` owns this layer and mirrors
+`internal/memory` — filesystem only, no SQL, no session knowledge — with
+`Load`, `Read`, `Write`, `Exists`, a `ValidName` that keeps a model-supplied
+name from becoming a path, and a per-directory `Cache`.
+
+A skill differs from a fact in what it costs and when it applies. A fact is
+context that shapes every turn, so its body is assembled. A skill is a
+procedure that applies to one kind of work, so only its name and description
+are assembled and the body is fetched on demand.
+
+The directory sits **outside `policy.Workspace`**, which is what makes it
+read-only by construction: the baseline deny rule
+`fs_*(path outside workspace)` is always in force and no approval removes it,
+so no filesystem tool can reach a skill file. The one write path is the
+`skill_install` tool.
+
+`[skills] scope` chooses between one global directory (the default,
+`<data_dir>/skills`) and a directory under each session's own root
+(`.spore/skills`). Workspace scope is opt-in because a session rooted at a
+cloned repository would otherwise load text the operator did not write into
+its prompt, and a session with no root of its own — the web UI, the scheduler,
+a bridge — then has no skills at all rather than falling back to the global
+set.
 
 ### Recall — the interface and the default backend
 
@@ -420,10 +459,21 @@ Each builtin is a small package implementing one interface (`Name`, `Schema`,
 | `schedule` | create, list, cancel background jobs |
 | `memory` | fact write, delete (files under `<data_dir>/memory`) |
 | `recall_search` | search over messages, summaries and facts |
+| `skill_load` | read one skill in full (read-only) |
+| `skill_install` | write a skill file — the only write path into the skills directory |
 
 The `memory` and `recall_search` builtins depend on subsystems that land in Plan 5a and
 ship with it, and `schedule` ships in Plan 3 with the scheduler it drives; the
-rest ship in Plan 2 (section 11).
+skill tools ship in Plan 7; the rest ship in Plan 2 (section 11).
+
+`skill_load` is in the default allow list next to `recall_search`, and stays
+allowed under the `remote` profile: a skill body is the operator's own prose in
+the operator's own directory, and loading it is a read with no persistent
+effect. `skill_install` is ask-gated, denied under `remote`, and listed in
+`policy.nonLearnable`, so the "always allow this pattern" scope degrades to
+`ScopeOnce` — the grant covers one write and cannot become a standing rule.
+The reasoning is the one that already denies `memory` to a bridge: a skill
+written once shapes every later turn in every session.
 
 Web search sits behind a provider interface with Brave as the first
 implementation (clean paid API, no scraping fragility); Tavily and DDG are
@@ -634,10 +684,19 @@ non-fatal and never block a turn.
 operation and public endpoints are non-goals (section 1), so the trust boundary
 is the machine. The API is small: list, create and show sessions; post a message
 to a session; an SSE stream per session carrying turn deltas and tool-call
-events; resolve a pending approval; and job create, list and cancel. Session
-creation carries an optional `workspace`; a request that omits it gets a
-session directory, and one naming a directory outside the ceiling is refused
-with an error rather than a fallback.
+events; resolve a pending approval; compact a session on demand; and job
+create, list and cancel. Session creation carries an optional `workspace`; a
+request that omits it gets a session directory, and one naming a directory
+outside the ceiling is refused with an error rather than a fallback.
+
+`PATCH /api/sessions/{id}` also moves the summary boundary, which is what
+`/clear` does. The daemon clamps that boundary to the newest message: rows at
+or below it are skipped for good and nothing moves it back, so a boundary past
+the end would hide every later message too and leave the session assembling an
+empty prompt for the rest of its life.
+
+Chat commands themselves are client-side (section 11, stage 7), so this
+surface stays as small as it was.
 
 Multi-client behaviour falls out of that surface. One turn's events fan out to
 every client attached to the session, and a client disconnecting never cancels
@@ -737,6 +796,11 @@ otherwise stops at their own session directory.
 `url` means the instance `spore recall setup` provisions on loopback; setting it
 points spore at one you run yourself and turns provisioning off.
 
+`[skills]` carries `scope` (`global`, the default, or `workspace`) and `dir`,
+which overrides the global directory and is ignored under workspace scope.
+`[context] skill_budget` caps the skills index the way `fact_budget` caps
+inlined facts.
+
 Deployment is `scp` plus a systemd unit; cross-compilation targets linux/amd64,
 linux/arm64, and linux/riscv64.
 
@@ -828,3 +892,14 @@ plan is written only once its predecessor completes.
    config key, which is a poor thing to do while the surfaces themselves are
    still moving. It lands after 5c for that reason, and not because anything
    in 5c depends on it.
+7. **Chat commands and skills** (shipped) — `/clear`, `/compact`, `/context`
+   and `/usage` in the interactive client, and the skills subsystem: the file
+   layer, the prompt index, `skill_load` and `skill_install`. Commands are
+   intercepted client-side rather than served from the API; the one exception
+   is `/compact`, which runs agent code and so needs
+   `POST /api/sessions/{id}/compact`. That reverses this document's earlier
+   preference for a command endpoint, and the cost is stated where it falls:
+   the web UI, the plain CLI loop and the Discord bridge have no commands, and
+   a second surface that wants them either reimplements them or moves them
+   into the API after all. `/skills` is not implemented — the subsystem it
+   would list is here, but nothing yet lists it.

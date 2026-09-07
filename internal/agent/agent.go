@@ -12,6 +12,7 @@ import (
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/router"
+	"github.com/codered/spore/internal/skill"
 	"github.com/codered/spore/internal/store"
 	sporetrace "github.com/codered/spore/internal/trace"
 )
@@ -87,6 +88,13 @@ type Agent struct {
 	// production construction path (buildAgent) sets it, so nil in practice
 	// means a test built the Agent directly with New and never attached one.
 	Facts *memory.Cache
+	// Skills returns the skills loadable from one session root, the way Env
+	// describes one. It takes the root because one agent serves every session
+	// and skills.scope = "workspace" gives each root a directory of its own.
+	// Nil means no skills index -- and therefore a model that cannot know a
+	// skill exists, since skill_load takes a name and nothing else supplies
+	// one.
+	Skills func(root string) []skill.Skill
 }
 
 func New(st *store.Store, reg *provider.Registry, rt *router.Router, cfg *config.Config, tools ToolRunner) *Agent {
@@ -114,6 +122,11 @@ func (a *Agent) Snapshot(ctx context.Context, sessionID string) (Snapshot, error
 	}
 	if a.Facts != nil {
 		snap.Facts = a.Facts.Facts()
+	}
+	if a.Skills != nil {
+		// Same reason as Env: the root comes from the turn context, because
+		// under workspace scope each session reads its own directory.
+		snap.Skills = a.Skills(policy.WorkspaceFrom(ctx))
 	}
 	for _, r := range rows {
 		if r.Seq <= through {

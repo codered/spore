@@ -1,7 +1,19 @@
 # spore — chat commands and skills
 
 **Date:** 2026-09-04
-**Status:** approved (brainstorming dialogue)
+**Status:** partly superseded, partly shipped.
+
+- **Sections 4 (Skills) — shipped as designed.** The file layer, the prompt
+  index, `skill_load`, the ask-gated non-learnable `skill_install`, and the
+  `[skills]` config all landed as written.
+- **Sections 2 and 3 (the command surface) — superseded** by
+  `2026-09-05-spore-chat-commands-design.md`, which puts commands in the
+  client and gives only `/compact` an endpoint. `POST /api/sessions/{id}/commands`
+  was never built. The consequence that document accepts is the one section 2
+  here argued against: the web UI, the plain CLI loop and the Discord bridge
+  have no commands.
+- **`/skills` — not built.** The subsystem exists; nothing lists it.
+
 **Amends:** `2026-08-29-spore-design.md` sections 3, 5, 6, 8, 9 and 11
 
 ## 1. What this adds

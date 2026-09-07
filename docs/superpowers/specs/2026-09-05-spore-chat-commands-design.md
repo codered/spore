@@ -1,5 +1,17 @@
 # Chat Commands (Design)
 
+**Status:** implemented 2026-09-06/07. This is the design the four commands
+were built to, and it supersedes the command surface in
+`2026-09-04-spore-chat-commands-skills-design.md`: commands are intercepted
+client-side rather than served from a daemon endpoint. The skills half of that
+earlier document was built as written and is not superseded — see section 5 of
+the main design spec.
+
+Two corrections landed after the first implementation. `/clear` moves the
+boundary to the newest message's `seq`, not to a sentinel past the end, and the
+daemon clamps it; `/compact` calls `Compact`, not `MaybeCompact`, so a manual
+compaction folds below the auto-threshold instead of silently doing nothing.
+
 ## Goal
 
 Four slash commands in the interactive chat client: `/clear`, `/compact`,

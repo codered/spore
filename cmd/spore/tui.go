@@ -1,13 +1,12 @@
 package main
 
 import (
-	"fmt"
-	"strings"
-	"math"
-
 	"context"
-	"time"
+	"fmt"
 	"strconv"
+	"strings"
+	"time"
+
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -23,14 +22,20 @@ import (
 // program. Everything that touches model state arrives as one of these, so
 // the model itself is single-threaded and testable by calling Update.
 type (
-	streamMsg    struct{ ev daemon.WireEvent }
-	streamEndMsg struct{ err error }
-	sendErrMsg   struct{ err error }
-	resolveErr   struct{ err error }
-	slashErrMsg    struct{ err error }
-	slashDoneMsg   struct{ msg string }
-	slashContextMsg struct { data map[string]any; showCost bool }
-	slashUsageMsg  struct { data map[string]any; showCost bool }
+	streamMsg       struct{ ev daemon.WireEvent }
+	streamEndMsg    struct{ err error }
+	sendErrMsg      struct{ err error }
+	resolveErr      struct{ err error }
+	slashErrMsg     struct{ err error }
+	slashDoneMsg    struct{ msg string }
+	slashContextMsg struct {
+		data     map[string]any
+		showCost bool
+	}
+	slashUsageMsg struct {
+		data     map[string]any
+		showCost bool
+	}
 )
 
 type chatState int
@@ -93,7 +98,7 @@ type chatUI struct {
 	draft   string
 	// slashHandler runs slash commands; nil when no client context is available.
 	slashHandler func(input string) tea.Cmd
-	slashHint  string
+	slashHint    string
 
 	// fatal is the error the program exits with, read by the caller once the
 	// program has stopped.
@@ -370,6 +375,7 @@ func (m *chatUI) handleKey(msg tea.KeyMsg) tea.Cmd {
 	m.resizeInput()
 	return cmd
 }
+
 // runSlash dispatches slash commands entered in the chat input. It clears
 // the textarea, displays a confirmation or error in the transcript, and
 // delegates to slashHandler when one is wired (production). Without it,
@@ -531,7 +537,7 @@ func (m *chatUI) renderSlashHint(val string) string {
 	cmds := []string{"clear", "compact", "context", "usage"}
 	for _, cmd := range cmds {
 		if strings.HasPrefix(cmd, val[1:]) || val[1:] == "" {
-			parts = append(parts, styKey.Render("/"+cmd) + styMuted.Render(" "+slashDesc(cmd)))
+			parts = append(parts, styKey.Render("/"+cmd)+styMuted.Render(" "+slashDesc(cmd)))
 		}
 	}
 	return "  " + strings.Join(parts, styMuted.Render("  ·  "))
@@ -583,12 +589,46 @@ func firstLine(s string) string {
 	}
 	return s
 }
+
+// newestSeq is the sequence number of the last message in a transcript, or 0
+// for a session with none. The boundary /clear sets must be a real message's
+// seq: Snapshot skips rows at or below it and nothing moves it back, so a
+// sentinel past the end would hide every later message as well.
+func newestSeq(transcript map[string]any) int {
+	msgs, ok := transcript["messages"].([]any)
+	if !ok {
+		return 0
+	}
+	newest := 0
+	for _, raw := range msgs {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		// Numbers arrive as float64 through encoding/json's any decoding.
+		seq, ok := m["seq"].(float64)
+		if ok && int(seq) > newest {
+			newest = int(seq)
+		}
+	}
+	return newest
+}
+
 // handleClear moves the summary boundary to "now" so all messages are folded.
+// Nothing is deleted: the transcript stays whole and only the boundary moves.
 func (m *chatUI) handleClear(ctx context.Context, c *client, sessionID string) tea.Cmd {
 	return tea.Sequence(
 		m.flush(styMuted.Render("  · clearing…")),
 		func() tea.Msg {
-			if err := c.setSummaryThrough(ctx, sessionID, math.MaxInt32); err != nil {
+			data, err := c.getTranscript(ctx, sessionID)
+			if err != nil {
+				return slashErrMsg{err}
+			}
+			last := newestSeq(data)
+			if last == 0 {
+				return slashDoneMsg{"nothing to clear"}
+			}
+			if err := c.setSummaryThrough(ctx, sessionID, last); err != nil {
 				return slashErrMsg{err}
 			}
 			return slashDoneMsg{"cleared"}
@@ -596,15 +636,36 @@ func (m *chatUI) handleClear(ctx context.Context, c *client, sessionID string) t
 	)
 }
 
+// compactSummary says what a compaction actually did. A session with nothing
+// outside the protected recent window folds nothing, and reporting that as
+// "compacted" would be a lie the operator acts on.
+func compactSummary(res daemon.CompactJSON) string {
+	if res.Folded == 0 {
+		return "nothing outside the protected recent window to fold"
+	}
+	return fmt.Sprintf("compacted: folded %d messages, ~%s → ~%s tokens",
+		res.Folded, humanTokens(res.Before), humanTokens(res.After))
+}
+
+// humanTokens keeps an estimate short: 38k reads better than 38104, and the
+// estimate is crude enough that the digits are noise.
+func humanTokens(n int) string {
+	if n < 1000 {
+		return strconv.Itoa(n)
+	}
+	return fmt.Sprintf("%.1fk", float64(n)/1000)
+}
+
 // handleCompact triggers a manual compaction (summary) of the session.
 func (m *chatUI) handleCompact(ctx context.Context, c *client, sessionID string) tea.Cmd {
 	return tea.Sequence(
 		m.flush(styMuted.Render("  · compacting…")),
 		func() tea.Msg {
-			if err := c.compact(ctx, sessionID); err != nil {
+			res, err := c.compact(ctx, sessionID)
+			if err != nil {
 				return slashErrMsg{err}
 			}
-			return slashDoneMsg{"compacted"}
+			return slashDoneMsg{compactSummary(res)}
 		},
 	)
 }
@@ -636,6 +697,7 @@ func (m *chatUI) handleUsage(ctx context.Context, c *client, sessionID string, s
 		},
 	)
 }
+
 // renderContext displays a token breakdown for the session transcript.
 func (m *chatUI) renderContext(data map[string]any, showCost bool) tea.Cmd {
 	msgs := data["messages"]
@@ -710,16 +772,25 @@ func (m *chatUI) renderUsage(data map[string]any, showCost bool) tea.Cmd {
 	}
 	return m.flush(b.String())
 }
+
 // castInt safely converts an any to int, returning 0 on failure.
 func castInt(v any) int {
-	if i, ok := v.(int); ok { return i }
-	if f, ok := v.(float64); ok { return int(f) }
+	if i, ok := v.(int); ok {
+		return i
+	}
+	if f, ok := v.(float64); ok {
+		return int(f)
+	}
 	return 0
 }
 
 // castFloat safely converts an any to float64, returning 0.0 on failure.
 func castFloat(v any) float64 {
-	if f, ok := v.(float64); ok { return f }
-	if i, ok := v.(int); ok { return float64(i) }
+	if f, ok := v.(float64); ok {
+		return f
+	}
+	if i, ok := v.(int); ok {
+		return float64(i)
+	}
 	return 0.0
 }
