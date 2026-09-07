@@ -7,9 +7,9 @@ import (
 	"fmt"
 
 	"github.com/codered/spore/internal/config"
-	"github.com/codered/spore/internal/skill"
 	"github.com/codered/spore/internal/memory"
 	"github.com/codered/spore/internal/provider"
+	"github.com/codered/spore/internal/skill"
 )
 
 func userMsg(text string) provider.Message {
@@ -254,7 +254,6 @@ func TestSnapshotTokensCountsEnvironment(t *testing.T) {
 		t.Errorf("environment not counted: %d <= %d", withEnv, bare)
 	}
 }
-
 
 func TestSkillsSectionListsNamesAndDescriptions(t *testing.T) {
 	snap := Snapshot{Skills: []skill.Skill{

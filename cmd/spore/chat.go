@@ -68,7 +68,6 @@ func chatTUI(ctx context.Context, cfg *config.Config, c *client, sessionID strin
 		return c.resolve(streamCtx, sessionID, pendingID, ans)
 	}
 
-
 	// slashHandler intercepts /clear, /compact, /context and /usage.
 	ui.slashHandler = func(input string) tea.Cmd {
 		cmd, _ := strings.CutPrefix(input, "/")

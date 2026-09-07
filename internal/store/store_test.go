@@ -94,7 +94,6 @@ func TestSetSummaryThroughMovesTheBoundary(t *testing.T) {
 	}
 }
 
-
 func TestSummaryRoundTripAndSessionListing(t *testing.T) {
 	ctx := context.Background()
 	s := openTestStore(t)
