@@ -11,6 +11,12 @@ import (
 // skill_install appears immediately, because the tool invalidates the entry.
 const ttl = 30 * time.Second
 
+// idleTTL is how long a directory's cache is kept without use. It bounds the
+// map by live use rather than by session history: under skills.scope =
+// "workspace" every session root gets an entry, and a daemon that has
+// served a thousand roots should not still hold a thousand caches.
+const idleTTL = time.Hour
+
 // Cache holds the loaded skills for one directory. Assembly runs on every
 // turn and a directory scan per turn buys nothing, so the set is reloaded on
 // the TTL and after a write.
@@ -78,29 +84,51 @@ func (c *Cache) fresh() bool {
 	return !c.loaded.IsZero() && time.Since(c.loaded) < ttl
 }
 
+// cacheEntry pairs a directory's cache with the last time it was asked for.
+// The timestamp is what the sweep reads, so it is touched on every hit, not
+// only on insert -- a directory in steady use must never look idle.
+type cacheEntry struct {
+	cache *Cache
+	used  time.Time
+}
+
 // Caches holds one Cache per directory. Under skills.scope = "workspace"
 // every session root has its own skills directory, so a single cache for the
 // process would have N sessions in N directories fighting over one set.
 //
-// Entries are never evicted. Under the default global scope there is exactly
-// one; the workspace scope bounds this by session history rather than by live
-// sessions, which is the same shape as internal/workspace's describer cache
-// and is tracked with it in docs/backlog.md.
+// Entries idle beyond idleTTL are swept on the next miss, so the map is
+// bounded by the roots in live use rather than by every root the daemon has
+// ever served. internal/workspace's Describers bounds itself the same way.
 type Caches struct {
-	mu sync.Mutex
-	m  map[string]*Cache
+	mu  sync.Mutex
+	m   map[string]*cacheEntry
+	now func() time.Time
 }
 
-func NewCaches() *Caches { return &Caches{m: map[string]*Cache{}} }
+func NewCaches() *Caches {
+	return &Caches{m: map[string]*cacheEntry{}, now: time.Now}
+}
 
 func (cs *Caches) cache(dir string) *Cache {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
-	c, ok := cs.m[dir]
-	if !ok {
-		c = NewCache(dir)
-		cs.m[dir] = c
+	now := cs.now()
+	if e, ok := cs.m[dir]; ok {
+		e.used = now
+		return e.cache
 	}
+
+	// Miss: sweep entries idle beyond the TTL before inserting the new one.
+	// Evicting an entry another goroutine is already holding is harmless --
+	// it keeps its *Cache and finishes, and the next caller simply reloads.
+	for k, e := range cs.m {
+		if now.Sub(e.used) > idleTTL {
+			delete(cs.m, k)
+		}
+	}
+
+	c := NewCache(dir)
+	cs.m[dir] = &cacheEntry{cache: c, used: now}
 	return c
 }
 
