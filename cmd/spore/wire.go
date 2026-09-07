@@ -42,7 +42,7 @@ import (
 // caller — serve supervises it, and everything else closes it. The fact
 // cache is built by the caller (buildAgent needs it for Agent.Facts too) and
 // passed in here just to register the two memory tools around it.
-func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recallBackend recall.Recall, approver policy.Approver) (*policy.Guard, *mcphost.Host, error) {
+func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recallBackend recall.Recall, skillsCache *skillfiles.Caches, approver policy.Approver) (*policy.Guard, *mcphost.Host, error) {
 	reg := tool.NewRegistry(cfg.Policy.MaxOutput)
 	tools := fs.New(cfg.Policy.MaxOutput)
 	tools = append(tools, shell.New(
@@ -50,7 +50,6 @@ func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recall
 	tools = append(tools, web.New(cfg.Web, cfg.Policy.MaxOutput)...)
 	tools = append(tools, schedule.New(st)...)
 	tools = append(tools, mem.NewRecallSearch(recallBackend), mem.NewMemory(facts, st))
-	skillsCache := skillfiles.NewCaches()
 	tools = append(tools, skill.New(cfg, skillsCache)...)
 	for _, t := range tools {
 		if err := reg.Register(t); err != nil {
@@ -158,12 +157,16 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	tools, host, err := buildTools(cfg, st, facts, recallBackend, approver)
+	// The same cache set feeds the skill tools and the prompt index: buildTools
+	// registers the tools around it, and Snapshot reads it every turn.
+	skillsCache := skillfiles.NewCaches()
+	tools, host, err := buildTools(cfg, st, facts, recallBackend, skillsCache, approver)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	a := agent.New(st, reg, rt, cfg, tools)
 	a.Facts = facts
+	a.Skills = skillsCache
 	a.Env = workspace.NewDescribers().Describe
 	return a, host, mir, nil
 }

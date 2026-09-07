@@ -19,6 +19,7 @@ import (
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/recall"
 	"github.com/codered/spore/internal/recall/sqlitefts"
+	skillfiles "github.com/codered/spore/internal/skill"
 	"github.com/codered/spore/internal/store"
 )
 
@@ -107,7 +108,7 @@ workspace = "`+dir+`"
 	facts := memory.NewCache(filepath.Join(dir, "memory"))
 	facts.Reload()
 
-	guard, host, err := buildTools(cfg, st, facts, sqlitefts.New(st.DB()), nil)
+	guard, host, err := buildTools(cfg, st, facts, sqlitefts.New(st.DB()), skillfiles.NewCaches(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

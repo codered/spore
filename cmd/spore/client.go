@@ -108,27 +108,52 @@ func (c *client) resolve(ctx context.Context, sessionID string, pendingID int64,
 		map[string]any{"allow": ans.Allow, "scope": string(ans.Scope)}, nil)
 }
 
-
 // setSummaryThrough moves the summary boundary for /clear. It patches the
 // session with summary_through so Snapshot skips messages at or below it.
 func (c *client) setSummaryThrough(ctx context.Context, sessionID string, throughSeq int) error {
-	return c.do(ctx, "PATCH", "/api/sessions/" + sessionID,
+	return c.do(ctx, "PATCH", "/api/sessions/"+sessionID,
 		map[string]int{"summary_through": throughSeq}, nil)
 }
 
 // compact triggers a manual compaction of the session via POST /compact.
 func (c *client) compact(ctx context.Context, sessionID string) error {
-	return c.do(ctx, "POST", "/api/sessions/" + sessionID + "/compact", nil, nil)
+	return c.do(ctx, "POST", "/api/sessions/"+sessionID+"/compact", nil, nil)
 }
 
 // getTranscript fetches the full transcript for /context and /usage.
 func (c *client) getTranscript(ctx context.Context, sessionID string) (map[string]any, error) {
 	var out map[string]any
-	if err := c.do(ctx, "GET", "/api/sessions/" + sessionID, nil, &out); err != nil {
+	if err := c.do(ctx, "GET", "/api/sessions/"+sessionID, nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
+
+// skillJSON is one skill in the /skills listing. It mirrors the daemon's
+// SkillJSON: name, description, estimated body size, and a loaded marker
+// derived from the transcript.
+type skillJSON struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	BodyTokens  int    `json:"body_tokens"`
+	Loaded      bool   `json:"loaded"`
+}
+
+// skillListJSON is the /skills response.
+type skillListJSON struct {
+	Skills []skillJSON `json:"skills"`
+	Errors []string    `json:"errors"`
+}
+
+// listSkills fetches the skills available to a session.
+func (c *client) listSkills(ctx context.Context, sessionID string) (skillListJSON, error) {
+	var out skillListJSON
+	if err := c.do(ctx, "GET", "/api/sessions/"+sessionID+"/skills", nil, &out); err != nil {
+		return skillListJSON{}, err
+	}
+	return out, nil
+}
+
 // streamFrom reads the session's server-sent events until ctx is cancelled,
 // the connection drops, or fn returns an error. It closes `connected` once
 // the stream is actually open, which is what lets a caller post a message

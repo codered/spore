@@ -12,6 +12,7 @@ import (
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/router"
+	"github.com/codered/spore/internal/skill"
 	"github.com/codered/spore/internal/store"
 	sporetrace "github.com/codered/spore/internal/trace"
 )
@@ -87,6 +88,11 @@ type Agent struct {
 	// production construction path (buildAgent) sets it, so nil in practice
 	// means a test built the Agent directly with New and never attached one.
 	Facts *memory.Cache
+	// Skills is the skills cache set shared with the skill tools: the tools
+	// and the prompt index read the same caches, with the same reload
+	// pattern. Nil means a test built the Agent directly with New; buildAgent
+	// attaches the real one.
+	Skills *skill.Caches
 }
 
 func New(st *store.Store, reg *provider.Registry, rt *router.Router, cfg *config.Config, tools ToolRunner) *Agent {
@@ -114,6 +120,14 @@ func (a *Agent) Snapshot(ctx context.Context, sessionID string) (Snapshot, error
 	}
 	if a.Facts != nil {
 		snap.Facts = a.Facts.Facts()
+	}
+	if a.Skills != nil {
+		// The directory is resolved the same way the skill tools resolve it,
+		// so the index and skill_load agree about what exists. An empty dir
+		// -- a workspace-scope session with no root of its own -- means no
+		// skills, not an error.
+		dir := a.Cfg.SkillsDir(policy.WorkspaceFrom(ctx))
+		snap.Skills = a.Skills.Skills(dir)
 	}
 	for _, r := range rows {
 		if r.Seq <= through {

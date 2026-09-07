@@ -11,37 +11,25 @@ everything below is what has been asked for since.
 
 ## Chat commands
 
-The interactive client has no commands. Wanted, in the order they were asked
-for:
+Closed. All five asked-for commands shipped: `/clear` and `/compact` in plan 7,
+and `/skills` with this change. The commands are client-side intercepts in the
+Bubble Tea model, with one daemon endpoint each where new server behaviour was
+needed (`POST /compact`, `GET /skills`); the open question about a combined
+`POST /api/sessions/{id}/commands` dispatch table was answered by the cheaper
+path -- plan 7 wired the intercepts, and the web UI never saw them.
 
-- `/clear` — start fresh. Ambiguous by design: spore never deletes messages,
-  so this is either a new session or a summary boundary moved to "now".
-- `/compact` — run `MaybeCompact` on demand rather than waiting for the
-  0.75 threshold. The mechanism already exists (`internal/agent/compact.go`);
-  what is missing is a way to ask for it.
-- `/context` — what is in the prompt right now: system, environment section,
-  facts, summary, live messages, each with its token estimate.
-  `SnapshotTokens` already computes every part of this.
-- `/usage` — tokens and cost, for the session and in total. The `messages`
-  table already carries `tokens_in`, `tokens_out` and `cost_usd` per row.
-- `/skills` — meaning undecided; see the open question below.
+The `/skills` open question was answered by building the reading that was
+asked for: `SKILL.md` folders under the data directory, loaded on demand
+through `skill_load` and the ask-gated `skill_install`. The command lists each
+skill with its estimated body size, marks the ones already loaded by scanning
+the transcript for `skill_load` calls, and reports the per-file errors `Load`
+returned.
 
-**Open questions**
-
-1. Do commands live in the daemon API or in the terminal client? The spec's
-   invariant is that the CLI and the web UI are thin clients over one API
-   (section 8), which argues for `POST /api/sessions/{id}/commands` so every
-   surface gets them and the behaviour is tested once. The cheaper answer is
-   to handle them in the Bubble Tea model, where the web UI never sees them.
-2. What is a skill here? Three readings, and they are different sizes:
-   Claude-Code-style `SKILL.md` folders loaded on demand (a subsystem the
-   size of the facts plan); an introspection command listing the tools
-   actually available and the policy decision each would get (no new
-   subsystem); or a pin over the existing fact files, which are already
-   markdown with frontmatter.
-3. What does `/clear` do to a session that a bridge is bound to? A Discord
-   thread maps to one session (`bridge_bindings`), so "new session" would
-   silently unbind the thread.
+Scoping the command found a wiring bug that shipped with the skills
+subsystem: `Snapshot.Skills` was never populated, so the "Skills you can
+load" index in the system prompt was empty in every production turn. The fix
+is in this change -- the agent holds the same `*skill.Caches` the tools were
+built with, and `Snapshot` fills the index on every turn.
 
 ## Sub-agents
 
