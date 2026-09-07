@@ -397,3 +397,32 @@ func TestRenderedMarkdownHasNoTrailingWhitespace(t *testing.T) {
 		t.Errorf("content lost while trimming:\n%s", plain(out))
 	}
 }
+
+func TestNewestSeqReadsTheLastMessage(t *testing.T) {
+	transcript := map[string]any{
+		"messages": []any{
+			map[string]any{"seq": float64(1)},
+			map[string]any{"seq": float64(2)},
+			map[string]any{"seq": float64(3)},
+		},
+	}
+	if got := newestSeq(transcript); got != 3 {
+		t.Fatalf("newestSeq = %d, want 3", got)
+	}
+}
+
+// A session with no messages, or a payload that does not carry them, must
+// report 0 -- /clear then has nothing to do. Anything else would invent a
+// boundary past the end, which is what hid every later message before.
+func TestNewestSeqOfAnEmptyOrOddTranscriptIsZero(t *testing.T) {
+	for name, transcript := range map[string]map[string]any{
+		"no messages key": {},
+		"empty list":      {"messages": []any{}},
+		"wrong shape":     {"messages": "not a list"},
+		"missing seq":     {"messages": []any{map[string]any{"role": "user"}}},
+	} {
+		if got := newestSeq(transcript); got != 0 {
+			t.Errorf("%s: newestSeq = %d, want 0", name, got)
+		}
+	}
+}
