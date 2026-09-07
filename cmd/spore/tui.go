@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"math"
 	"strings"
 
 	"context"
@@ -597,12 +596,12 @@ func firstLine(s string) string {
 	return s
 }
 
-// handleClear moves the summary boundary to "now" so all messages are folded.
+// handleClear removes all current messages from the live model context.
 func (m *chatUI) handleClear(ctx context.Context, c *client, sessionID string) tea.Cmd {
 	return tea.Sequence(
 		m.flush(styMuted.Render("  · clearing…")),
 		func() tea.Msg {
-			if err := c.setSummaryThrough(ctx, sessionID, math.MaxInt32); err != nil {
+			if err := c.clear(ctx, sessionID); err != nil {
 				return slashErrMsg{err}
 			}
 			return slashDoneMsg{"cleared"}
@@ -670,11 +669,15 @@ func (m *chatUI) handleSkills(ctx context.Context, c *client, sessionID string) 
 func (m *chatUI) renderContext(data map[string]any, showCost bool) tea.Cmd {
 	msgs := data["messages"]
 	totalTokens := 0
+	through := castInt(data["summary_through"])
 	count := 0
 	if msgs != nil {
 		if arr, ok := msgs.([]any); ok {
 			for _, raw := range arr {
 				if msg, ok := raw.(map[string]any); ok {
+					if castInt(msg["seq"]) <= through {
+						continue
+					}
 					inVal := 0
 					outVal := 0
 					if v := msg["tokens_in"]; v != nil {

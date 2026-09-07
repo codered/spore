@@ -398,6 +398,23 @@ func TestRenderedMarkdownHasNoTrailingWhitespace(t *testing.T) {
 	}
 }
 
+func TestRenderContextCountsOnlyMessagesAfterSummaryBoundary(t *testing.T) {
+	h := newHarness(t)
+	data := map[string]any{
+		"summary_through": float64(2),
+		"messages": []any{
+			map[string]any{"seq": float64(1), "tokens_in": float64(100)},
+			map[string]any{"seq": float64(2), "tokens_out": float64(200)},
+			map[string]any{"seq": float64(3), "tokens_in": float64(7), "tokens_out": float64(5)},
+		},
+	}
+	h.drain(h.ui.renderContext(data, false))
+	got := h.transcript()
+	if !strings.Contains(got, "messages: 1") || !strings.Contains(got, "tokens: ~12") {
+		t.Fatalf("context output = %q, want one live message and 12 tokens", got)
+	}
+}
+
 // TestRenderSkills formats the skills listing with the loaded marker, the
 // body token estimate, and per-file errors.
 func TestRenderSkills(t *testing.T) {

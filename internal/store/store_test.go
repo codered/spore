@@ -94,7 +94,6 @@ func TestSetSummaryThroughMovesTheBoundary(t *testing.T) {
 	}
 }
 
-
 func TestSummaryRoundTripAndSessionListing(t *testing.T) {
 	ctx := context.Background()
 	s := openTestStore(t)
@@ -720,4 +719,49 @@ func TestOpenMigratesSessionsWorkspace(t *testing.T) {
 	}
 
 	s3.Close()
+}
+
+func TestClearThroughLatestMessageRepairsOversizedBoundary(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	sid, err := s.CreateSession(ctx, "test", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []string{"user", "assistant"} {
+		if _, err := s.AppendMessage(ctx, Message{
+			SessionID: sid, Role: role, BlocksJSON: []byte(`[{"type":"text","text":"x"}]`),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetSummary(ctx, sid, "obsolete secret summary", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSummaryThrough(ctx, sid, int(^uint(0)>>1)); err != nil {
+		t.Fatal(err)
+	}
+
+	through, err := s.ClearThroughLatestMessage(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if through != 2 {
+		t.Fatalf("clear boundary = %d, want 2", through)
+	}
+	_, stored, err := s.Summary(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var indexed int
+	if err := s.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM recall_fts WHERE kind = ? AND ref_id = ?`, kindSummary, sid).Scan(&indexed); err != nil {
+		t.Fatal(err)
+	}
+	if indexed != 0 {
+		t.Fatalf("summary index rows after clear = %d, want 0", indexed)
+	}
+	if stored != 2 {
+		t.Fatalf("stored summary boundary = %d, want 2", stored)
+	}
 }

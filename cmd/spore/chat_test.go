@@ -39,6 +39,21 @@ func TestRunPlainSlashListsSkillsWithoutPostingAMessage(t *testing.T) {
 	}
 }
 
+func TestClearPostsToDedicatedEndpoint(t *testing.T) {
+	var method, path string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		_ = json.NewEncoder(w).Encode(map[string]int{"summary_through": 4})
+	}))
+	defer ts.Close()
+	c := &client{base: ts.URL, short: ts.Client(), streamClient: ts.Client()}
+	if err := c.clear(context.Background(), "s1"); err != nil {
+		t.Fatal(err)
+	}
+	if method != http.MethodPost || path != "/api/sessions/s1/clear" {
+		t.Fatalf("request = %s %s, want POST /api/sessions/s1/clear", method, path)
+	}
+}
 func TestRunPlainSlashLeavesOrdinaryMessagesAlone(t *testing.T) {
 	handled, err := runPlainSlash(context.Background(), nil, "s1", "hello", &bytes.Buffer{})
 	if err != nil {

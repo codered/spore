@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/provider"
+	"github.com/codered/spore/internal/store"
 )
 
 // TestStartTurnCarriesTheProfile asserts that the profile parameter reaches
@@ -208,6 +210,92 @@ func TestPatchSessionReRoots(t *testing.T) {
 	}
 }
 
+func TestClearSessionMovesBoundaryToLatestMessage(t *testing.T) {
+	srv, ts := newTestServer(t)
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+	ctx := context.Background()
+	for _, role := range []string{"user", "assistant"} {
+		raw, _ := json.Marshal([]provider.Block{{Type: provider.BlockText, Text: role}})
+		if _, err := srv.store.AppendMessage(ctx, store.Message{
+			SessionID: created.ID, Role: role, BlocksJSON: raw,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := srv.store.SetSummaryThrough(ctx, created.ID, math.MaxInt32); err != nil {
+		t.Fatal(err)
+	}
+
+	res := postJSON(t, ts.URL+"/api/sessions/"+created.ID+"/clear", nil)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("POST clear: status = %d, want 200", res.StatusCode)
+	}
+	_, through, err := srv.store.Summary(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if through != 2 {
+		t.Fatalf("summary boundary = %d, want 2", through)
+	}
+	raw, _ := json.Marshal([]provider.Block{{Type: provider.BlockText, Text: "new question"}})
+	if _, err := srv.store.AppendMessage(ctx, store.Message{
+		SessionID: created.ID, Role: "user", BlocksJSON: raw,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := srv.agent.Snapshot(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Messages) != 1 || snap.Messages[0].Role != provider.RoleUser {
+		t.Fatalf("messages after clear = %+v, want the new user message", snap.Messages)
+	}
+}
+
+func TestTranscriptReportsSummaryBoundary(t *testing.T) {
+	srv, ts := newTestServer(t)
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+	if err := srv.store.SetSummaryThrough(context.Background(), created.ID, 7); err != nil {
+		t.Fatal(err)
+	}
+	res, err := http.Get(ts.URL + "/api/sessions/" + created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var got TranscriptJSON
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.SummaryThrough != 7 {
+		t.Fatalf("summary_through = %d, want 7", got.SummaryThrough)
+	}
+}
+func TestClearSessionRejectsRunningTurn(t *testing.T) {
+	srv, ts := newTestServer(t)
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+	if !srv.hub.Begin(created.ID) {
+		t.Fatal("failed to mark session running")
+	}
+	defer srv.hub.End(created.ID)
+	res := postJSON(t, ts.URL+"/api/sessions/"+created.ID+"/clear", nil)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("POST clear during turn: status = %d, want 409", res.StatusCode)
+	}
+}
+func TestClearSessionRejectsUnknownSession(t *testing.T) {
+	_, ts := newTestServer(t)
+	res := postJSON(t, ts.URL+"/api/sessions/missing/clear", nil)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST clear for unknown session: status = %d, want 404", res.StatusCode)
+	}
+}
 func TestPatchSessionMovesSummaryBoundary(t *testing.T) {
 	srv, ts := newTestServer(t)
 	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
