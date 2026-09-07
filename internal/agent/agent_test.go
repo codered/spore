@@ -531,6 +531,32 @@ func TestSnapshotWithNoFactCacheIsEmpty(t *testing.T) {
 	}
 }
 
+// The skills index is part of the prompt on every turn, so the snapshot must
+// fill it from the caches the skill tools already use, or the index would be
+// empty in production.
+func TestSnapshotIncludesSkillsFromTheCache(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	if err := skill.Write(dir, skill.Skill{Name: "review", Description: "check a change", Body: "checklist"}); err != nil {
+		t.Fatal(err)
+	}
+	a := newTestAgent(t)
+	a.Skills = skill.NewCaches()
+	a.Cfg.Skills.Dir = dir
+
+	sid, err := a.Store.CreateSession(ctx, "t", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := a.Snapshot(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Skills) != 1 || snap.Skills[0].Name != "review" {
+		t.Fatalf("skills not loaded into the snapshot: %+v", snap.Skills)
+	}
+}
+
 func TestSnapshotDescribesTheSessionsWorkspace(t *testing.T) {
 	a, st := harness(t, provider.NewScript(), nil)
 	a.Env = func(root string) string { return "root=" + root }

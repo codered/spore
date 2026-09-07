@@ -131,6 +131,31 @@ func (c *client) getTranscript(ctx context.Context, sessionID string) (map[strin
 	return out, nil
 }
 
+// skillJSON is one skill in the /skills listing. It mirrors the daemon's
+// SkillJSON: name, description, estimated body size, and a loaded marker
+// derived from the transcript.
+type skillJSON struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	BodyTokens  int    `json:"body_tokens"`
+	Loaded      bool   `json:"loaded"`
+}
+
+// skillListJSON is the /skills response.
+type skillListJSON struct {
+	Skills []skillJSON `json:"skills"`
+	Errors []string    `json:"errors"`
+}
+
+// listSkills fetches the skills available to a session.
+func (c *client) listSkills(ctx context.Context, sessionID string) (skillListJSON, error) {
+	var out skillListJSON
+	if err := c.do(ctx, "GET", "/api/sessions/"+sessionID+"/skills", nil, &out); err != nil {
+		return skillListJSON{}, err
+	}
+	return out, nil
+}
+
 // streamFrom reads the session's server-sent events until ctx is cancelled,
 // the connection drops, or fn returns an error. It closes `connected` once
 // the stream is actually open, which is what lets a caller post a message

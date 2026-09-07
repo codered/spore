@@ -13,6 +13,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"strconv"
+	"time"
 
 	"github.com/codered/spore/internal/daemon"
 	"github.com/codered/spore/internal/policy"
@@ -36,6 +38,7 @@ type (
 		data     map[string]any
 		showCost bool
 	}
+	slashSkillsMsg struct{ list skillListJSON }
 )
 
 type chatState int
@@ -208,6 +211,9 @@ func (m *chatUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case slashUsageMsg:
 		return m, m.renderUsage(msg.data, msg.showCost)
+
+	case slashSkillsMsg:
+		return m, m.renderSkills(msg.list)
 	case tea.KeyMsg:
 		return m, m.handleKey(msg)
 	}
@@ -534,7 +540,7 @@ func (m *chatUI) renderSlashHint(val string) string {
 	parts := []string{
 		styKey.Render("enter") + styMuted.Render(" send"),
 	}
-	cmds := []string{"clear", "compact", "context", "usage"}
+	cmds := []string{"clear", "compact", "context", "usage", "skills"}
 	for _, cmd := range cmds {
 		if strings.HasPrefix(cmd, val[1:]) || val[1:] == "" {
 			parts = append(parts, styKey.Render("/"+cmd)+styMuted.Render(" "+slashDesc(cmd)))
@@ -553,6 +559,8 @@ func slashDesc(cmd string) string {
 		return "show context tokens"
 	case "usage":
 		return "show usage stats"
+	case "skills":
+		return "list skills"
 	default:
 		return ""
 	}
@@ -698,6 +706,21 @@ func (m *chatUI) handleUsage(ctx context.Context, c *client, sessionID string, s
 	)
 }
 
+// handleSkills shows the skills available to this session, with loaded
+// markers and per-file errors.
+func (m *chatUI) handleSkills(ctx context.Context, c *client, sessionID string) tea.Cmd {
+	return tea.Sequence(
+		m.flush(styMuted.Render("  · loading skills…")),
+		func() tea.Msg {
+			list, err := c.listSkills(ctx, sessionID)
+			if err != nil {
+				return slashErrMsg{err}
+			}
+			return slashSkillsMsg{list: list}
+		},
+	)
+}
+
 // renderContext displays a token breakdown for the session transcript.
 func (m *chatUI) renderContext(data map[string]any, showCost bool) tea.Cmd {
 	msgs := data["messages"]
@@ -771,6 +794,36 @@ func (m *chatUI) renderUsage(data map[string]any, showCost bool) tea.Cmd {
 		b.WriteString("    cost: $" + fmt.Sprintf("%.4f", cost) + "\n")
 	}
 	return m.flush(b.String())
+}
+
+// renderSkills formats the /skills listing: one line per skill with name,
+// description, body token estimate and a loaded marker, then one line per
+// load error. Both the Bubble Tea loop and the plain loop print it.
+func (m *chatUI) renderSkills(list skillListJSON) tea.Cmd {
+	var b strings.Builder
+	b.WriteString("  skills\n")
+	if len(list.Skills) == 0 && len(list.Errors) == 0 {
+		b.WriteString("    none\n")
+	}
+	for _, sk := range list.Skills {
+		marker := "  "
+		if sk.Loaded {
+			marker = "· "
+		}
+		fmt.Fprintf(&b, "  %s%s — %s (~%d tokens%s)\n", marker, sk.Name, sk.Description, sk.BodyTokens, loadedSuffix(sk.Loaded))
+	}
+	for _, e := range list.Errors {
+		fmt.Fprintf(&b, "  ! %s\n", e)
+	}
+	return m.flush(b.String())
+}
+
+// loadedSuffix marks a skill already pulled into the transcript.
+func loadedSuffix(loaded bool) string {
+	if loaded {
+		return ", loaded"
+	}
+	return ""
 }
 
 // castInt safely converts an any to int, returning 0 on failure.

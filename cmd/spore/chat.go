@@ -68,7 +68,7 @@ func chatTUI(ctx context.Context, cfg *config.Config, c *client, sessionID strin
 		return c.resolve(streamCtx, sessionID, pendingID, ans)
 	}
 
-	// slashHandler intercepts /clear, /compact, /context and /usage.
+	// slashHandler intercepts /clear, /compact, /context, /usage and /skills.
 	ui.slashHandler = func(input string) tea.Cmd {
 		cmd, _ := strings.CutPrefix(input, "/")
 		cmd = strings.ToLower(cmd)
@@ -81,6 +81,8 @@ func chatTUI(ctx context.Context, cfg *config.Config, c *client, sessionID strin
 			return ui.handleContext(streamCtx, c, sessionID, cfg.ShowCost)
 		case "usage":
 			return ui.handleUsage(streamCtx, c, sessionID, cfg.ShowCost)
+		case "skills":
+			return ui.handleSkills(streamCtx, c, sessionID)
 		default:
 			return tea.Sequence(
 				ui.flush(styDanger.Render("  ✗ unknown command: /" + cmd)),

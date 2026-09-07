@@ -438,3 +438,30 @@ func TestNewestSeqOfAnEmptyOrOddTranscriptIsZero(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderSkills formats the skills listing with the loaded marker, the
+// body token estimate, and per-file errors.
+func TestRenderSkills(t *testing.T) {
+	h := newHarness(t)
+	list := skillListJSON{
+		Skills: []skillJSON{
+			{Name: "alpha", Description: "the alpha skill", BodyTokens: 120, Loaded: true},
+			{Name: "beta", Description: "the beta skill", BodyTokens: 80, Loaded: false},
+		},
+		Errors: []string{`gamma: unknown frontmatter key "bad"`},
+	}
+	h.drain(h.ui.renderSkills(list))
+	got := h.transcript()
+	if !strings.Contains(got, "alpha") {
+		t.Errorf("missing skill name: %q", got)
+	}
+	if !strings.Contains(got, "120") {
+		t.Errorf("missing body token estimate: %q", got)
+	}
+	if !strings.Contains(got, "loaded") {
+		t.Errorf("missing loaded marker: %q", got)
+	}
+	if !strings.Contains(got, "gamma") {
+		t.Errorf("missing error line: %q", got)
+	}
+}
