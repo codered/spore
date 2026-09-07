@@ -48,6 +48,8 @@ See [Installation](#installation) and [Configuration](#configure) for details.
 - [Installation](#installation)
 - [Usage](#usage)
   - [Chat interface](#the-chat-interface)
+  - [Slash commands](#slash-commands)
+  - [Skills](#skills)
   - [One-shot queries](#one-shot-queries)
   - [Sessions](#sessions)
   - [Scheduled jobs](#scheduled-jobs)
@@ -75,6 +77,8 @@ See [Installation](#installation) and [Configuration](#configure) for details.
 | **MCP hosting** | Declare MCP servers; their tools are offered to the model as `mcp__<server>__<tool>` |
 | **Discord bridge** | Drive spore from Discord with thread-per-session and approval buttons |
 | **Memory & recall** | Hand-written facts + keyword search (always on); optional Weaviate for semantic search |
+| **Skills** | `SKILL.md` procedures the model loads on demand; installing one always asks |
+| **Slash commands** | `/clear`, `/compact`, `/context`, `/usage` in the chat interface |
 | **Tracing** | Optional OpenTelemetry spans via Phoenix UI (`spore trace setup`) |
 | **Scheduled jobs** | Cron-based or one-shot prompts that fire new sessions |
 | **Single binary** | No build step, no dependencies — just `go build` and you're in |
@@ -127,6 +131,58 @@ prose is rendered as markdown.
 Messages typed while a turn is running are queued and sent when it ends.
 With stdin or stdout redirected, `spore chat` falls back to a plain
 line-at-a-time loop, so pipes and scripts behave as they always did.
+
+#### Slash commands
+
+Type `/` to see them. They are handled by the chat interface itself, so they
+are not available in the plain fallback loop, the web UI, or Discord.
+
+| Command | What it does |
+| --- | --- |
+| `/clear` | Start fresh: moves the summary boundary to the newest message. Nothing is deleted — the transcript stays whole, and recall still finds it. |
+| `/compact` | Fold the older messages into a summary now, without waiting for the automatic threshold. Reports how many messages were folded. |
+| `/context` | What is in the prompt right now: system, environment, facts, skills, summary and live messages, each with its token estimate. |
+| `/usage` | Tokens and cost, for this session and across every session. |
+
+### Skills
+
+A skill is a markdown document of instructions for one kind of work —
+a release checklist, a review procedure, house style for a codebase. Each
+lives in its own directory:
+
+```
+~/.spore/skills/release-checklist/SKILL.md
+```
+
+```markdown
+---
+name: release-checklist
+description: How to cut a spore release
+---
+
+Tag from master only. Run make test and make vet first...
+```
+
+Every prompt carries an index of the names and descriptions, and the model
+pulls a body in with `skill_load` when it needs one — so an unused skill costs
+one line, and you can see in the transcript when one was loaded.
+
+The skills directory sits outside the workspace ceiling, so the filesystem
+tools cannot reach it. The only way in is the `skill_install` tool, which asks
+for approval every time: the "always allow this pattern" answer is not offered
+for it, because a skill written once shapes every later conversation. Discord
+sessions cannot install one at all.
+
+```toml
+[skills]
+scope = "global"           # or "workspace"; global is the default
+dir   = "~/.spore/skills"  # optional; ignored under workspace scope
+```
+
+`workspace` scope reads `.spore/skills` under each session's own root instead,
+so a project's skills travel with it. Be deliberate about that one: a session
+rooted at a repository you cloned will read skills written by whoever wrote the
+repository.
 
 ### Scheduled jobs
 

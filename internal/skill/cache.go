@@ -83,9 +83,11 @@ func (c *Cache) fresh() bool {
 // process would have N sessions in N directories fighting over one set.
 //
 // Entries are never evicted. Under the default global scope there is exactly
-// one; the workspace scope bounds this by session history rather than by live
-// sessions, which is the same shape as internal/workspace's describer cache
-// and is tracked with it in docs/backlog.md.
+// one, so this costs nothing; under workspace scope it grows with the number
+// of distinct session roots the daemon has ever seen, which is bounded by
+// session history rather than by live sessions. internal/workspace's
+// Describers had the same shape and now sweeps idle roots on a TTL; this has
+// not been given the same treatment yet, and docs/backlog.md carries it.
 type Caches struct {
 	mu sync.Mutex
 	m  map[string]*Cache

@@ -5,43 +5,66 @@ records what was asked for -- or what was knowingly left undone -- and the open
 questions that must be answered before it can be specified, so the next
 brainstorm starts where this one stopped rather than from the request.
 
-Nothing here is a commitment to an order. Stages 5a, 5b, 5c and 6 have all
+Nothing here is a commitment to an order. Stages 5a, 5b, 5c, 6 and 7 have all
 shipped; the staged plan in section 11 of the design spec is complete, and
 everything below is what has been asked for since.
 
-## Chat commands
+## Chat commands and skills: shipped, with two things left
 
-The interactive client has no commands. Wanted, in the order they were asked
-for:
+Stage 7 shipped `/clear`, `/compact`, `/context` and `/usage` in the
+interactive client, plus the skills subsystem — `internal/skill`, the prompt
+index, `skill_load` and `skill_install`. The open questions this entry used to
+carry are answered:
 
-- `/clear` — start fresh. Ambiguous by design: spore never deletes messages,
-  so this is either a new session or a summary boundary moved to "now".
-- `/compact` — run `MaybeCompact` on demand rather than waiting for the
-  0.75 threshold. The mechanism already exists (`internal/agent/compact.go`);
-  what is missing is a way to ask for it.
-- `/context` — what is in the prompt right now: system, environment section,
-  facts, summary, live messages, each with its token estimate.
-  `SnapshotTokens` already computes every part of this.
-- `/usage` — tokens and cost, for the session and in total. The `messages`
-  table already carries `tokens_in`, `tokens_out` and `cost_usd` per row.
-- `/skills` — meaning undecided; see the open question below.
+1. **Commands live in the client.** They are intercepted in the Bubble Tea
+   model; only `/compact` needed an endpoint, because it runs agent code. The
+   design spec's thin-client preference lost to the cheaper answer, and the
+   cost is real and recorded below.
+2. **A skill is a `SKILL.md` folder**, loaded on demand through a tool. Bodies
+   never sit in the prompt: the index carries names and descriptions, and
+   `skill_load` fetches one, which keeps an unused skill at one line and makes
+   loading visible in the transcript.
+3. **`/clear` moves the summary boundary**, so a Discord thread bound to the
+   session keeps working. Nothing is deleted.
+
+Two things are left.
+
+**`/skills` does not exist.** The subsystem it would list is shipped, so this
+is now a small piece of work rather than an open question: list each skill's
+name, description and body size, mark the ones already loaded this session (a
+scan of the transcript for `skill_load` results — no new state is needed), and
+report the per-file load errors so a skill with broken frontmatter is visible
+rather than merely absent.
+
+**Only the full-screen client has commands.** `chatPlain` — the loop `spore
+chat` falls back to when either end is a pipe — the web UI, and the Discord
+bridge all have none, because the dispatcher lives in the Bubble Tea model.
+Adding a second surface means either reimplementing four commands there or
+moving them behind `POST /api/sessions/{id}/commands` after all, which is what
+`2026-09-04-spore-chat-commands-skills-design.md` section 2 argued for. The
+question is worth reopening only when a second surface actually wants them.
+
+## The skill cache never evicts
+
+`skill.Caches` holds one `Cache` per skills directory and nothing removes an
+entry. Under the default global scope that is exactly one entry and costs
+nothing. Under `skills.scope = "workspace"` it is one entry per distinct
+session root the daemon has ever served — a mutex, a timestamp and a list of
+names and descriptions each — so it grows with session history rather than
+with live sessions.
+
+This is the gap `internal/workspace/describers.go` used to have and no longer
+does: `Describers.Describe` sweeps entries idle beyond `idleTTL` on every
+miss, which is about ten lines and bounds the map by live use. The same sweep
+would work here unchanged.
 
 **Open questions**
 
-1. Do commands live in the daemon API or in the terminal client? The spec's
-   invariant is that the CLI and the web UI are thin clients over one API
-   (section 8), which argues for `POST /api/sessions/{id}/commands` so every
-   surface gets them and the behaviour is tested once. The cheaper answer is
-   to handle them in the Bubble Tea model, where the web UI never sees them.
-2. What is a skill here? Three readings, and they are different sizes:
-   Claude-Code-style `SKILL.md` folders loaded on demand (a subsystem the
-   size of the facts plan); an introspection command listing the tools
-   actually available and the policy decision each would get (no new
-   subsystem); or a pin over the existing fact files, which are already
-   markdown with frontmatter.
-3. What does `/clear` do to a session that a bridge is bound to? A Discord
-   thread maps to one session (`bridge_bindings`), so "new session" would
-   silently unbind the thread.
+1. Is a TTL sweep the right rule for skills, given a skills directory is read
+   far less often than an environment section is rebuilt? A cache that is only
+   consulted once per turn may want a longer idle window than the describers'.
+2. Is anything else keyed by session root and unbounded, or are these the only
+   two?
 
 ## Sub-agents
 
