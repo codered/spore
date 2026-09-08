@@ -438,3 +438,47 @@ func TestNewestSeqOfAnEmptyOrOddTranscriptIsZero(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderContextCountsOnlyMessagesAfterSummaryBoundary(t *testing.T) {
+	h := newHarness(t)
+	data := map[string]any{
+		"summary_through": float64(2),
+		"messages": []any{
+			map[string]any{"seq": float64(1), "tokens_in": float64(100)},
+			map[string]any{"seq": float64(2), "tokens_out": float64(200)},
+			map[string]any{"seq": float64(3), "tokens_in": float64(7), "tokens_out": float64(5)},
+		},
+	}
+	h.drain(h.ui.renderContext(data, false))
+	got := h.transcript()
+	if !strings.Contains(got, "messages: 1") || !strings.Contains(got, "tokens: ~12") {
+		t.Fatalf("context output = %q, want one live message and 12 tokens", got)
+	}
+}
+
+// TestRenderSkills formats the skills listing with the loaded marker, the
+// body token estimate, and per-file errors.
+func TestRenderSkills(t *testing.T) {
+	h := newHarness(t)
+	list := skillListJSON{
+		Skills: []skillJSON{
+			{Name: "alpha", Description: "the alpha skill", BodyTokens: 120, Loaded: true},
+			{Name: "beta", Description: "the beta skill", BodyTokens: 80, Loaded: false},
+		},
+		Errors: []string{`gamma: unknown frontmatter key "bad"`},
+	}
+	h.drain(h.ui.renderSkills(list))
+	got := h.transcript()
+	if !strings.Contains(got, "alpha") {
+		t.Errorf("missing skill name: %q", got)
+	}
+	if !strings.Contains(got, "120") {
+		t.Errorf("missing body token estimate: %q", got)
+	}
+	if !strings.Contains(got, "loaded") {
+		t.Errorf("missing loaded marker: %q", got)
+	}
+	if !strings.Contains(got, "gamma") {
+		t.Errorf("missing error line: %q", got)
+	}
+}

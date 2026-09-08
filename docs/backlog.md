@@ -11,38 +11,25 @@ everything below is what has been asked for since.
 
 ## Chat commands and skills: shipped, with two things left
 
-Stage 7 shipped `/clear`, `/compact`, `/context` and `/usage` in the
-interactive client, plus the skills subsystem — `internal/skill`, the prompt
-index, `skill_load` and `skill_install`. The open questions this entry used to
-carry are answered:
+Closed. All five asked-for commands shipped: `/clear` and `/compact` in plan 7,
+and `/skills` with this change. The commands are client-side intercepts in the
+Bubble Tea model, with one daemon endpoint each where new server behaviour was
+needed (`POST /compact`, `GET /skills`); the open question about a combined
+`POST /api/sessions/{id}/commands` dispatch table was answered by the cheaper
+path -- plan 7 wired the intercepts, and the web UI never saw them.
 
-1. **Commands live in the client.** They are intercepted in the Bubble Tea
-   model; only `/compact` needed an endpoint, because it runs agent code. The
-   design spec's thin-client preference lost to the cheaper answer, and the
-   cost is real and recorded below.
-2. **A skill is a `SKILL.md` folder**, loaded on demand through a tool. Bodies
-   never sit in the prompt: the index carries names and descriptions, and
-   `skill_load` fetches one, which keeps an unused skill at one line and makes
-   loading visible in the transcript.
-3. **`/clear` moves the summary boundary**, so a Discord thread bound to the
-   session keeps working. Nothing is deleted.
+The `/skills` open question was answered by building the reading that was
+asked for: `SKILL.md` folders under the data directory, loaded on demand
+through `skill_load` and the ask-gated `skill_install`. The command lists each
+skill with its estimated body size, marks the ones already loaded by scanning
+the transcript for `skill_load` calls, and reports the per-file errors `Load`
+returned.
 
-Two things are left.
-
-**`/skills` does not exist.** The subsystem it would list is shipped, so this
-is now a small piece of work rather than an open question: list each skill's
-name, description and body size, mark the ones already loaded this session (a
-scan of the transcript for `skill_load` results — no new state is needed), and
-report the per-file load errors so a skill with broken frontmatter is visible
-rather than merely absent.
-
-**Only the full-screen client has commands.** `chatPlain` — the loop `spore
-chat` falls back to when either end is a pipe — the web UI, and the Discord
-bridge all have none, because the dispatcher lives in the Bubble Tea model.
-Adding a second surface means either reimplementing four commands there or
-moving them behind `POST /api/sessions/{id}/commands` after all, which is what
-`2026-09-04-spore-chat-commands-skills-design.md` section 2 argued for. The
-question is worth reopening only when a second surface actually wants them.
+Scoping the command found a wiring bug that shipped with the skills
+subsystem: `Snapshot.Skills` was never populated, so the "Skills you can
+load" index in the system prompt was empty in every production turn. The fix
+is in this change -- the agent holds the same `*skill.Caches` the tools were
+built with, and `Snapshot` fills the index on every turn.
 
 ## The skill cache never evicts
 

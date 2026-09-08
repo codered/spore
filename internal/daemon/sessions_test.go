@@ -210,6 +210,92 @@ func TestPatchSessionReRoots(t *testing.T) {
 	}
 }
 
+func TestClearSessionMovesBoundaryToLatestMessage(t *testing.T) {
+	srv, ts := newTestServer(t)
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+	ctx := context.Background()
+	for _, role := range []string{"user", "assistant"} {
+		raw, _ := json.Marshal([]provider.Block{{Type: provider.BlockText, Text: role}})
+		if _, err := srv.store.AppendMessage(ctx, store.Message{
+			SessionID: created.ID, Role: role, BlocksJSON: raw,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := srv.store.SetSummaryThrough(ctx, created.ID, math.MaxInt32); err != nil {
+		t.Fatal(err)
+	}
+
+	res := postJSON(t, ts.URL+"/api/sessions/"+created.ID+"/clear", nil)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("POST clear: status = %d, want 200", res.StatusCode)
+	}
+	_, through, err := srv.store.Summary(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if through != 2 {
+		t.Fatalf("summary boundary = %d, want 2", through)
+	}
+	raw, _ := json.Marshal([]provider.Block{{Type: provider.BlockText, Text: "new question"}})
+	if _, err := srv.store.AppendMessage(ctx, store.Message{
+		SessionID: created.ID, Role: "user", BlocksJSON: raw,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := srv.agent.Snapshot(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Messages) != 1 || snap.Messages[0].Role != provider.RoleUser {
+		t.Fatalf("messages after clear = %+v, want the new user message", snap.Messages)
+	}
+}
+
+func TestTranscriptReportsSummaryBoundary(t *testing.T) {
+	srv, ts := newTestServer(t)
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+	if err := srv.store.SetSummaryThrough(context.Background(), created.ID, 7); err != nil {
+		t.Fatal(err)
+	}
+	res, err := http.Get(ts.URL + "/api/sessions/" + created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var got TranscriptJSON
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.SummaryThrough != 7 {
+		t.Fatalf("summary_through = %d, want 7", got.SummaryThrough)
+	}
+}
+func TestClearSessionRejectsRunningTurn(t *testing.T) {
+	srv, ts := newTestServer(t)
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+	if !srv.hub.Begin(created.ID) {
+		t.Fatal("failed to mark session running")
+	}
+	defer srv.hub.End(created.ID)
+	res := postJSON(t, ts.URL+"/api/sessions/"+created.ID+"/clear", nil)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("POST clear during turn: status = %d, want 409", res.StatusCode)
+	}
+}
+func TestClearSessionRejectsUnknownSession(t *testing.T) {
+	_, ts := newTestServer(t)
+	res := postJSON(t, ts.URL+"/api/sessions/missing/clear", nil)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST clear for unknown session: status = %d, want 404", res.StatusCode)
+	}
+}
 func TestPatchSessionMovesSummaryBoundary(t *testing.T) {
 	srv, ts := newTestServer(t)
 	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
@@ -345,6 +431,55 @@ func TestCompactConflictsWithARunningTurn(t *testing.T) {
 	if res.StatusCode != http.StatusConflict {
 		t.Fatalf("compact during a turn: status = %d, want 409", res.StatusCode)
 	}
+}
+
+// TestCompactHoldsTheTurnSlotWhileFolding proves that handleCompact claims
+// the turn slot atomically and releases it when done, preventing concurrent
+// turns from starting (which would snapshot a boundary the fold is about to move).
+// The old code used Running() as a check, not a claim, so between the check and
+// the fold a turn could start and snapshot the boundary being moved. This test
+// covers both sides: the handler cannot claim when a turn is already running
+// (claim-side), and the handler releases the slot it claimed (release-side).
+func TestCompactHoldsTheTurnSlotWhileFolding(t *testing.T) {
+	srv, ts := newTestServer(t, provider.ScriptTurn{Text: "SUMMARY: the user rambled"})
+	srv.cfg.Context.MaxTokens = 200_000 // far above anything this session assembles
+	srv.cfg.Context.KeepRecent = 2
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+	seedSessionMessages(t, srv, created.ID, 6)
+
+	// Sanity: no turn is running, so the slot is available.
+	if !srv.hub.Begin(created.ID) {
+		t.Fatalf("precondition failed: slot is already taken before the test")
+	}
+	srv.hub.End(created.ID)
+
+	// Claim-side assertion: take the slot, POST /compact, confirm the handler
+	// cannot claim it (409). This proves the handler is trying to claim, not
+	// merely checking for a running turn.
+	if !srv.hub.Begin(created.ID) {
+		t.Fatalf("precondition failed: could not take the turn slot for the claim test")
+	}
+	res := postJSON(t, ts.URL+"/api/sessions/"+created.ID+"/compact", nil)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("POST /compact with slot held: status = %d, want 409 (handler must not claim the slot when one is held)", res.StatusCode)
+	}
+	srv.hub.End(created.ID)
+
+	// Release-side assertion: the handler must release the slot when done folding.
+	// POST /compact succeeds, and immediately after it returns, srv.hub.Begin
+	// must succeed. If the handler leaked the slot, the session would be wedged.
+	res = postJSON(t, ts.URL+"/api/sessions/"+created.ID+"/compact", nil)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("POST /compact when slot is free: status = %d, want 200", res.StatusCode)
+	}
+
+	if !srv.hub.Begin(created.ID) {
+		t.Fatalf("after POST /compact completed, srv.hub.Begin failed: handler leaked the turn slot and session is permanently wedged")
+	}
+	srv.hub.End(created.ID)
 }
 
 // seedSessionMessages appends n plain user messages to a session.

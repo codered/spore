@@ -41,8 +41,9 @@ type MessageJSON struct {
 }
 
 type TranscriptJSON struct {
-	Session  SessionJSON   `json:"session"`
-	Messages []MessageJSON `json:"messages"`
+	Session        SessionJSON   `json:"session"`
+	Messages       []MessageJSON `json:"messages"`
+	SummaryThrough int           `json:"summary_through"`
 	// Running reports whether a turn is in flight, so a client attaching
 	// mid-turn knows to expect deltas rather than assuming it is idle.
 	Running bool `json:"running"`
@@ -203,7 +204,12 @@ func (s *Server) handleShowSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "read messages: %v", err)
 		return
 	}
-	out := TranscriptJSON{Session: toSessionJSON(sess), Messages: []MessageJSON{}, Running: s.hub.Running(id)}
+	_, through, err := s.store.Summary(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "read summary boundary: %v", err)
+		return
+	}
+	out := TranscriptJSON{Session: toSessionJSON(sess), Messages: []MessageJSON{}, SummaryThrough: through, Running: s.hub.Running(id)}
 	for _, m := range rows {
 		var blocks []provider.Block
 		if err := json.Unmarshal(m.BlocksJSON, &blocks); err != nil {
@@ -257,6 +263,26 @@ type CompactJSON struct {
 	After  int `json:"after"`
 }
 
+// handleClear removes the current transcript from the live model context.
+// The store chooses the boundary so future message sequences remain visible.
+func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, ok := s.findSession(w, r, id); !ok {
+		return
+	}
+	if !s.hub.Begin(id) {
+		writeError(w, http.StatusConflict, "session %s has a turn running", id)
+		return
+	}
+	defer s.hub.End(id)
+	through, err := s.store.ClearThroughLatestMessage(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "clear session: %v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"summary_through": through})
+}
+
 // handleCompact folds the session now. It calls Compact rather than
 // MaybeCompact on purpose: /compact is a manual override, so it must fold
 // whatever lies outside the protected recent window even when the session is
@@ -269,11 +295,14 @@ func (s *Server) handleCompact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Compaction rewrites the summary boundary a running turn is reading, so
-	// it waits for the turn rather than moving the ground under it.
-	if s.hub.Running(id) {
-		writeError(w, http.StatusConflict, "session %s already has a turn running", id)
+	// it takes the turn slot rather than merely checking for one: between a
+	// Running() check and the fold, a turn could start and snapshot the
+	// boundary this is about to move.
+	if !s.hub.Begin(id) {
+		writeError(w, http.StatusConflict, "session %s has a turn running", id)
 		return
 	}
+	defer s.hub.End(id)
 	// The session's own root, exactly as a turn supplies it: Snapshot renders
 	// the environment section and the skills index from it, and both are part
 	// of the estimate this reports.

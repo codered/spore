@@ -88,13 +88,11 @@ type Agent struct {
 	// production construction path (buildAgent) sets it, so nil in practice
 	// means a test built the Agent directly with New and never attached one.
 	Facts *memory.Cache
-	// Skills returns the skills loadable from one session root, the way Env
-	// describes one. It takes the root because one agent serves every session
-	// and skills.scope = "workspace" gives each root a directory of its own.
-	// Nil means no skills index -- and therefore a model that cannot know a
-	// skill exists, since skill_load takes a name and nothing else supplies
-	// one.
-	Skills func(root string) []skill.Skill
+	// Skills is the skills cache set shared with the skill tools: the tools
+	// and the prompt index read the same caches, with the same reload
+	// pattern. Nil means a test built the Agent directly with New; buildAgent
+	// attaches the real one.
+	Skills *skill.Caches
 }
 
 func New(st *store.Store, reg *provider.Registry, rt *router.Router, cfg *config.Config, tools ToolRunner) *Agent {
@@ -124,9 +122,12 @@ func (a *Agent) Snapshot(ctx context.Context, sessionID string) (Snapshot, error
 		snap.Facts = a.Facts.Facts()
 	}
 	if a.Skills != nil {
-		// Same reason as Env: the root comes from the turn context, because
-		// under workspace scope each session reads its own directory.
-		snap.Skills = a.Skills(policy.WorkspaceFrom(ctx))
+		// The directory is resolved the same way the skill tools resolve it,
+		// so the index and skill_load agree about what exists. An empty dir
+		// -- a workspace-scope session with no root of its own -- means no
+		// skills, not an error.
+		dir := a.Cfg.SkillsDir(policy.WorkspaceFrom(ctx))
+		snap.Skills = a.Skills.Skills(dir)
 	}
 	for _, r := range rows {
 		if r.Seq <= through {

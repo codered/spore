@@ -157,9 +157,8 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	// One cache set for the process, shared by the skill tools and the prompt
-	// index. skill_install invalidates it, so a skill installed this turn is
-	// listed on the next one.
+	// The same cache set feeds the skill tools and the prompt index: buildTools
+	// registers the tools around it, and Snapshot reads it every turn.
 	skillsCache := skillfiles.NewCaches()
 	tools, host, err := buildTools(cfg, st, facts, recallBackend, skillsCache, approver)
 	if err != nil {
@@ -167,12 +166,8 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	}
 	a := agent.New(st, reg, rt, cfg, tools)
 	a.Facts = facts
+	a.Skills = skillsCache
 	a.Env = workspace.NewDescribers().Describe
-	// The caches are keyed by directory and the agent asks by session root, so
-	// the scope rule is applied here, in the one place that knows both.
-	a.Skills = func(root string) []skillfiles.Skill {
-		return skillsCache.Skills(cfg.SkillsDir(root))
-	}
 	return a, host, mir, nil
 }
 
