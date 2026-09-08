@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCacheReloadPicksUpNewSkills(t *testing.T) {
@@ -110,5 +111,56 @@ func TestCachesInvalidateSeesAWrite(t *testing.T) {
 	cs.Invalidate(dir)
 	if len(cs.Skills(dir)) != 1 {
 		t.Fatal("Invalidate must make the next read see the disk")
+	}
+}
+
+func TestCachesEvictIdleDirectories(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	write(t, a, "release-checklist", good)
+	write(t, b, "release-checklist", good)
+
+	cs := NewCaches()
+	now := time.Now()
+	cs.now = func() time.Time { return now }
+
+	cs.Skills(a)
+	if len(cs.m) != 1 {
+		t.Fatalf("after the first directory, len(m) = %d, want 1", len(cs.m))
+	}
+
+	// Advance past the idle window, then touch a different directory: the
+	// miss must sweep the first one.
+	now = now.Add(idleTTL + time.Second)
+	cs.Skills(b)
+	if len(cs.m) != 1 {
+		t.Fatalf("after the second directory, len(m) = %d, want 1", len(cs.m))
+	}
+	if _, ok := cs.m[a]; ok {
+		t.Fatal("an idle directory must be evicted")
+	}
+	if _, ok := cs.m[b]; !ok {
+		t.Fatal("the directory just read must be cached")
+	}
+}
+
+func TestCachesKeepDirectoriesStillInUse(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	write(t, a, "release-checklist", good)
+	write(t, b, "release-checklist", good)
+
+	cs := NewCaches()
+	now := time.Now()
+	cs.now = func() time.Time { return now }
+
+	cs.Skills(a)
+	// Most of the window passes, then a is used again, which must reset its
+	// idle clock.
+	now = now.Add(idleTTL - time.Minute)
+	cs.Skills(a)
+	now = now.Add(idleTTL - time.Minute)
+
+	cs.Skills(b)
+	if _, ok := cs.m[a]; !ok {
+		t.Fatal("a directory used within the window must survive the sweep")
 	}
 }
