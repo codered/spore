@@ -5,7 +5,7 @@ records what was asked for -- or what was knowingly left undone -- and the open
 questions that must be answered before it can be specified, so the next
 brainstorm starts where this one stopped rather than from the request.
 
-Nothing here is a commitment to an order. Stages 5a, 5b, 5c and 6 have all
+Nothing here is a commitment to an order. Stages 5a, 5b, 5c, 6 and 7 have all
 shipped; the staged plan in section 11 of the design spec is complete, and
 everything below is what has been asked for since.
 
@@ -30,6 +30,19 @@ subsystem: `Snapshot.Skills` was never populated, so the "Skills you can
 load" index in the system prompt was empty in every production turn. The fix
 is in this change -- the agent holds the same `*skill.Caches` the tools were
 built with, and `Snapshot` fills the index on every turn.
+
+Two more defects of the same kind were found afterwards and fixed. `/compact`
+called `MaybeCompact`, so below the 0.75 auto-threshold it folded nothing and
+still reported success -- the endpoint calls `Compact` now, returns what it
+folded, and takes the turn slot like `/clear` does. And `PATCH
+/api/sessions/{id}` accepted any non-negative `summary_through`, which is the
+state `/clear` used to leave sessions in before it moved into the store: a
+boundary past the newest message hides everything appended after it, so the
+handler clamps.
+
+The pattern in all three is worth keeping: each subsystem was unit-tested and
+each defect lived in the wiring between them, where no unit test looks. A test
+that walks the real construction path is what catches this class.
 
 ## Sub-agents
 
