@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"os"
@@ -296,10 +297,32 @@ func TestClearSessionRejectsUnknownSession(t *testing.T) {
 		t.Fatalf("POST clear for unknown session: status = %d, want 404", res.StatusCode)
 	}
 }
+
+// seedSessionMessages appends n plain user messages and returns the newest
+// sequence number, so a test can talk about a boundary that exists.
+func seedSessionMessages(t *testing.T, srv *Server, sessionID string, n int) int {
+	t.Helper()
+	ctx := context.Background()
+	var last int
+	for i := range n {
+		raw, _ := json.Marshal([]provider.Block{{Type: provider.BlockText, Text: fmt.Sprintf("m%d", i)}})
+		seq, err := srv.store.AppendMessage(ctx, store.Message{
+			SessionID: sessionID, Role: "user", BlocksJSON: raw,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		last = int(seq)
+	}
+	return last
+}
+
 func TestPatchSessionMovesSummaryBoundary(t *testing.T) {
 	srv, ts := newTestServer(t)
 	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
 		map[string]string{}), http.StatusCreated)
+	// The boundary is clamped to a real message, so the session needs some.
+	seedSessionMessages(t, srv, created.ID, 10)
 
 	res := patchJSON(t, ts.URL+"/api/sessions/"+created.ID,
 		map[string]int{"summary_through": 8})
@@ -359,5 +382,45 @@ func TestRemoteSessionIsConfined(t *testing.T) {
 	}
 	if !strings.HasPrefix(sess.Workspace, srv.Store().SessionsDir()) {
 		t.Fatalf("remote session rooted at %q, want a session directory", sess.Workspace)
+	}
+}
+
+// A boundary past the newest message hides every message appended after it
+// too, which leaves the session assembling an empty prompt forever. /clear
+// cannot overshoot any more, but the generic PATCH is still public API.
+func TestPatchSessionClampsSummaryBoundaryToTheNewestMessage(t *testing.T) {
+	srv, ts := newTestServer(t)
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+	last := seedSessionMessages(t, srv, created.ID, 3)
+
+	res := patchJSON(t, ts.URL+"/api/sessions/"+created.ID,
+		map[string]int{"summary_through": math.MaxInt32})
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH summary_through: status = %d, want 200", res.StatusCode)
+	}
+	ctx := context.Background()
+	_, through, err := srv.store.Summary(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if through != last {
+		t.Fatalf("boundary = %d, want it clamped to the newest message (%d)", through, last)
+	}
+
+	// The point of the clamp: a message sent afterwards is still assembled.
+	raw, _ := json.Marshal([]provider.Block{{Type: provider.BlockText, Text: "after"}})
+	if _, err := srv.store.AppendMessage(ctx, store.Message{
+		SessionID: created.ID, Role: "user", BlocksJSON: raw,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := srv.agent.Snapshot(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Messages) != 1 {
+		t.Fatalf("messages visible after the patch = %d, want the 1 sent afterwards", len(snap.Messages))
 	}
 }

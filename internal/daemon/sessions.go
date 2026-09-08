@@ -154,7 +154,21 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "summary_through must be >= 0")
 			return
 		}
-		if err := s.store.SetSummaryThrough(r.Context(), id, *body.SummaryThrough); err != nil {
+		// The boundary must land on a message that exists. Snapshot skips
+		// every row at or below it and nothing ever moves it back, so a
+		// boundary past the newest message also hides the messages appended
+		// after it -- the next thing the user types included -- and the
+		// session assembles an empty prompt for the rest of its life.
+		// /clear goes through handleClear, which picks the boundary in the
+		// store and cannot overshoot; this clamp is what stops any other
+		// client reaching the same broken state through the generic PATCH.
+		last, err := s.store.LastSeq(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "read last message: %v", err)
+			return
+		}
+		through := min(*body.SummaryThrough, last)
+		if err := s.store.SetSummaryThrough(r.Context(), id, through); err != nil {
 			writeError(w, http.StatusInternalServerError, "move summary boundary: %v", err)
 			return
 		}
