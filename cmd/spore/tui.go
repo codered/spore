@@ -13,8 +13,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
-	"strconv"
-	"time"
 
 	"github.com/codered/spore/internal/daemon"
 	"github.com/codered/spore/internal/policy"

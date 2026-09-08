@@ -168,11 +168,6 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	a.Facts = facts
 	a.Skills = skillsCache
 	a.Env = workspace.NewDescribers().Describe
-	// The caches are keyed by directory and the agent asks by session root, so
-	// the scope rule is applied here, in the one place that knows both.
-	a.Skills = func(root string) []skillfiles.Skill {
-		return skillsCache.Skills(cfg.SkillsDir(root))
-	}
 	return a, host, mir, nil
 }
 
