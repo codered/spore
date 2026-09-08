@@ -295,11 +295,14 @@ func (s *Server) handleCompact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Compaction rewrites the summary boundary a running turn is reading, so
-	// it waits for the turn rather than moving the ground under it.
-	if s.hub.Running(id) {
-		writeError(w, http.StatusConflict, "session %s already has a turn running", id)
+	// it takes the turn slot rather than merely checking for one: between a
+	// Running() check and the fold, a turn could start and snapshot the
+	// boundary this is about to move.
+	if !s.hub.Begin(id) {
+		writeError(w, http.StatusConflict, "session %s has a turn running", id)
 		return
 	}
+	defer s.hub.End(id)
 	// The session's own root, exactly as a turn supplies it: Snapshot renders
 	// the environment section and the skills index from it, and both are part
 	// of the estimate this reports.

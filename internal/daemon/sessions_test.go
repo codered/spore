@@ -433,6 +433,55 @@ func TestCompactConflictsWithARunningTurn(t *testing.T) {
 	}
 }
 
+// TestCompactHoldsTheTurnSlotWhileFolding proves that handleCompact claims
+// the turn slot atomically and releases it when done, preventing concurrent
+// turns from starting (which would snapshot a boundary the fold is about to move).
+// The old code used Running() as a check, not a claim, so between the check and
+// the fold a turn could start and snapshot the boundary being moved. This test
+// covers both sides: the handler cannot claim when a turn is already running
+// (claim-side), and the handler releases the slot it claimed (release-side).
+func TestCompactHoldsTheTurnSlotWhileFolding(t *testing.T) {
+	srv, ts := newTestServer(t, provider.ScriptTurn{Text: "SUMMARY: the user rambled"})
+	srv.cfg.Context.MaxTokens = 200_000 // far above anything this session assembles
+	srv.cfg.Context.KeepRecent = 2
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+	seedSessionMessages(t, srv, created.ID, 6)
+
+	// Sanity: no turn is running, so the slot is available.
+	if !srv.hub.Begin(created.ID) {
+		t.Fatalf("precondition failed: slot is already taken before the test")
+	}
+	srv.hub.End(created.ID)
+
+	// Claim-side assertion: take the slot, POST /compact, confirm the handler
+	// cannot claim it (409). This proves the handler is trying to claim, not
+	// merely checking for a running turn.
+	if !srv.hub.Begin(created.ID) {
+		t.Fatalf("precondition failed: could not take the turn slot for the claim test")
+	}
+	res := postJSON(t, ts.URL+"/api/sessions/"+created.ID+"/compact", nil)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("POST /compact with slot held: status = %d, want 409 (handler must not claim the slot when one is held)", res.StatusCode)
+	}
+	srv.hub.End(created.ID)
+
+	// Release-side assertion: the handler must release the slot when done folding.
+	// POST /compact succeeds, and immediately after it returns, srv.hub.Begin
+	// must succeed. If the handler leaked the slot, the session would be wedged.
+	res = postJSON(t, ts.URL+"/api/sessions/"+created.ID+"/compact", nil)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("POST /compact when slot is free: status = %d, want 200", res.StatusCode)
+	}
+
+	if !srv.hub.Begin(created.ID) {
+		t.Fatalf("after POST /compact completed, srv.hub.Begin failed: handler leaked the turn slot and session is permanently wedged")
+	}
+	srv.hub.End(created.ID)
+}
+
 // seedSessionMessages appends n plain user messages to a session.
 func seedSessionMessages(t *testing.T, srv *Server, sessionID string, n int) {
 	t.Helper()
