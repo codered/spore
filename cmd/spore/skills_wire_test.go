@@ -47,7 +47,7 @@ func TestBuildAgentWiresTheSkillsIndex(t *testing.T) {
 	if a.Skills == nil {
 		t.Fatal("buildAgent left Agent.Skills nil: no skills index ever reaches a prompt")
 	}
-	got := a.Skills("")
+	got := a.Skills.Skills(cfg.SkillsDir(""))
 	if len(got) != 1 || got[0].Name != "release-checklist" {
 		t.Fatalf("skills index = %+v, want the one installed skill", got)
 	}
@@ -88,7 +88,7 @@ func TestBuildAgentSkillsAreEmptyForARootlessSessionUnderWorkspaceScope(t *testi
 	if err != nil {
 		t.Fatalf("buildAgent: %v", err)
 	}
-	if got := a.Skills(""); len(got) != 0 {
+	if got := a.Skills.Skills(cfg.SkillsDir("")); len(got) != 0 {
 		t.Fatalf("a session with no root must see no skills, got %+v", got)
 	}
 }

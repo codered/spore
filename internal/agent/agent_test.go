@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -597,32 +598,105 @@ func TestSnapshotHasNoEnvironmentWithoutAWorkspace(t *testing.T) {
 	}
 }
 
-// The skills index is what tells the model a skill exists at all: skill_load
-// takes a name, and nothing else in the prompt supplies one. Snapshot filling
-// it from the session's root is the whole path from disk to prompt.
+// Under workspace scope, each session reads the skills directory beneath its own root,
+// not another session's. Snapshot fills the index from the session's root -- that is
+// the whole path from disk to prompt. The default global scope is already covered by
+// TestSnapshotIncludesSkillsFromTheCache, so this one proves the workspace-scoped case.
 func TestSnapshotCarriesTheSkillsIndexForTheSessionRoot(t *testing.T) {
-	a, st := harness(t, provider.NewScript(), nil)
-	var asked string
-	a.Skills = func(root string) []skill.Skill {
-		asked = root
-		return []skill.Skill{{Name: "release-checklist", Description: "How to cut a release"}}
+	ctx := context.Background()
+
+	// Create two temp root dirs with different skills.
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+
+	// rootA has release-checklist
+	skillsDirA := filepath.Join(rootA, ".spore", "skills")
+	if err := os.MkdirAll(skillsDirA, 0o755); err != nil {
+		t.Fatalf("MkdirAll rootA skills dir: %v", err)
 	}
-	id, err := st.CreateSession(context.Background(), "", "/ws/a")
+	if err := skill.Write(skillsDirA, skill.Skill{
+		Name:        "release-checklist",
+		Description: "How to cut a release",
+		Body:        "Tag from master only.",
+	}); err != nil {
+		t.Fatalf("Write skill to rootA: %v", err)
+	}
+
+	// rootB has deploy-runbook
+	skillsDirB := filepath.Join(rootB, ".spore", "skills")
+	if err := os.MkdirAll(skillsDirB, 0o755); err != nil {
+		t.Fatalf("MkdirAll rootB skills dir: %v", err)
+	}
+	if err := skill.Write(skillsDirB, skill.Skill{
+		Name:        "deploy-runbook",
+		Description: "How to deploy",
+		Body:        "Drain first.",
+	}); err != nil {
+		t.Fatalf("Write skill to rootB: %v", err)
+	}
+
+	// Build agent the same way as TestSnapshotIncludesSkillsFromTheCache
+	a := newTestAgent(t)
+	a.Skills = skill.NewCaches()
+	a.Cfg.Skills.Scope = config.SkillsWorkspace
+
+	// Create session rooted at rootA
+	idA, err := a.Store.CreateSession(ctx, "t", rootA)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("CreateSession rootA: %v", err)
 	}
-	ctx := policy.WithSession(context.Background(), policy.Session{ID: id, Workspace: "/ws/a"})
-	snap, err := a.Snapshot(ctx, id)
+
+	// Snapshot with context carrying rootA workspace
+	ctxA := policy.WithSession(ctx, policy.Session{ID: idA, Workspace: rootA})
+	snapA, err := a.Snapshot(ctxA, idA)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Snapshot rootA: %v", err)
 	}
-	if asked != "/ws/a" {
-		t.Fatalf("skills asked for root %q, want the session's own root", asked)
+
+	// Assert snap.Skills has exactly one entry named "release-checklist"
+	if len(snapA.Skills) != 1 {
+		t.Fatalf("rootA snapshot has %d skills, want 1: %+v", len(snapA.Skills), snapA.Skills)
 	}
-	if len(snap.Skills) != 1 || snap.Skills[0].Name != "release-checklist" {
-		t.Fatalf("snapshot skills = %+v, want the one installed skill", snap.Skills)
+	if snapA.Skills[0].Name != "release-checklist" {
+		t.Fatalf("rootA snapshot skill name = %q, want release-checklist", snapA.Skills[0].Name)
 	}
-	if req := Assemble(snap, a.Cfg.Context); !strings.Contains(req.System, "release-checklist") {
-		t.Fatalf("the assembled prompt must name the skill:\n%s", req.System)
+
+	// Assert the name reaches the assembled prompt
+	reqA := Assemble(snapA, a.Cfg.Context)
+	if !strings.Contains(reqA.System, "release-checklist") {
+		t.Fatalf("rootA assembled prompt does not contain release-checklist:\n%s", reqA.System)
+	}
+
+	// Now test rootB: create session rooted at rootB
+	idB, err := a.Store.CreateSession(ctx, "t", rootB)
+	if err != nil {
+		t.Fatalf("CreateSession rootB: %v", err)
+	}
+
+	// Snapshot with context carrying rootB workspace
+	ctxB := policy.WithSession(ctx, policy.Session{ID: idB, Workspace: rootB})
+	snapB, err := a.Snapshot(ctxB, idB)
+	if err != nil {
+		t.Fatalf("Snapshot rootB: %v", err)
+	}
+
+	// Assert snapB sees ONLY "deploy-runbook" and NOT "release-checklist"
+	if len(snapB.Skills) != 1 {
+		t.Fatalf("rootB snapshot has %d skills, want 1: %+v", len(snapB.Skills), snapB.Skills)
+	}
+	if snapB.Skills[0].Name != "deploy-runbook" {
+		t.Fatalf("rootB snapshot skill name = %q, want deploy-runbook", snapB.Skills[0].Name)
+	}
+	if snapB.Skills[0].Name == "release-checklist" {
+		t.Fatal("rootB snapshot must not see rootA's release-checklist skill: workspace isolation failed")
+	}
+
+	// Assert the rootB name reaches the assembled prompt
+	reqB := Assemble(snapB, a.Cfg.Context)
+	if !strings.Contains(reqB.System, "deploy-runbook") {
+		t.Fatalf("rootB assembled prompt does not contain deploy-runbook:\n%s", reqB.System)
+	}
+	if strings.Contains(reqB.System, "release-checklist") {
+		t.Fatalf("rootB assembled prompt must not contain release-checklist (workspace isolation failed):\n%s", reqB.System)
 	}
 }
