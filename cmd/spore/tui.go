@@ -614,12 +614,37 @@ func (m *chatUI) handleCompact(ctx context.Context, c *client, sessionID string)
 	return tea.Sequence(
 		m.flush(styMuted.Render("  · compacting…")),
 		func() tea.Msg {
-			if err := c.compact(ctx, sessionID); err != nil {
+			res, err := c.compact(ctx, sessionID)
+			if err != nil {
 				return slashErrMsg{err}
 			}
-			return slashDoneMsg{"compacted"}
+			return slashDoneMsg{compactSummary(res)}
 		},
 	)
+}
+
+// compactSummary says what the fold did. "compacted" over a session with
+// nothing outside the protected window is a lie the user acts on, so a no-op
+// has to name itself.
+func compactSummary(res daemon.CompactJSON) string {
+	if res.Folded == 0 {
+		return "nothing to compact — everything is inside the recent window"
+	}
+	noun := "messages"
+	if res.Folded == 1 {
+		noun = "message"
+	}
+	return fmt.Sprintf("compacted %d %s: %s → %s tokens",
+		res.Folded, noun, humanTokens(res.Before), humanTokens(res.After))
+}
+
+// humanTokens keeps the estimate readable at a glance; these are estimates,
+// so digits past the first few would imply a precision they do not have.
+func humanTokens(n int) string {
+	if n < 1000 {
+		return strconv.Itoa(n)
+	}
+	return fmt.Sprintf("%.1fk", float64(n)/1000)
 }
 
 // handleContext shows a token breakdown for the current session.

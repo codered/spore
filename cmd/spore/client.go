@@ -114,9 +114,13 @@ func (c *client) clear(ctx context.Context, sessionID string) error {
 	return c.do(ctx, "POST", "/api/sessions/"+sessionID+"/clear", nil, nil)
 }
 
-// compact triggers a manual compaction of the session via POST /compact.
-func (c *client) compact(ctx context.Context, sessionID string) error {
-	return c.do(ctx, "POST", "/api/sessions/"+sessionID+"/compact", nil, nil)
+// compact triggers a manual compaction of the session via POST /compact and
+// returns what it folded, so the client can tell the user whether anything
+// actually happened.
+func (c *client) compact(ctx context.Context, sessionID string) (daemon.CompactJSON, error) {
+	var out daemon.CompactJSON
+	err := c.do(ctx, "POST", "/api/sessions/"+sessionID+"/compact", nil, &out)
+	return out, err
 }
 
 // getTranscript fetches the full transcript for /context and /usage.

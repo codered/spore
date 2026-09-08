@@ -424,3 +424,55 @@ func TestPatchSessionClampsSummaryBoundaryToTheNewestMessage(t *testing.T) {
 		t.Fatalf("messages visible after the patch = %d, want the 1 sent afterwards", len(snap.Messages))
 	}
 }
+
+// /compact is a manual override: it must fold even when the session is far
+// below the auto-compaction threshold, which is the whole reason Compact and
+// MaybeCompact are separate.
+func TestCompactFoldsBelowTheAutoThreshold(t *testing.T) {
+	// One scripted turn: the compaction call itself, which is the only model
+	// call a fold makes.
+	srv, ts := newTestServer(t, provider.ScriptTurn{Text: "a summary of the earlier messages"})
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+	// KeepRecent defaults to 12, so 16 messages leaves 4 outside the window.
+	// Nothing here is near the 0.75 auto-compaction threshold, which is the
+	// point: MaybeCompact would fold none of it.
+	seedSessionMessages(t, srv, created.ID, 16)
+
+	res := postJSON(t, ts.URL+"/api/sessions/"+created.ID+"/compact", nil)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("POST compact: status = %d, want 200", res.StatusCode)
+	}
+	var got CompactJSON
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Folded != 4 {
+		t.Fatalf("folded = %d, want the 4 messages outside the protected window", got.Folded)
+	}
+	_, through, err := srv.store.Summary(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if through == 0 {
+		t.Fatal("the summary boundary did not move, so nothing was folded")
+	}
+}
+
+// Compaction rewrites the boundary a running turn is reading.
+func TestCompactConflictsWithARunningTurn(t *testing.T) {
+	srv, ts := newTestServer(t)
+	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
+		map[string]string{}), http.StatusCreated)
+	if !srv.hub.Begin(created.ID) {
+		t.Fatal("could not take the turn slot")
+	}
+	defer srv.hub.End(created.ID)
+
+	res := postJSON(t, ts.URL+"/api/sessions/"+created.ID+"/compact", nil)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("POST compact during a turn: status = %d, want 409", res.StatusCode)
+	}
+}

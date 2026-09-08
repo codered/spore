@@ -441,3 +441,23 @@ func TestRenderSkills(t *testing.T) {
 		t.Errorf("missing error line: %q", got)
 	}
 }
+
+// "compacted" printed over a no-op is a lie the user acts on: they believe
+// the context shrank and keep going.
+func TestCompactSummaryDistinguishesAFoldFromANoOp(t *testing.T) {
+	noop := compactSummary(daemon.CompactJSON{Folded: 0, Before: 900, After: 900})
+	if !strings.Contains(noop, "nothing to compact") {
+		t.Errorf("a no-op must say so, got %q", noop)
+	}
+
+	got := compactSummary(daemon.CompactJSON{Folded: 12, Before: 8400, After: 2100})
+	for _, want := range []string{"12 messages", "8.4k", "2.1k"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("compactSummary = %q, missing %q", got, want)
+		}
+	}
+
+	if one := compactSummary(daemon.CompactJSON{Folded: 1, Before: 500, After: 400}); !strings.Contains(one, "1 message:") {
+		t.Errorf("one folded message must not be pluralised, got %q", one)
+	}
+}
