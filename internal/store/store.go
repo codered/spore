@@ -370,7 +370,6 @@ func (s *Store) ClearThroughLatestMessage(ctx context.Context, sessionID string)
 }
 
 // Summary returns ("", 0, nil) when the session has never been compacted.
-// Summary returns ("", 0, nil) when the session has never been compacted.
 func (s *Store) Summary(ctx context.Context, sessionID string) (string, int, error) {
 	var text string
 	var through int

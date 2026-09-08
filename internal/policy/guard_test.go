@@ -532,11 +532,11 @@ func TestPatternForReportsDegradation(t *testing.T) {
 // pattern scope for skill_install, even when its arguments look path-shaped.
 func TestSkillInstallIsNeverLearnable(t *testing.T) {
 	cfg := config.PolicyConfig{
-		Workspace:         "/ws",
-		Default:           "ask",
-		ApprovalTimeout:   "5m",
-		Allow:             []string{"skill_load"},
-		Ask:               []string{"skill_install"},
+		Workspace:       "/ws",
+		Default:         "ask",
+		ApprovalTimeout: "5m",
+		Allow:           []string{"skill_load"},
+		Ask:             []string{"skill_install"},
 	}
 	_, err := NewEngine(cfg)
 	if err != nil {
@@ -558,12 +558,12 @@ func TestSkillInstallIsNeverLearnable(t *testing.T) {
 // skill_install outright.
 func TestSkillInstallDeniedUnderRemote(t *testing.T) {
 	cfg := config.PolicyConfig{
-		Workspace:         "/ws",
-		Default:           "ask",
-		ApprovalTimeout:   "5m",
-		Allow:             []string{"skill_load"},
-		Ask:               []string{"skill_install"},
-		Profiles:          map[string]config.ProfilePolicy{
+		Workspace:       "/ws",
+		Default:         "ask",
+		ApprovalTimeout: "5m",
+		Allow:           []string{"skill_load"},
+		Ask:             []string{"skill_install"},
+		Profiles: map[string]config.ProfilePolicy{
 			"remote": {Deny: []string{"skill_install"}},
 		},
 	}
