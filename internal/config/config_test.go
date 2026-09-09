@@ -622,3 +622,43 @@ func TestLoadExpandsSkillsDir(t *testing.T) {
 		t.Fatalf("skills.dir = %q, want the expanded path", got)
 	}
 }
+
+func TestSubagentDefaults(t *testing.T) {
+	c := Default()
+	if c.Subagents.MaxDepth != 2 {
+		t.Errorf("MaxDepth = %d, want 2", c.Subagents.MaxDepth)
+	}
+	if c.Subagents.MaxCostUSD != 1.00 {
+		t.Errorf("MaxCostUSD = %v, want 1.00", c.Subagents.MaxCostUSD)
+	}
+	if c.Subagents.MaxConcurrent != 4 {
+		t.Errorf("MaxConcurrent = %d, want 4", c.Subagents.MaxConcurrent)
+	}
+}
+
+func TestSubagentZeroValuesFallBackToDefaults(t *testing.T) {
+	// A config file with a [subagents] block that sets only one key must not
+	// leave the others at zero: a zero depth would disable sub-agents and a
+	// zero ceiling would refuse every spawn, both silently.
+	c := Default()
+	c.DefaultModel = "anthropic/claude-opus-5"
+	c.Subagents = SubagentConfig{MaxDepth: 3}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if c.Subagents.MaxDepth != 3 {
+		t.Errorf("MaxDepth = %d, want the configured 3", c.Subagents.MaxDepth)
+	}
+	if c.Subagents.MaxCostUSD != 1.00 || c.Subagents.MaxConcurrent != 4 {
+		t.Errorf("unset keys did not fall back: %+v", c.Subagents)
+	}
+}
+
+func TestSubagentNegativeValuesRejected(t *testing.T) {
+	c := Default()
+	c.DefaultModel = "anthropic/claude-opus-5"
+	c.Subagents.MaxDepth = -1
+	if err := c.Validate(); err == nil {
+		t.Error("Validate accepted a negative max_depth")
+	}
+}
