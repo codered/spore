@@ -26,12 +26,14 @@ import (
 	"github.com/codered/spore/internal/router"
 	skillfiles "github.com/codered/spore/internal/skill"
 	"github.com/codered/spore/internal/store"
+	"github.com/codered/spore/internal/subagent"
 	"github.com/codered/spore/internal/tool"
 	"github.com/codered/spore/internal/tool/fs"
 	"github.com/codered/spore/internal/tool/mem"
 	"github.com/codered/spore/internal/tool/schedule"
 	"github.com/codered/spore/internal/tool/shell"
 	"github.com/codered/spore/internal/tool/skill"
+	subagenttool "github.com/codered/spore/internal/tool/subagent"
 	"github.com/codered/spore/internal/tool/web"
 	"github.com/codered/spore/internal/workspace"
 )
@@ -42,7 +44,7 @@ import (
 // caller — serve supervises it, and everything else closes it. The fact
 // cache is built by the caller (buildAgent needs it for Agent.Facts too) and
 // passed in here just to register the two memory tools around it.
-func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recallBackend recall.Recall, skillsCache *skillfiles.Caches, approver policy.Approver) (*policy.Guard, *mcphost.Host, error) {
+func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recallBackend recall.Recall, skillsCache *skillfiles.Caches, sup *subagent.Supervisor, approver policy.Approver) (*policy.Guard, *mcphost.Host, error) {
 	reg := tool.NewRegistry(cfg.Policy.MaxOutput)
 	tools := fs.New(cfg.Policy.MaxOutput)
 	tools = append(tools, shell.New(
@@ -51,6 +53,7 @@ func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recall
 	tools = append(tools, schedule.New(st)...)
 	tools = append(tools, mem.NewRecallSearch(recallBackend), mem.NewMemory(facts, st))
 	tools = append(tools, skill.New(cfg, skillsCache)...)
+	tools = append(tools, subagenttool.New(sup)...)
 	for _, t := range tools {
 		if err := reg.Register(t); err != nil {
 			return nil, nil, err
@@ -160,7 +163,11 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	// The same cache set feeds the skill tools and the prompt index: buildTools
 	// registers the tools around it, and Snapshot reads it every turn.
 	skillsCache := skillfiles.NewCaches()
-	tools, host, err := buildTools(cfg, st, facts, recallBackend, skillsCache, approver)
+	// The supervisor is built before the tools that launch through it and
+	// receives the agent after: buildAgent constructs the registry first, so
+	// the cycle is closed by Attach rather than by construction order.
+	sup := subagent.New(st, cfg.Subagents)
+	tools, host, err := buildTools(cfg, st, facts, recallBackend, skillsCache, sup, approver)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -168,6 +175,7 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	a.Facts = facts
 	a.Skills = skillsCache
 	a.Env = workspace.NewDescribers().Describe
+	sup.Attach(a)
 	return a, host, mir, nil
 }
 
