@@ -3,7 +3,9 @@ package subagent
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/policy"
@@ -35,7 +37,7 @@ func (s *stubRunner) RunSite(ctx context.Context, sessionID, input, site string)
 	return ch, nil
 }
 
-func testSupervisor(t *testing.T, cfg config.SubagentConfig, r *stubRunner) (*Supervisor, *store.Store) {
+func testSupervisor(t *testing.T, cfg config.SubagentConfig, r Runner) (*Supervisor, *store.Store) {
 	t.Helper()
 	st := newTestStore(t)
 	sup := New(st, cfg)
@@ -141,5 +143,162 @@ func TestListReportsChildrenOfOneParent(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Prompt != "mine" {
 		t.Errorf("List = %+v, want only this parent's child", got)
+	}
+}
+
+// blockingRunner holds a channel that the test controls, allowing the test to
+// keep a child running while launching another one to test concurrency limits.
+type blockingRunner struct {
+	reply   string
+	hold    <-chan struct{}
+	ran     []string
+	mu      sync.Mutex
+}
+
+func (b *blockingRunner) RunSite(ctx context.Context, sessionID, input, site string) (<-chan Event, error) {
+	b.mu.Lock()
+	b.ran = append(b.ran, sessionID)
+	b.mu.Unlock()
+	ch := make(chan Event, 2)
+	go func() {
+		<-b.hold // Wait for the test to signal we can finish
+		ch <- Event{Text: b.reply}
+		close(ch)
+	}()
+	return ch, nil
+}
+
+func TestDifferentRootsGetOwnConcurrencyAllowance(t *testing.T) {
+	hold := make(chan struct{})
+	r := &blockingRunner{reply: "ok", hold: hold}
+	sup, st := testSupervisor(t, config.SubagentConfig{MaxDepth: 3, MaxCostUSD: 100, MaxConcurrent: 1}, r)
+	rootA := parentSession(t, st)
+	rootB := parentSession(t, st)
+
+	// Start one child under rootA and keep it running in a separate goroutine.
+	childADone := make(chan struct{})
+	go func() {
+		_, err := sup.Run(ctxFor(rootA), rootA, "under A")
+		if err != nil {
+			t.Errorf("Run under rootA failed: %v", err)
+		}
+		close(childADone)
+	}()
+	// Give the goroutine time to start and enter the blocking runner.
+	time.Sleep(50 * time.Millisecond)
+
+	// Try to start a child under rootB while rootA's child is still running,
+	// also in a goroutine since it will block on the runner.
+	childBDone := make(chan struct{})
+	var childBErr error
+	var childB Status
+	go func() {
+		var err error
+		childB, err = sup.Run(ctxFor(rootB), rootB, "under B")
+		childBErr = err
+		close(childBDone)
+	}()
+
+	// Give rootB's child time to get to the runner.
+	time.Sleep(50 * time.Millisecond)
+
+	// Release the blocking runner so both children can finish.
+	close(hold)
+	<-childADone
+	<-childBDone
+
+	if childBErr != nil {
+		t.Errorf("Run under rootB while rootA child running: %v", childBErr)
+	}
+	if len(r.ran) != 2 {
+		t.Errorf("ran %d children, want 2", len(r.ran))
+	}
+	if childB.State != store.RunDone {
+		t.Errorf("rootB child state = %q, want done", childB.State)
+	}
+}
+
+func TestConcurrencyCapEnforcedPerRoot(t *testing.T) {
+	hold := make(chan struct{})
+	r := &blockingRunner{reply: "ok", hold: hold}
+	sup, st := testSupervisor(t, config.SubagentConfig{MaxDepth: 3, MaxCostUSD: 100, MaxConcurrent: 1}, r)
+	root := parentSession(t, st)
+
+	// Start one child under root and keep it running in a separate goroutine.
+	childOneDone := make(chan struct{})
+	go func() {
+		_, err := sup.Run(ctxFor(root), root, "first")
+		if err != nil {
+			t.Errorf("first Run failed: %v", err)
+		}
+		close(childOneDone)
+	}()
+	// Give the goroutine time to start and enter the blocking runner.
+	time.Sleep(50 * time.Millisecond)
+
+	// Try to start another child under the same root.
+	// This should fail because MaxConcurrent is 1 and one is already running.
+	_, err := sup.Run(ctxFor(root), root, "second")
+	if err == nil {
+		t.Fatal("Run allowed second child under same root with MaxConcurrent=1")
+	}
+	if !strings.Contains(err.Error(), "max_concurrent") {
+		t.Errorf("error = %v, want it to name max_concurrent", err)
+	}
+
+	// Release the blocking runner so the first child can finish.
+	close(hold)
+	<-childOneDone
+}
+
+func TestRefusalAfterStartLeavesNoRunningEntry(t *testing.T) {
+	hold := make(chan struct{})
+	r := &blockingRunner{reply: "ok", hold: hold}
+	sup, st := testSupervisor(t, config.SubagentConfig{MaxDepth: 3, MaxCostUSD: 100, MaxConcurrent: 1}, r)
+	root := parentSession(t, st)
+
+	// Start one child and keep it running in a separate goroutine.
+	childOneDone := make(chan struct{})
+	go func() {
+		_, err := sup.Run(ctxFor(root), root, "first")
+		if err != nil {
+			t.Errorf("first Run failed: %v", err)
+		}
+		close(childOneDone)
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	// Try to start another child; it will be refused after creating the session.
+	_, err := sup.Run(ctxFor(root), root, "second")
+	if err == nil {
+		t.Fatal("expected refusal")
+	}
+
+	// Release the first child so it can finish.
+	close(hold)
+	<-childOneDone
+
+	// The refused child's run row should be terminal (not running).
+	children, err := sup.List(context.Background(), root)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	// Count how many are in terminal state (should be 2, one done and one failed).
+	var terminal int
+	for _, ch := range children {
+		if ch.State == store.RunFailed || ch.State == store.RunDone {
+			terminal++
+		}
+	}
+	if terminal != 2 {
+		t.Errorf("terminal children = %d, want 2 (one done, one failed); got %+v", terminal, children)
+	}
+
+	// Make sure no child shows as running.
+	for _, ch := range children {
+		if ch.State == store.RunRunning {
+			t.Errorf("child %s is stuck in running state", ch.ID)
+		}
 	}
 }

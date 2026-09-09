@@ -45,6 +45,7 @@ type child struct {
 	prompt string
 	depth  int
 	start  time.Time
+	root   string
 }
 
 type Supervisor struct {
@@ -73,16 +74,18 @@ func (s *Supervisor) AttachRunner(r Runner) {
 }
 
 // admit decides whether one more child may start under this parent, and
-// returns the depth it would run at. Every refusal is an ordinary error: the
-// caller turns it into a tool error the model can read and route around.
-func (s *Supervisor) admit(ctx context.Context, parentID string) (int, error) {
+// returns the depth it would run at and the root session ID. Every refusal is
+// an ordinary error: the caller turns it into a tool error the model can read
+// and route around. The concurrency cap is not checked here; it is enforced
+// atomically by tryTrack to close the check-then-insert race.
+func (s *Supervisor) admit(ctx context.Context, parentID string) (int, string, error) {
 	ancestors, err := s.store.SessionAncestors(ctx, parentID)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	depth := len(ancestors) + 1
 	if depth >= s.cfg.MaxDepth {
-		return 0, fmt.Errorf("refusing to launch: this would be depth %d and the configured max_depth is %d. Do the work in this agent instead", depth, s.cfg.MaxDepth)
+		return 0, "", fmt.Errorf("refusing to launch: this would be depth %d and the configured max_depth is %d. Do the work in this agent instead", depth, s.cfg.MaxDepth)
 	}
 
 	root := parentID
@@ -91,19 +94,13 @@ func (s *Supervisor) admit(ctx context.Context, parentID string) (int, error) {
 	}
 	spent, err := s.store.TreeCost(ctx, root)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	if spent >= s.cfg.MaxCostUSD {
-		return 0, fmt.Errorf("refusing to launch: this agent tree has spent $%.4f of its $%.2f max_cost_usd. Do the work in this agent instead", spent, s.cfg.MaxCostUSD)
+		return 0, "", fmt.Errorf("refusing to launch: this agent tree has spent $%.4f of its $%.2f max_cost_usd. Do the work in this agent instead", spent, s.cfg.MaxCostUSD)
 	}
 
-	s.mu.Lock()
-	live := len(s.running)
-	s.mu.Unlock()
-	if live >= s.cfg.MaxConcurrent {
-		return 0, fmt.Errorf("refusing to launch: %d sub-agents are already running and max_concurrent is %d. Wait for one to finish", live, s.cfg.MaxConcurrent)
-	}
-	return depth, nil
+	return depth, root, nil
 }
 
 // start creates the child session and its run row, and returns the context
@@ -146,7 +143,7 @@ func drain(ch <-chan Event) (string, error) {
 
 // Run launches a child and blocks until it settles.
 func (s *Supervisor) Run(ctx context.Context, parentID, prompt string) (Status, error) {
-	depth, err := s.admit(ctx, parentID)
+	depth, root, err := s.admit(ctx, parentID)
 	if err != nil {
 		return Status{}, err
 	}
@@ -162,7 +159,15 @@ func (s *Supervisor) Run(ctx context.Context, parentID, prompt string) (Status, 
 		return Status{}, err
 	}
 	childCtx, cancel := context.WithCancel(childCtx)
-	s.track(childID, &child{cancel: cancel, prompt: prompt, depth: depth, start: time.Now().UTC()})
+
+	// Try to reserve a slot under the root. If the cap is exceeded, finish the
+	// run row before returning the error so it reaches a terminal state.
+	err = s.tryTrack(childID, root, &child{cancel: cancel, prompt: prompt, depth: depth, start: time.Now().UTC(), root: root})
+	if err != nil {
+		s.finish(ctx, childID, store.RunFailed, "", err.Error())
+		cancel()
+		return Status{}, err
+	}
 	defer s.untrack(childID)
 	defer cancel()
 
@@ -190,6 +195,31 @@ func (s *Supervisor) untrack(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.running, id)
+}
+
+// tryTrack atomically counts children under the given root and reserves a slot
+// if one is available under the max_concurrent cap. It acquires the mutex once
+// for the count-and-insert to close the race between admit's check and track's
+// insert. If the cap is reached under this root, it returns an error naming
+// max_concurrent and the child is not inserted.
+func (s *Supervisor) tryTrack(id string, root string, c *child) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Count how many children are already running under this root.
+	live := 0
+	for _, ch := range s.running {
+		if ch.root == root {
+			live++
+		}
+	}
+
+	if live >= s.cfg.MaxConcurrent {
+		return fmt.Errorf("refusing to launch: %d sub-agents are already running under this root and max_concurrent is %d. Wait for one to finish", live, s.cfg.MaxConcurrent)
+	}
+
+	s.running[id] = c
+	return nil
 }
 
 // finish records the terminal state. It uses a context detached from the

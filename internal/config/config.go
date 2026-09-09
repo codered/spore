@@ -56,8 +56,10 @@ type SkillsConfig struct {
 // SubagentConfig bounds a tree of agents. maxIterations bounds one agent's
 // round trips; none of it bounds a parent that keeps spawning.
 type SubagentConfig struct {
-	// MaxDepth is how deep the tree may go. The default 2 means a top-level
-	// session spawns children and those children may not spawn.
+	// MaxDepth is the refusal point for nesting depth. The default 2 means a
+	// top-level session may spawn one level of children; those children may not
+	// spawn. With max_depth=3, a top-level session spawns children, and each of
+	// those may spawn one child.
 	MaxDepth int `toml:"max_depth"`
 	// MaxCostUSD is the ceiling for a whole tree: the root and every
 	// descendant, summed. Depth alone does not see a wide flat fan-out.
