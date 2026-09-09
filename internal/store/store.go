@@ -32,6 +32,10 @@ type Session struct {
 	// directory for its filesystem tools, its shell calls and the
 	// environment section of its prompt. Fixed at creation.
 	Workspace string
+	// ParentID is the session that launched this one as a sub-agent, or ""
+	// for a top-level session. Fixed at creation and never rewritten, which
+	// is what lets the approval ancestor walk trust it without a lock.
+	ParentID  string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -54,13 +58,17 @@ type Message struct {
 // plain time.RFC3339.
 const timeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
+// maxAncestorWalk bounds SessionAncestors. It is far above any depth the
+// subagent config permits; it exists to make a corrupt row terminate.
+const maxAncestorWalk = 64
+
 func nowString() string { return time.Now().UTC().Format(timeFormat) }
 
-// migrateSessions adds the per-session workspace column to a database written
-// before stage 6. Unlike migrateJobs this preserves every row: sessions hold
-// real transcripts. The column lands empty and is filled by
-// BackfillSessionWorkspaces, which needs the configured ceiling and so cannot
-// run here -- Open knows nothing about config.
+// migrateSessions adds missing columns to a database written before they
+// were added. Unlike migrateJobs this preserves every row: sessions hold
+// real transcripts. Added columns land empty and are filled by BackfillSessionWorkspaces
+// for workspace (which needs the configured ceiling and so cannot run here), and
+// default to empty for parent_id.
 func migrateSessions(db *sql.DB) error {
 	rows, err := db.Query(`PRAGMA table_info(sessions)`)
 	if err != nil {
@@ -68,7 +76,7 @@ func migrateSessions(db *sql.DB) error {
 	}
 	defer rows.Close()
 	var columns int
-	hasWorkspace := false
+	have := map[string]bool{}
 	for rows.Next() {
 		var cid int
 		var name, ctype string
@@ -78,19 +86,24 @@ func migrateSessions(db *sql.DB) error {
 			return err
 		}
 		columns++
-		if name == "workspace" {
-			hasWorkspace = true
-		}
+		have[name] = true
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
 	// No table at all: the schema statement creates the right one.
-	if columns == 0 || hasWorkspace {
+	if columns == 0 {
 		return nil
 	}
-	if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN workspace TEXT NOT NULL DEFAULT ''`); err != nil {
-		return fmt.Errorf("add sessions.workspace: %w", err)
+	if !have["workspace"] {
+		if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN workspace TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add sessions.workspace: %w", err)
+		}
+	}
+	if !have["parent_id"] {
+		if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add sessions.parent_id: %w", err)
+		}
 	}
 	return nil
 }
@@ -157,17 +170,25 @@ func (s *Store) CreateSession(ctx context.Context, title, workspace string) (str
 	}
 	now := time.Now().UTC().Format(timeFormat)
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sessions (id, title, workspace, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		id, title, workspace, now, now)
+		`INSERT INTO sessions (id, title, workspace, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		id, title, workspace, "", now, now)
 	if err != nil {
 		return "", fmt.Errorf("create session: %w", err)
 	}
 	return id, nil
 }
 
-func (s *Store) ListSessions(ctx context.Context, limit int) ([]Session, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, title, workspace, created_at, updated_at FROM sessions ORDER BY updated_at DESC LIMIT ?`, limit)
+// ListSessions returns the most recently updated sessions. Sub-agent
+// sessions are hidden unless includeChildren: a fan-out leaves one row per
+// child, and `session list` is a human's view of their own conversations.
+func (s *Store) ListSessions(ctx context.Context, limit int, includeChildren bool) ([]Session, error) {
+	q := `SELECT id, title, workspace, parent_id, created_at, updated_at FROM sessions
+	      WHERE parent_id = '' ORDER BY updated_at DESC LIMIT ?`
+	if includeChildren {
+		q = `SELECT id, title, workspace, parent_id, created_at, updated_at FROM sessions
+		     ORDER BY updated_at DESC LIMIT ?`
+	}
+	rows, err := s.db.QueryContext(ctx, q, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
@@ -176,7 +197,7 @@ func (s *Store) ListSessions(ctx context.Context, limit int) ([]Session, error) 
 	for rows.Next() {
 		var sess Session
 		var created, updated string
-		if err := rows.Scan(&sess.ID, &sess.Title, &sess.Workspace, &created, &updated); err != nil {
+		if err := rows.Scan(&sess.ID, &sess.Title, &sess.Workspace, &sess.ParentID, &created, &updated); err != nil {
 			return nil, err
 		}
 		sess.CreatedAt, _ = time.Parse(timeFormat, created)
@@ -191,8 +212,8 @@ func (s *Store) Session(ctx context.Context, id string) (Session, bool, error) {
 	var sess Session
 	var created, updated string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, title, workspace, created_at, updated_at FROM sessions WHERE id = ?`, id).
-		Scan(&sess.ID, &sess.Title, &sess.Workspace, &created, &updated)
+		`SELECT id, title, workspace, parent_id, created_at, updated_at FROM sessions WHERE id = ?`, id).
+		Scan(&sess.ID, &sess.Title, &sess.Workspace, &sess.ParentID, &created, &updated)
 	if err == sql.ErrNoRows {
 		return Session{}, false, nil
 	}
@@ -202,6 +223,57 @@ func (s *Store) Session(ctx context.Context, id string) (Session, bool, error) {
 	sess.CreatedAt, _ = time.Parse(timeFormat, created)
 	sess.UpdatedAt, _ = time.Parse(timeFormat, updated)
 	return sess, true, nil
+}
+
+// CreateChildSession creates a sub-agent's session. The workspace is passed
+// in rather than defaulted, because a child inherits its parent's root: two
+// agents working the same task must see the same files.
+func (s *Store) CreateChildSession(ctx context.Context, title, workspace, parentID string) (string, error) {
+	if parentID == "" {
+		return "", fmt.Errorf("create child session: parent id is required")
+	}
+	id := newID()
+	if workspace == "" {
+		workspace = filepath.Join(s.SessionsDir(), id)
+	}
+	now := nowString()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO sessions (id, title, workspace, parent_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		id, title, workspace, parentID, now, now)
+	if err != nil {
+		return "", fmt.Errorf("create child session: %w", err)
+	}
+	return id, nil
+}
+
+// SessionAncestors returns the chain above id, immediate parent first and the
+// root last. A top-level session has none. The walk is bounded by
+// maxAncestorWalk so a parent_id cycle -- which nothing writes, but which a
+// hand-edited database could hold -- cannot spin here forever.
+func (s *Store) SessionAncestors(ctx context.Context, id string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{id: true}
+	for i := 0; i < maxAncestorWalk; i++ {
+		var parent string
+		err := s.db.QueryRowContext(ctx, `SELECT parent_id FROM sessions WHERE id = ?`, id).Scan(&parent)
+		if err == sql.ErrNoRows {
+			return out, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read parent of %s: %w", id, err)
+		}
+		if parent == "" {
+			return out, nil
+		}
+		if seen[parent] {
+			return nil, fmt.Errorf("session %s: parent_id cycle", id)
+		}
+		seen[parent] = true
+		out = append(out, parent)
+		id = parent
+	}
+	return nil, fmt.Errorf("session ancestry deeper than %d", maxAncestorWalk)
 }
 
 // SetSessionWorkspace re-roots a session. The root is fixed at creation for
