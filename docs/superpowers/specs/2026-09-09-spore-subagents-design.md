@@ -45,7 +45,7 @@ type Supervisor struct {
 }
 
 func (s *Supervisor) Attach(a *agent.Agent)
-func (s *Supervisor) Run(ctx context.Context, parentID, prompt string) (string, error)
+func (s *Supervisor) Run(ctx context.Context, parentID, prompt string) (Status, error)
 func (s *Supervisor) Spawn(ctx context.Context, parentID, prompt string) (string, error)
 func (s *Supervisor) Result(ctx context.Context, childID string) (Status, error)
 func (s *Supervisor) List(ctx context.Context, parentID string) ([]Status, error)
@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS subagent_runs (
   session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
   parent_id  TEXT NOT NULL,
   prompt     TEXT NOT NULL,
+  depth      INTEGER NOT NULL DEFAULT 1,
   state      TEXT NOT NULL,  -- running | done | failed | interrupted
   result     TEXT NOT NULL DEFAULT '',
   error      TEXT NOT NULL DEFAULT '',
