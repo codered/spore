@@ -2175,6 +2175,14 @@ func (s *Supervisor) Spawn(ctx context.Context, parentID, prompt string) (string
 	return childID, nil
 }
 
+// NOTE added during execution of tasks 1-6: FinishSubagentRun returns only an
+// error, so a cancel cannot tell "I moved this row to terminal" from "a
+// natural completion beat me to it". Nothing in tasks 1-6 consumes that
+// distinction, so it was left alone there. Cancel is its first real consumer:
+// give FinishSubagentRun a (moved bool, err error) return as part of THIS
+// task, the way ClaimPendingCall already reports who won the race, and have
+// Cancel report accurately rather than assuming its cancel took effect.
+
 // Cancel stops a running child. Cancelling is a human action, so it is not a
 // tool: it arrives from the daemon endpoint or the CLI.
 func (s *Supervisor) Cancel(ctx context.Context, childID string) error {
