@@ -2175,6 +2175,15 @@ func (s *Supervisor) Spawn(ctx context.Context, parentID, prompt string) (string
 	return childID, nil
 }
 
+// NOTE added during execution of tasks 1-6: the cost ceiling has a TOCTOU that
+// the concurrency cap no longer has. Supervisor.admit reads TreeCost with no
+// lock held, while tryTrack counts and reserves max_concurrent atomically under
+// s.mu. That is harmless in tasks 1-6 because agent_run reports
+// ReadOnly() == false, so the agent loop serialises it and one agent can never
+// have two launches in flight. agent_spawn introduces exactly the true
+// background concurrency that makes it reachable, so fold the cost check into
+// the same lock tryTrack already holds as part of THIS task.
+
 // NOTE added during execution of tasks 1-6: FinishSubagentRun returns only an
 // error, so a cancel cannot tell "I moved this row to terminal" from "a
 // natural completion beat me to it". Nothing in tasks 1-6 consumes that
