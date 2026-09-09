@@ -238,4 +238,3 @@ func TestBrokerAnswerChecksRootID(t *testing.T) {
 		t.Errorf("root could not answer: %v", err)
 	}
 }
-

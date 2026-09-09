@@ -149,10 +149,10 @@ func TestListReportsChildrenOfOneParent(t *testing.T) {
 // blockingRunner holds a channel that the test controls, allowing the test to
 // keep a child running while launching another one to test concurrency limits.
 type blockingRunner struct {
-	reply   string
-	hold    <-chan struct{}
-	ran     []string
-	mu      sync.Mutex
+	reply string
+	hold  <-chan struct{}
+	ran   []string
+	mu    sync.Mutex
 }
 
 func (b *blockingRunner) RunSite(ctx context.Context, sessionID, input, site string) (<-chan Event, error) {
