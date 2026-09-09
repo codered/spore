@@ -21,6 +21,7 @@ import (
 	"github.com/codered/spore/internal/recall/sqlitefts"
 	skillfiles "github.com/codered/spore/internal/skill"
 	"github.com/codered/spore/internal/store"
+	"github.com/codered/spore/internal/subagent"
 )
 
 // allowApprover is the simplest Approver stub: every ask is approved once,
@@ -108,7 +109,8 @@ workspace = "`+dir+`"
 	facts := memory.NewCache(filepath.Join(dir, "memory"))
 	facts.Reload()
 
-	guard, host, err := buildTools(cfg, st, facts, sqlitefts.New(st.DB()), skillfiles.NewCaches(), nil)
+	sup := subagent.New(st, cfg.Subagents)
+	guard, host, err := buildTools(cfg, st, facts, sqlitefts.New(st.DB()), skillfiles.NewCaches(), sup, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

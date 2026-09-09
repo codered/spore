@@ -50,3 +50,22 @@ func TestValidSite(t *testing.T) {
 		t.Error("ValidSite is wrong: chat must be valid, embed must not")
 	}
 }
+
+func TestSubagentIsAValidSite(t *testing.T) {
+	if !ValidSite(SiteSubagent) {
+		t.Error("ValidSite(SiteSubagent) = false, want true")
+	}
+}
+
+func TestRouteSubagentToItsOwnModel(t *testing.T) {
+	r, err := New([]config.Route{{When: "subagent", Model: "small"}}, "big")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Model(SiteSubagent); got != "small" {
+		t.Errorf("Model(subagent) = %q, want small", got)
+	}
+	if got := r.Model(SiteChat); got != "big" {
+		t.Errorf("Model(chat) = %q, want big -- the subagent rule must not match chat", got)
+	}
+}

@@ -184,6 +184,20 @@ so a project's skills travel with it. Be deliberate about that one: a session
 rooted at a repository you cloned will read skills written by whoever wrote the
 repository.
 
+```toml
+[subagents]
+max_depth      = 2    # how deep the tree may go
+max_cost_usd   = 1.00 # ceiling for the whole tree
+max_concurrent = 4    # how many children may run at once
+```
+
+`max_depth` limits tree depth: the default 2 means a top-level session spawns
+children and those children may not spawn. `max_cost_usd` is the cost ceiling
+for a whole tree summing every agent in it; depth alone does not see a wide
+flat fan-out. `max_concurrent` bounds how many children may run under one root,
+since an unbounded spawn batch reaches provider rate limits before the cost
+ceiling.
+
 ### Scheduled jobs
 
 A job is a prompt plus a schedule — a five-field cron expression (UTC) or an

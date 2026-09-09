@@ -122,7 +122,7 @@ func TestSummaryRoundTripAndSessionListing(t *testing.T) {
 		t.Errorf("after update Summary = (%q, %d)", text, through)
 	}
 
-	sessions, err := s.ListSessions(ctx, 10)
+	sessions, err := s.ListSessions(ctx, 10, false)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestListSessionsOrdering(t *testing.T) {
 	}
 
 	// ListSessions orders by updated_at DESC, so id2 (with later timestamp) should be first
-	sessions, err := s.ListSessions(ctx, 10)
+	sessions, err := s.ListSessions(ctx, 10, false)
 	if err != nil {
 		t.Fatalf("ListSessions: %v", err)
 	}
@@ -524,7 +524,7 @@ func TestListSessionsCarriesWorkspace(t *testing.T) {
 	if _, err := s.CreateSession(ctx, "a", "/ws/a"); err != nil {
 		t.Fatal(err)
 	}
-	list, err := s.ListSessions(ctx, 10)
+	list, err := s.ListSessions(ctx, 10, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -763,5 +763,137 @@ func TestClearThroughLatestMessageRepairsOversizedBoundary(t *testing.T) {
 	}
 	if stored != 2 {
 		t.Fatalf("stored summary boundary = %d, want 2", stored)
+	}
+}
+
+func TestCreateChildSessionRecordsParent(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	parent, err := s.CreateSession(ctx, "parent", "/tmp/ws")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	child, err := s.CreateChildSession(ctx, "child", "/tmp/ws", parent)
+	if err != nil {
+		t.Fatalf("CreateChildSession: %v", err)
+	}
+
+	got, ok, err := s.Session(ctx, child)
+	if err != nil || !ok {
+		t.Fatalf("Session(%s): ok=%v err=%v", child, ok, err)
+	}
+	if got.ParentID != parent {
+		t.Errorf("ParentID = %q, want %q", got.ParentID, parent)
+	}
+	top, ok, err := s.Session(ctx, parent)
+	if err != nil || !ok {
+		t.Fatalf("Session(%s): ok=%v err=%v", parent, ok, err)
+	}
+	if top.ParentID != "" {
+		t.Errorf("top-level ParentID = %q, want empty", top.ParentID)
+	}
+}
+
+func TestListSessionsHidesChildrenUnlessAsked(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	parent, err := s.CreateSession(ctx, "parent", "/tmp/ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateChildSession(ctx, "child", "/tmp/ws", parent); err != nil {
+		t.Fatal(err)
+	}
+
+	top, err := s.ListSessions(ctx, 50, false)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(top) != 1 || top[0].ID != parent {
+		t.Fatalf("default listing = %+v, want only the parent", top)
+	}
+
+	all, err := s.ListSessions(ctx, 50, true)
+	if err != nil {
+		t.Fatalf("ListSessions(all): %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("listing with children = %d rows, want 2", len(all))
+	}
+}
+
+func TestSessionAncestorsWalksToRoot(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	root, err := s.CreateSession(ctx, "root", "/tmp/ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mid, err := s.CreateChildSession(ctx, "mid", "/tmp/ws", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := s.CreateChildSession(ctx, "leaf", "/tmp/ws", mid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.SessionAncestors(ctx, leaf)
+	if err != nil {
+		t.Fatalf("SessionAncestors: %v", err)
+	}
+	if len(got) != 2 || got[0] != mid || got[1] != root {
+		t.Errorf("ancestors = %v, want [%s %s]", got, mid, root)
+	}
+
+	none, err := s.SessionAncestors(ctx, root)
+	if err != nil {
+		t.Fatalf("SessionAncestors(root): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("root ancestors = %v, want none", none)
+	}
+}
+
+func TestMigrateSessionsAddsParentID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "old.db")
+
+	// A database written before this change: sessions with a workspace but
+	// no parent_id.
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE sessions (
+	  id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '',
+	  workspace TEXT NOT NULL DEFAULT '',
+	  created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO sessions (id, title, workspace, created_at, updated_at)
+		 VALUES ('keepme', 'old', '/tmp/ws', '2026-01-01T00:00:00.000000000Z', '2026-01-01T00:00:00.000000000Z')`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open on a pre-migration database: %v", err)
+	}
+	defer s.Close()
+
+	got, ok, err := s.Session(context.Background(), "keepme")
+	if err != nil || !ok {
+		t.Fatalf("row did not survive the migration: ok=%v err=%v", ok, err)
+	}
+	if got.ParentID != "" {
+		t.Errorf("migrated ParentID = %q, want empty", got.ParentID)
 	}
 }

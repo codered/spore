@@ -10,9 +10,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   id         TEXT PRIMARY KEY,
   title      TEXT NOT NULL DEFAULT '',
   workspace  TEXT NOT NULL DEFAULT '',
+  parent_id  TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_id);
 
 CREATE TABLE IF NOT EXISTS messages (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -146,4 +149,22 @@ CREATE TABLE IF NOT EXISTS recall_sync (
   cursor     INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
 );
+
+-- subagent_runs is run bookkeeping for a sub-agent session: what it was
+-- asked, whether it is still going, and what it returned. It is separate
+-- from sessions because this is sub-agent-only state, where sessions.parent_id
+-- is read by the approval walk and the session listing.
+CREATE TABLE IF NOT EXISTS subagent_runs (
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  parent_id  TEXT NOT NULL,
+  prompt     TEXT NOT NULL,
+  depth      INTEGER NOT NULL DEFAULT 1,
+  state      TEXT NOT NULL,
+  result     TEXT NOT NULL DEFAULT '',
+  error      TEXT NOT NULL DEFAULT '',
+  started_at TEXT NOT NULL,
+  ended_at   TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_subagent_runs_parent ON subagent_runs(parent_id, started_at);
 `

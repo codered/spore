@@ -132,6 +132,39 @@ func TestRunSingleTurnPersistsAndReportsCost(t *testing.T) {
 	}
 }
 
+func TestRunSiteRecordsTheCallSite(t *testing.T) {
+	ctx := context.Background()
+	script := provider.NewScript(provider.ScriptTurn{
+		Text:  "hello from subagent",
+		Usage: provider.Usage{InputTokens: 100, OutputTokens: 50},
+	})
+	a, st := harness(t, script, nil)
+
+	sid, err := st.CreateSession(ctx, "t", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := a.RunSite(ctx, sid, "hello", router.SiteSubagent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range ch {
+	}
+	rows, err := st.Messages(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sites []string
+	for _, r := range rows {
+		if r.Role == "assistant" {
+			sites = append(sites, r.CallSite)
+		}
+	}
+	if len(sites) == 0 || sites[0] != router.SiteSubagent {
+		t.Errorf("assistant call_site = %v, want the subagent site", sites)
+	}
+}
+
 func TestRunDispatchesToolsAndFeedsResultsBack(t *testing.T) {
 	ctx := context.Background()
 	script := provider.NewScript(

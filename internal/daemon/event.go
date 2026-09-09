@@ -52,6 +52,10 @@ type WireEvent struct {
 	Rule      string `json:"rule,omitempty"`
 	Pattern   string `json:"pattern,omitempty"`
 	Decision  string `json:"decision,omitempty"`
+	// A child's ask carries its own session id. The client shows it so the
+	// human can see they are answering for a sub-agent, not for the
+	// conversation in front of them.
+	Origin string `json:"origin_session,omitempty"`
 }
 
 // FromAgent converts a core event into its wire form. The agent's Err field

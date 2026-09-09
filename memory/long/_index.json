@@ -7,7 +7,30 @@
         "project"
       ],
       "summary": "A personal AI agent that runs as an always-on daemon in a single Go binary.",
-      "last_accessed": "2026-08-30",
+      "last_accessed": "2026-09-08",
+      "access_count": 2
+    },
+    {
+      "id": "implementation-plans",
+      "file": "implementation-plans.md",
+      "tags": [
+        "project",
+        "status"
+      ],
+      "summary": "Plans 1-7 have all shipped; no plan is in flight and docs/backlog.md is the authority on what is next.",
+      "last_accessed": "2026-09-08",
+      "access_count": 2
+    },
+    {
+      "id": "skills-and-verification-status",
+      "file": "skills-and-verification-status.md",
+      "tags": [
+        "project",
+        "status",
+        "verification"
+      ],
+      "summary": "The /skills feature and its follow-up fixes shipped; build, vet and go test pass with sqlite_fts5.",
+      "last_accessed": "2026-09-08",
       "access_count": 1
     }
   ]
