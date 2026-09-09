@@ -579,6 +579,17 @@ func Load(path string) (*Config, error) {
 	if cfg.Daemon.TickSeconds == 0 {
 		cfg.Daemon.TickSeconds = d.Daemon.TickSeconds
 	}
+	// Zero means "not set in the file", not "disabled": a partially written
+	// [subagents] block must not silently refuse every spawn.
+	if cfg.Subagents.MaxDepth == 0 {
+		cfg.Subagents.MaxDepth = 2
+	}
+	if cfg.Subagents.MaxCostUSD == 0 {
+		cfg.Subagents.MaxCostUSD = 1.00
+	}
+	if cfg.Subagents.MaxConcurrent == 0 {
+		cfg.Subagents.MaxConcurrent = 4
+	}
 	if err := validateDiscord(cfg.Bridge.Discord); err != nil {
 		return nil, err
 	}
@@ -660,17 +671,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Subagents.MaxDepth < 0 || c.Subagents.MaxCostUSD < 0 || c.Subagents.MaxConcurrent < 0 {
 		return fmt.Errorf("subagents: max_depth, max_cost_usd and max_concurrent must not be negative")
-	}
-	// Zero means "not set in the file", not "disabled": a partially written
-	// [subagents] block must not silently refuse every spawn.
-	if c.Subagents.MaxDepth == 0 {
-		c.Subagents.MaxDepth = 2
-	}
-	if c.Subagents.MaxCostUSD == 0 {
-		c.Subagents.MaxCostUSD = 1.00
-	}
-	if c.Subagents.MaxConcurrent == 0 {
-		c.Subagents.MaxConcurrent = 4
 	}
 	return nil
 }

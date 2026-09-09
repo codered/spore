@@ -640,17 +640,14 @@ func TestSubagentZeroValuesFallBackToDefaults(t *testing.T) {
 	// A config file with a [subagents] block that sets only one key must not
 	// leave the others at zero: a zero depth would disable sub-agents and a
 	// zero ceiling would refuse every spawn, both silently.
-	c := Default()
-	c.DefaultModel = "anthropic/claude-opus-5"
-	c.Subagents = SubagentConfig{MaxDepth: 3}
-	if err := c.Validate(); err != nil {
-		t.Fatalf("Validate: %v", err)
+	cfg := loadTestConfig(t, `[subagents]
+max_depth = 3
+`)
+	if cfg.Subagents.MaxDepth != 3 {
+		t.Errorf("MaxDepth = %d, want the configured 3", cfg.Subagents.MaxDepth)
 	}
-	if c.Subagents.MaxDepth != 3 {
-		t.Errorf("MaxDepth = %d, want the configured 3", c.Subagents.MaxDepth)
-	}
-	if c.Subagents.MaxCostUSD != 1.00 || c.Subagents.MaxConcurrent != 4 {
-		t.Errorf("unset keys did not fall back: %+v", c.Subagents)
+	if cfg.Subagents.MaxCostUSD != 1.00 || cfg.Subagents.MaxConcurrent != 4 {
+		t.Errorf("unset keys did not fall back: %+v", cfg.Subagents)
 	}
 }
 
