@@ -19,7 +19,12 @@ const answeredTTL = 10 * time.Minute
 // waiter is a waiting Ask, keyed by suspension id in the broker's map.
 type waiter struct {
 	sessionID string
-	ch        chan policy.Answer
+	// rootID is the session a human is attached to. Only this session (or a
+	// caller that knows its id) may answer the approval synchronously. For a
+	// top-level session it is the session's own id; for a child, it is the
+	// root of the parent chain.
+	rootID string
+	ch     chan policy.Answer
 }
 
 // Broker is the daemon's policy.Approver. Ask cannot prompt a browser
@@ -55,8 +60,15 @@ func NewBrokerWithTTL(h *Hub, ttl time.Duration) *Broker {
 // Ask implements policy.Approver.
 func (b *Broker) Ask(ctx context.Context, a policy.Ask) (policy.Answer, error) {
 	ch := make(chan policy.Answer, 1)
+	// The root ID determines who is allowed to answer and where the approval
+	// is published. For a top-level session it is the session's own id; for
+	// a child, it is the root of the parent chain.
+	rootID := a.RootID
+	if rootID == "" {
+		rootID = a.SessionID
+	}
 	b.mu.Lock()
-	b.waiters[a.PendingID] = waiter{sessionID: a.SessionID, ch: ch}
+	b.waiters[a.PendingID] = waiter{sessionID: a.SessionID, rootID: rootID, ch: ch}
 	b.mu.Unlock()
 	defer func() {
 		b.mu.Lock()
@@ -64,11 +76,11 @@ func (b *Broker) Ask(ctx context.Context, a policy.Ask) (policy.Answer, error) {
 		b.mu.Unlock()
 	}()
 
-	b.hub.Publish(a.SessionID, approvalEvent(a))
+	b.hub.Publish(rootID, approvalEvent(a))
 
 	select {
 	case ans := <-ch:
-		b.hub.Publish(a.SessionID, WireEvent{
+		b.hub.Publish(rootID, WireEvent{
 			Type: WireResolved, PendingID: a.PendingID, Tool: a.Tool,
 			Decision: decisionOf(ans),
 		})
@@ -88,7 +100,7 @@ func (b *Broker) Ask(ctx context.Context, a policy.Ask) (policy.Answer, error) {
 		b.mu.Unlock()
 		if !stillWaiting {
 			ans := <-ch
-			b.hub.Publish(a.SessionID, WireEvent{
+			b.hub.Publish(rootID, WireEvent{
 				Type: WireResolved, PendingID: a.PendingID, Tool: a.Tool,
 				Decision: decisionOf(ans),
 			})
@@ -108,8 +120,8 @@ func (b *Broker) Ask(ctx context.Context, a policy.Ask) (policy.Answer, error) {
 func (b *Broker) Answer(sessionID string, pendingID int64, ans policy.Answer) bool {
 	b.mu.Lock()
 	w, ok := b.waiters[pendingID]
-	if !ok || w.sessionID != sessionID {
-		// Either no waiter exists, or it's for a different session.
+	if !ok || w.rootID != sessionID {
+		// Either no waiter exists, or it's for a different root session.
 		// Do NOT delete the waiter; another session must not destroy the real owner's waiter.
 		b.mu.Unlock()
 		return false

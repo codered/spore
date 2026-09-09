@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/codered/spore/internal/config"
+	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/store"
 )
 
@@ -143,3 +144,98 @@ func TestRememberedDecisionsAreRootScoped(t *testing.T) {
 	}
 	_ = root
 }
+
+// Fix 3: Root-scoped decisions are written and read correctly through Guard.Resolve
+func TestRootScopedDecisionWrittenViaResolve(t *testing.T) {
+	ctx := context.Background()
+	st, root, childA, childB := treeStore(t)
+	g := NewGuard(&recordingRunner{}, askEverything(t, "/tmp/ws"), &scriptedApprover{}, st, nil)
+
+	// Child A raises a pending call
+	id := pendingIn(t, st, childA)
+	// Root resolves it with ScopeSession
+	if err := g.Resolve(ctx, root, id, Answer{Allow: true, Scope: ScopeSession}); err != nil {
+		t.Fatalf("root could not resolve child's approval: %v", err)
+	}
+
+	// Both the child and a sibling should see the allow decision at the root
+	got, ok, err := rootScopedDecision(ctx, st, childA, "shell_exec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || got != string(DecisionAllow) {
+		t.Errorf("child decision = (%q, %v), want root's allow after Resolve", got, ok)
+	}
+
+	got2, ok2, err := rootScopedDecision(ctx, st, childB, "shell_exec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok2 || got2 != string(DecisionAllow) {
+		t.Errorf("sibling decision = (%q, %v), want root's allow after Resolve", got2, ok2)
+	}
+}
+
+// Fix 3: Root-scoped decisions are written when the approval comes via Guard.Run
+func TestRootScopedDecisionWrittenViaRun(t *testing.T) {
+	ctx := context.Background()
+	st, _, childA, childB := treeStore(t)
+	ap := &scriptedApprover{answer: Answer{Allow: true, Scope: ScopeSession}}
+	g := NewGuard(&recordingRunner{}, askEverything(t, "/tmp/ws"), ap, st, nil)
+
+	// A child makes a call that needs approval
+	sess := WithSession(ctx, Session{ID: childA, Profile: ProfileLocal, Workspace: "/tmp/ws"})
+	got := g.Run(sess, provider.Block{Type: provider.BlockToolUse, ID: "c1", Name: "shell_exec", Input: []byte(`{"cmd":"ls"}`)})
+
+	if got.IsError {
+		t.Fatalf("child call was denied: %q", got.Content)
+	}
+
+	// The approval was answered with ScopeSession, so the root should have the decision
+	decision, ok, err := rootScopedDecision(ctx, st, childA, "shell_exec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || decision != string(DecisionAllow) {
+		t.Errorf("child decision after Run = (%q, %v), want root's allow", decision, ok)
+	}
+
+	// Sibling should also see the decision
+	decision2, ok2, err := rootScopedDecision(ctx, st, childB, "shell_exec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok2 || decision2 != string(DecisionAllow) {
+		t.Errorf("sibling decision after Run = (%q, %v), want root's allow", decision2, ok2)
+	}
+}
+
+// Fix 2: Broker.Answer with RootID - child cannot answer its own, root can
+func TestBrokerAnswerChecksRootID(t *testing.T) {
+	ctx := context.Background()
+	st, root, childA, _ := treeStore(t)
+	g := NewGuard(&recordingRunner{}, askEverything(t, "/tmp/ws"), &scriptedApprover{}, st, nil)
+
+	// Child raises a pending call
+	id := pendingIn(t, st, childA)
+
+	// Attempting to answer with the child's own session ID should fail in Broker.Answer
+	// This is a synchronous fast-path authorization check
+	// We'll verify via Guard.Resolve since that's what the HTTP handler calls
+	err := g.Resolve(ctx, childA, id, Answer{Allow: true, Scope: ScopeOnce})
+	if err == nil {
+		t.Fatal("child should not be able to answer its own approval")
+	}
+	if !strings.Contains(err.Error(), "own approval") {
+		t.Errorf("error = %v, want it to mention own approval", err)
+	}
+
+	// Now a new approval from a different child
+	id2 := pendingIn(t, st, childA)
+	// Root should be able to answer
+	err = g.Resolve(ctx, root, id2, Answer{Allow: true, Scope: ScopeOnce})
+	if err != nil {
+		t.Errorf("root could not answer: %v", err)
+	}
+}
+

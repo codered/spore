@@ -52,6 +52,11 @@ type Ask struct {
 	// a blanket allow for every call to that tool. This is the wire convention
 	// every approver (terminal, daemon, bridge) uses to hide the option.
 	Pattern string
+	// RootID is the session a human is attached to. For a top-level session,
+	// it is the session's own id; for a child, it is the root of the parent
+	// chain. The approval is published to the root's topic so clients actually
+	// subscribed to the human can see and answer it.
+	RootID string
 }
 
 type Answer struct {
@@ -210,6 +215,15 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 	askCtx, cancel := context.WithTimeout(ctx, g.engine.ApprovalTimeout())
 	defer cancel()
 
+	// The approval must be published to the root's topic so clients actually
+	// subscribed to the human can see and answer it. If rootOf fails, fall
+	// back to the session's own id — an ask that reaches the wrong topic is
+	// recoverable, a failed turn is not.
+	rootID := sess.ID
+	if root, err := rootOf(ctx, g.store, sess.ID); err == nil {
+		rootID = root
+	}
+
 	answer, err := g.approver.Ask(askCtx, Ask{
 		SessionID: sess.ID,
 		Tool:      call.Name,
@@ -217,6 +231,7 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 		Rule:      res.Rule,
 		PendingID: pendingID,
 		Pattern:   pattern,
+		RootID:    rootID,
 	})
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
@@ -258,6 +273,15 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 			sporetrace.RecordPolicy(ctx, string(decision), "pattern answer degraded to once: no pattern for this call")
 		}
 		_ = g.store.RecordApproval(book, sess.ID, call.Name, call.Input, string(decision), string(scope))
+
+		// When the scope is "this session" and the root differs from the session
+		// the row belongs to, record a second approval row under the ROOT so
+		// rootScopedDecision finds it. This way one answer covers the tree.
+		if scope == ScopeSession {
+			if root, err := rootOf(book, g.store, sess.ID); err == nil && root != sess.ID {
+				_ = g.store.RecordApproval(book, root, call.Name, call.Input, string(decision), string(scope))
+			}
+		}
 
 		if scope == ScopePattern && g.learn != nil {
 			if err := g.learn(decision, pattern); err != nil {
@@ -393,6 +417,16 @@ func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, 
 	}
 	if !won {
 		return fmt.Errorf("no pending call %d in session %s (already answered, or another session's)", pendingID, sessionID)
+	}
+	// When the scope is "this session" and the root differs from the session
+	// the row belongs to, record a second approval row under the ROOT so
+	// rootScopedDecision finds it. Do this after the claim succeeds so we know
+	// the answer was actually recorded. If this write fails, follow the
+	// convention for learned rules: the tree simply asks again next time.
+	if ans.Scope == ScopeSession {
+		if root, err := rootOf(ctx, g.store, claimed.SessionID); err == nil && root != claimed.SessionID {
+			_ = g.store.RecordApproval(ctx, root, claimed.Tool, claimed.ArgsJSON, string(decision), string(ans.Scope))
+		}
 	}
 	if ans.Scope == ScopePattern && g.learn != nil {
 		pattern, ok := PatternFor(Call{Tool: claimed.Tool, Args: claimed.ArgsJSON})
