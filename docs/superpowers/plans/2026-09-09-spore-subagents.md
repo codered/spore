@@ -20,6 +20,8 @@
 - Every LLM call names a `router` call site. The set is closed and validated by `router.ValidSite`.
 - Comments explain *why*, matching the density of surrounding code. Do not narrate what the code plainly does.
 - Commit after each task with a `type(scope): subject` subject line.
+- Every commit must be `gofmt` clean: `make fmtcheck` is a CI gate, and it
+  fails the pipeline before any test runs. Run it, not just `go test`.
 
 ---
 
@@ -2717,9 +2719,23 @@ found after the last batch of commands shipped."
 
 ## Final verification
 
-- [ ] `go build -tags sqlite_fts5 ./...` — clean
+Run what CI runs, in CI's order, not an approximation of it. These three
+mirror `.github/workflows/ci.yml`'s `test` job exactly; if that file changes,
+change this list with it. Tasks 1-6 shipped a red pipeline because this list
+omitted `fmtcheck` and narrowed `-race` to the packages that looked
+interesting, and every local check passed anyway.
+
 - [ ] `go vet -tags sqlite_fts5 ./...` — clean
-- [ ] `go test -tags sqlite_fts5 ./...` — every package passes
+- [ ] `make fmtcheck` — clean. **CI gates on this.** `gofmt` disagreeing about
+      a blank line or a struct's field alignment fails the pipeline in under
+      twenty seconds, before a single test runs.
+- [ ] `go test -tags sqlite_fts5 -race -timeout 10m ./...` — every package,
+      with `-race`. Not a chosen subset: the race detector only reports what it
+      actually executes, so a subset is a subset of the evidence.
+
+Then the rest:
+
+- [ ] `go build -tags sqlite_fts5 ./...` — clean
 - [ ] `make test` — passes (it compiles neither container suite)
 - [ ] Manual: start `spore serve`, open `spore chat`, ask for a sub-agent to be run, confirm `/agents` lists it and that `session list` does **not** show the child while `session list --all` does.
 - [ ] Manual: with a child running, kill and restart the daemon; confirm `/agents` reports the child `interrupted` rather than `running`.
