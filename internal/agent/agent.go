@@ -175,10 +175,18 @@ func (a *Agent) appendMessage(ctx context.Context, sessionID string, role provid
 	return err
 }
 
-// Run executes one user turn and returns a channel of events. The channel is
-// closed when the turn finishes; the caller may abandon it only by cancelling
-// ctx.
+// Run executes a turn as the session's own chat.
 func (a *Agent) Run(ctx context.Context, sessionID, input string) (<-chan Event, error) {
+	return a.RunSite(ctx, sessionID, input, router.SiteChat)
+}
+
+// RunSite is Run with an explicit call site. A sub-agent's turns name
+// router.SiteSubagent, so they route -- and are costed in `/usage` -- as the
+// delegated work they are rather than as the parent's chat.
+func (a *Agent) RunSite(ctx context.Context, sessionID, input, site string) (<-chan Event, error) {
+	if !router.ValidSite(site) {
+		return nil, fmt.Errorf("unknown call site %q", site)
+	}
 	pctx, cancelPersist := persistCtx(ctx)
 	err := a.appendMessage(pctx, sessionID, provider.RoleUser,
 		[]provider.Block{{Type: provider.BlockText, Text: input}}, "", "", provider.Usage{}, 0)
@@ -192,7 +200,7 @@ func (a *Agent) Run(ctx context.Context, sessionID, input string) (<-chan Event,
 		defer close(out)
 		ctx, turn := sporetrace.StartTurn(ctx, sessionID, "core")
 		defer turn.End()
-		if err := a.loop(ctx, sessionID, out); err != nil {
+		if err := a.loop(ctx, sessionID, site, out); err != nil {
 			turn.RecordError(err)
 			out <- Event{Type: EvError, Err: err}
 		}
@@ -200,7 +208,7 @@ func (a *Agent) Run(ctx context.Context, sessionID, input string) (<-chan Event,
 	return out, nil
 }
 
-func (a *Agent) loop(ctx context.Context, sessionID string, out chan<- Event) error {
+func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Event) error {
 	for i := 0; i < maxIterations; i++ {
 		if err := a.MaybeCompact(ctx, sessionID); err != nil {
 			return fmt.Errorf("compaction: %w", err)
@@ -214,14 +222,14 @@ func (a *Agent) loop(ctx context.Context, sessionID string, out chan<- Event) er
 		if a.Tools != nil {
 			req.Tools = a.Tools.Specs()
 		}
-		ref := a.Router.Model(router.SiteChat)
+		ref := a.Router.Model(site)
 		p, model, price, err := a.Registry.Resolve(ref)
 		if err != nil {
 			return err
 		}
 		req.Model = model
 
-		llmCtx, llmSpan := sporetrace.StartLLM(ctx, router.SiteChat, ref)
+		llmCtx, llmSpan := sporetrace.StartLLM(ctx, site, ref)
 		ch, err := p.Stream(llmCtx, req)
 		if err != nil {
 			llmSpan.RecordError(err)
@@ -259,7 +267,7 @@ func (a *Agent) loop(ctx context.Context, sessionID string, out chan<- Event) er
 		cost := price.Cost(usage)
 		sporetrace.EndLLM(llmSpan, req.System, text, usage, cost)
 		pctx, cancelPersist := persistCtx(ctx)
-		err = a.appendMessage(pctx, sessionID, provider.RoleAssistant, blocks, ref, router.SiteChat, usage, cost)
+		err = a.appendMessage(pctx, sessionID, provider.RoleAssistant, blocks, ref, site, usage, cost)
 		cancelPersist()
 		if err != nil {
 			return err
