@@ -567,7 +567,16 @@ func slashDesc(cmd string) string {
 func (m *chatUI) approvalView() string {
 	ev := m.pending
 	var b strings.Builder
-	b.WriteString(styApprovalTitle.Render("spore wants to run "+ev.Tool) + "\n")
+	title := "spore wants to run " + ev.Tool
+	if ev.Origin != "" {
+		// Show the origin session's short ID when this is a sub-agent's ask
+		shortID := ev.Origin
+		if len(shortID) > 8 {
+			shortID = shortID[:8]
+		}
+		title = "sub-agent " + shortID + ": " + title
+	}
+	b.WriteString(styApprovalTitle.Render(title) + "\n")
 	b.WriteString(styMuted.Render("matched policy rule "+quote(ev.Rule)) + "\n\n")
 	b.WriteString(prettyArgs(ev.Args, 10) + "\n\n")
 

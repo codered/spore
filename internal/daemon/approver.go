@@ -171,7 +171,7 @@ func (s *Server) pendingApprovalEvents(ctx context.Context, sessionID string) []
 	if s.guard == nil {
 		return nil
 	}
-	pending, err := s.guard.Pending(ctx, sessionID)
+	pending, err := s.guard.PendingTree(ctx, sessionID)
 	if err != nil {
 		return nil
 	}
@@ -180,10 +180,17 @@ func (s *Server) pendingApprovalEvents(ctx context.Context, sessionID string) []
 		// Ignore the ok flag: an empty pattern is exactly what the client
 		// needs to see to hide the option.
 		pattern, _ := policy.PatternFor(policy.Call{Tool: p.Tool, Args: p.ArgsJSON})
-		out = append(out, WireEvent{
+		ev := WireEvent{
 			Type: WireApproval, PendingID: p.ID, Tool: p.Tool,
 			Args: string(p.ArgsJSON), Rule: p.Rule, Pattern: pattern,
-		})
+		}
+		// A child's ask carries its own session id. The client shows it so the
+		// human can see they are answering for a sub-agent, not for the
+		// conversation in front of them.
+		if p.SessionID != sessionID {
+			ev.Origin = p.SessionID
+		}
+		out = append(out, ev)
 	}
 	return out
 }

@@ -515,6 +515,35 @@ func (s *Store) PendingCalls(ctx context.Context, sessionID string) ([]PendingCa
 	return out, rows.Err()
 }
 
+// PendingCallsTree is PendingCalls over a session and every descendant.
+func (s *Store) PendingCallsTree(ctx context.Context, sessionID string) ([]PendingCall, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		WITH RECURSIVE tree(id) AS (
+		  SELECT id FROM sessions WHERE id = ?
+		  UNION
+		  SELECT s.id FROM sessions s JOIN tree t ON s.parent_id = t.id
+		)
+		SELECT p.id, p.session_id, p.tool_use_id, p.tool, p.args, p.profile, p.rule, p.created_at
+		FROM pending_calls p JOIN tree ON p.session_id = tree.id
+		WHERE p.state = 'pending' ORDER BY p.id`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("read pending calls for tree: %w", err)
+	}
+	defer rows.Close()
+	var out []PendingCall
+	for rows.Next() {
+		var p PendingCall
+		var args, created string
+		if err := rows.Scan(&p.ID, &p.SessionID, &p.ToolUseID, &p.Tool, &args, &p.Profile, &p.Rule, &created); err != nil {
+			return nil, err
+		}
+		p.ArgsJSON = []byte(args)
+		p.CreatedAt, _ = time.Parse(timeFormat, created)
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // PendingCallByID reads one suspension without claiming it. Resolve needs the
 // arguments before it claims, because the claim writes the audit row and the
 // scope on that row must already be correct.

@@ -169,7 +169,7 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 	}
 
 	// From here the decision is ask.
-	if remembered, ok, err := g.store.SessionDecision(ctx, sess.ID, call.Name); err == nil && ok {
+	if remembered, ok, err := rootScopedDecision(ctx, g.store, sess.ID, call.Name); err == nil && ok {
 		if remembered == string(DecisionAllow) {
 			sporetrace.RecordPolicy(ctx, "allow", "approved earlier this session")
 			return g.inner.Run(ctx, call)
@@ -318,6 +318,14 @@ func (g *Guard) Pending(ctx context.Context, sessionID string) ([]store.PendingC
 	return g.store.PendingCalls(ctx, sessionID)
 }
 
+// PendingTree returns a session's own pending approvals together with those
+// of its descendants. A child's ask must reach the clients a human actually
+// has attached, and those are attached to the root of the chain, not to the
+// child.
+func (g *Guard) PendingTree(ctx context.Context, sessionID string) ([]store.PendingCall, error) {
+	return g.store.PendingCallsTree(ctx, sessionID)
+}
+
 // Resolve answers a pending approval by id. It is the out-of-band path used
 // when the answer arrives from somewhere other than the Approver that asked —
 // a second client, or a process that restarted while the request was open.
@@ -326,6 +334,40 @@ func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, 
 	decision := DecisionDeny
 	if ans.Allow {
 		decision = DecisionAllow
+	}
+	// A child's approval belongs to the child's session, but the human
+	// answering it is attached to an ancestor. Authorise the answerer here
+	// and then claim with the row's own session id: the claim stays exactly
+	// as atomic against a double answer as it was, and parentage is
+	// immutable once written, so there is no time-of-check gap.
+	p, found, err := g.store.PendingCallByID(ctx, pendingID)
+	if err != nil {
+		return err
+	}
+	owner := sessionID
+	if found {
+		if p.SessionID != sessionID {
+			ok, err := isAncestor(ctx, g.store, sessionID, p.SessionID)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("session %s may not answer approvals for session %s", sessionID, p.SessionID)
+			}
+			owner = p.SessionID
+		} else {
+			// Answering an approval raised by your own session is normal for a
+			// top-level session and forbidden for a sub-agent: routing the ask to
+			// a human above it is the entire point, and self-approval is the lever
+			// a prompt injection reaches for.
+			ancestors, err := g.store.SessionAncestors(ctx, sessionID)
+			if err != nil {
+				return err
+			}
+			if len(ancestors) > 0 {
+				return fmt.Errorf("a sub-agent may not answer its own approval")
+			}
+		}
 	}
 	// Correct the scope BEFORE claiming: the claim writes the audit row, and
 	// an audit row that says "pattern" when no rule was learned is a lie in
@@ -345,7 +387,7 @@ func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, 
 	// One transaction claims the suspension and writes its audit row together.
 	// Two clients answering at once cannot both record an answer, and a
 	// failure part-way cannot leave a resolved row with no audit entry.
-	claimed, won, err := g.store.ClaimPendingCall(ctx, pendingID, sessionID, string(decision), string(ans.Scope))
+	claimed, won, err := g.store.ClaimPendingCall(ctx, pendingID, owner, string(decision), string(ans.Scope))
 	if err != nil {
 		return err
 	}
@@ -365,4 +407,48 @@ func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, 
 		}
 	}
 	return nil
+}
+
+// rootOf returns the top of a session's parent chain, which is the session a
+// human is attached to. A top-level session is its own root.
+func rootOf(ctx context.Context, st *store.Store, sessionID string) (string, error) {
+	ancestors, err := st.SessionAncestors(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if len(ancestors) == 0 {
+		return sessionID, nil
+	}
+	return ancestors[len(ancestors)-1], nil
+}
+
+// isAncestor reports whether answerer sits above target in the parent chain.
+// The walk is upward only, which is what stops a sub-agent answering its own
+// approval or a sibling's.
+func isAncestor(ctx context.Context, st *store.Store, answerer, target string) (bool, error) {
+	ancestors, err := st.SessionAncestors(ctx, target)
+	if err != nil {
+		return false, err
+	}
+	for _, a := range ancestors {
+		if a == answerer {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// rootScopedDecision looks up a remembered "always this session" answer under
+// the root of the chain, so one answer covers a whole agent tree. Per-child
+// scoping was rejected: a fan-out would ask once per child for the same tool,
+// and a detached child has nobody attached to answer at all, so its ask would
+// run out the approval timeout and deny -- turning background work into
+// silent failure. The containment for the wider scope is the trust profile
+// the whole tree shares, and the baseline deny set no approval overrides.
+func rootScopedDecision(ctx context.Context, st *store.Store, sessionID, tool string) (string, bool, error) {
+	root, err := rootOf(ctx, st, sessionID)
+	if err != nil {
+		return "", false, err
+	}
+	return st.SessionDecision(ctx, root, tool)
 }
