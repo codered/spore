@@ -34,3 +34,30 @@ func TestAgentRunRequiresAPrompt(t *testing.T) {
 		t.Errorf("error = %v, want it to name the missing prompt", err)
 	}
 }
+
+func TestNewReturnsTheThreeTools(t *testing.T) {
+	var names []string
+	for _, tl := range New(nil) {
+		names = append(names, tl.Name())
+	}
+	if got, want := strings.Join(names, ","), "agent_run,agent_spawn,agent_result"; got != want {
+		t.Errorf("tools = %s, want %s", got, want)
+	}
+}
+
+func TestAgentResultRequiresAnID(t *testing.T) {
+	var result tool.Tool
+	for _, tl := range New(nil) {
+		if tl.Name() == "agent_result" {
+			result = tl
+		}
+	}
+	if result == nil {
+		t.Fatal("New did not return agent_result")
+	}
+	if _, err := result.Call(context.Background(), json.RawMessage(`{}`)); err == nil {
+		t.Error("agent_result accepted an empty id")
+	} else if !strings.Contains(err.Error(), "id is required") {
+		t.Errorf("error = %v, want it to name the missing id", err)
+	}
+}

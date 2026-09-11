@@ -5,6 +5,7 @@ package subagent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -54,6 +55,12 @@ type Supervisor struct {
 	runner  Runner
 	store   *store.Store
 	cfg     config.SubagentConfig
+
+	// detached reports whether agent_spawn is available. Only the daemon sets
+	// it: a one-shot process has nothing to collect a detached result, and
+	// letting one write running rows would also make the daemon's startup
+	// sweep unable to tell a live run from an orphan.
+	detached bool
 }
 
 func New(st *store.Store, cfg config.SubagentConfig) *Supervisor {
@@ -285,4 +292,100 @@ func (s *Supervisor) List(ctx context.Context, parentID string) ([]Status, error
 		out = append(out, st)
 	}
 	return out, nil
+}
+
+// ErrNotRunning is what Cancel returns for a sub-agent with no live turn to
+// stop, whether it was never running here or has already settled.
+var ErrNotRunning = errors.New("sub-agent is not running")
+
+// AllowDetached turns agent_spawn on. The daemon calls it once at startup.
+func (s *Supervisor) AllowDetached(ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.detached = ok
+}
+
+// Spawn launches a child that outlives the caller's turn and returns its id.
+func (s *Supervisor) Spawn(ctx context.Context, parentID, prompt string) (string, error) {
+	s.mu.Lock()
+	allowed, runner := s.detached, s.runner
+	s.mu.Unlock()
+	if !allowed {
+		return "", fmt.Errorf("agent_spawn needs the spore daemon; nothing here would collect the result. Use agent_run instead and wait for the answer")
+	}
+	if runner == nil {
+		return "", fmt.Errorf("sub-agents are not available: no agent is attached")
+	}
+	depth, root, err := s.admit(ctx, parentID)
+	if err != nil {
+		return "", err
+	}
+	childID, childCtx, err := s.start(ctx, parentID, prompt, depth)
+	if err != nil {
+		return "", err
+	}
+
+	// The child must not inherit the parent turn's cancellation: that context
+	// is cancelled the moment the turn ends, which is exactly what detached
+	// work is defined not to be bound by. WithoutCancel keeps the policy
+	// session value, so the child keeps the same trust.
+	bg, cancel := context.WithCancel(context.WithoutCancel(childCtx))
+	err = s.tryTrack(ctx, childID, root, &child{cancel: cancel, prompt: prompt, depth: depth, start: time.Now().UTC(), root: root})
+	if err != nil {
+		s.finish(context.Background(), childID, store.RunFailed, "", err.Error())
+		cancel()
+		return "", err
+	}
+
+	go func() {
+		defer cancel()
+		defer s.untrack(childID)
+		ch, err := runner.RunSite(bg, childID, prompt, router.SiteSubagent)
+		if err != nil {
+			s.finish(context.Background(), childID, store.RunFailed, "", err.Error())
+			return
+		}
+		text, turnErr := drain(ch)
+		switch {
+		case turnErr != nil && bg.Err() != nil:
+			// Cancel has normally recorded this already, and then the write
+			// is a no-op; it still covers a stop that came from anywhere else.
+			s.finish(context.Background(), childID, store.RunInterrupted, text, "cancelled")
+		case turnErr != nil:
+			s.finish(context.Background(), childID, store.RunFailed, text, turnErr.Error())
+		default:
+			s.finish(context.Background(), childID, store.RunDone, text, "")
+		}
+	}()
+	return childID, nil
+}
+
+// Cancel stops a running child. Cancelling is a human action, so it is not a
+// tool: it arrives from the daemon endpoint.
+func (s *Supervisor) Cancel(ctx context.Context, childID string) error {
+	s.mu.Lock()
+	c, live := s.running[childID]
+	s.mu.Unlock()
+	if !live {
+		return fmt.Errorf("sub-agent %s: %w", childID, ErrNotRunning)
+	}
+	// Record the stop before delivering it. FinishSubagentRun moves only a
+	// running row, so if the child settled on its own first, this reports
+	// that instead of claiming a cancel that never took effect.
+	moved, err := s.store.FinishSubagentRun(ctx, childID, store.RunInterrupted, "", "cancelled")
+	if err != nil {
+		return err
+	}
+	if !moved {
+		return fmt.Errorf("sub-agent %s had already finished: %w", childID, ErrNotRunning)
+	}
+	c.cancel()
+	return nil
+}
+
+// SweepOrphans marks runs left running by a previous process. The daemon
+// calls it once at startup, and it is the daemon's alone: agent_spawn is
+// daemon-only, so no other live process can own a running row.
+func (s *Supervisor) SweepOrphans(ctx context.Context) (int64, error) {
+	return s.store.InterruptRunningSubagents(ctx)
 }

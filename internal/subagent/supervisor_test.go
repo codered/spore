@@ -2,6 +2,7 @@ package subagent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -328,5 +329,171 @@ func TestTryTrackRechecksTheCostCeiling(t *testing.T) {
 	sup.mu.Unlock()
 	if tracked {
 		t.Error("a refused child was left in the running set")
+	}
+}
+
+// releaseRunner holds its turn open until release is closed, or until the
+// child's context is cancelled. Unlike blockingRunner it honours
+// cancellation, which is what the cancel tests need.
+type releaseRunner struct {
+	release chan struct{}
+	reply   string
+}
+
+func (b *releaseRunner) RunSite(ctx context.Context, sessionID, input, site string) (<-chan Event, error) {
+	ch := make(chan Event, 2)
+	go func() {
+		defer close(ch)
+		select {
+		case <-b.release:
+			ch <- Event{Text: b.reply}
+		case <-ctx.Done():
+			ch <- Event{Err: ctx.Err()}
+		}
+	}()
+	return ch, nil
+}
+
+func waitForState(t *testing.T, sup *Supervisor, id, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := sup.Result(context.Background(), id)
+		if err == nil && got.State == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	got, _ := sup.Result(context.Background(), id)
+	t.Fatalf("state = %q after 2s, want %q", got.State, want)
+}
+
+func TestSpawnReturnsBeforeTheChildFinishes(t *testing.T) {
+	release := make(chan struct{})
+	r := &releaseRunner{release: release, reply: "eventually"}
+	sup, st := testSupervisor(t, config.SubagentConfig{MaxDepth: 2, MaxCostUSD: 1, MaxConcurrent: 4}, r)
+	sup.AllowDetached(true)
+	parent := parentSession(t, st)
+
+	id, err := sup.Spawn(ctxFor(parent), parent, "background work")
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	got, err := sup.Result(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != store.RunRunning {
+		t.Errorf("State = %q immediately after Spawn, want running", got.State)
+	}
+
+	close(release)
+	waitForState(t, sup, id, store.RunDone)
+}
+
+func TestSpawnSurvivesTheParentTurnEnding(t *testing.T) {
+	release := make(chan struct{})
+	r := &releaseRunner{release: release, reply: "done later"}
+	sup, st := testSupervisor(t, config.SubagentConfig{MaxDepth: 2, MaxCostUSD: 1, MaxConcurrent: 4}, r)
+	sup.AllowDetached(true)
+	parent := parentSession(t, st)
+
+	// The parent's turn context is cancelled the moment Spawn returns, which
+	// is what happens when the turn that called agent_spawn ends.
+	turnCtx, cancelTurn := context.WithCancel(ctxFor(parent))
+	id, err := sup.Spawn(turnCtx, parent, "background work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelTurn()
+
+	close(release)
+	waitForState(t, sup, id, store.RunDone)
+	got, _ := sup.Result(context.Background(), id)
+	if got.Result != "done later" {
+		t.Errorf("Result = %q, want the child's reply -- the child died with its parent's turn", got.Result)
+	}
+}
+
+func TestSpawnRefusedWhenDetachedIsNotAllowed(t *testing.T) {
+	r := &stubRunner{reply: "ok"}
+	sup, st := testSupervisor(t, config.SubagentConfig{MaxDepth: 2, MaxCostUSD: 1, MaxConcurrent: 4}, r)
+	parent := parentSession(t, st)
+	// AllowDetached defaults to false: a one-shot CLI process has nothing to
+	// collect a detached result.
+	if _, err := sup.Spawn(ctxFor(parent), parent, "background"); err == nil {
+		t.Fatal("Spawn was allowed outside the daemon")
+	} else if !strings.Contains(err.Error(), "agent_run") {
+		t.Errorf("error = %v, want it to point at agent_run", err)
+	}
+}
+
+func TestCancelStopsAChildAndRecordsIt(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	r := &releaseRunner{release: release, reply: "never"}
+	sup, st := testSupervisor(t, config.SubagentConfig{MaxDepth: 2, MaxCostUSD: 1, MaxConcurrent: 4}, r)
+	sup.AllowDetached(true)
+	parent := parentSession(t, st)
+
+	id, err := sup.Spawn(ctxFor(parent), parent, "long job")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sup.Cancel(context.Background(), id); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	got, err := sup.Result(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Cancel records the stop itself, before it returns.
+	if got.State != store.RunInterrupted {
+		t.Errorf("State = %q straight after Cancel, want interrupted", got.State)
+	}
+}
+
+func TestCancelOfAFinishedChildIsNotRunning(t *testing.T) {
+	sup, st := testSupervisor(t, config.SubagentConfig{MaxDepth: 2, MaxCostUSD: 1, MaxConcurrent: 4}, &stubRunner{reply: "ok"})
+	parent := parentSession(t, st)
+
+	done, err := sup.Run(ctxFor(parent), parent, "quick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = sup.Cancel(context.Background(), done.ID)
+	if !errors.Is(err, ErrNotRunning) {
+		t.Errorf("Cancel of a finished child = %v, want ErrNotRunning", err)
+	}
+	got, _ := sup.Result(context.Background(), done.ID)
+	if got.State != store.RunDone {
+		t.Errorf("State = %q, want the finished run left as done", got.State)
+	}
+}
+
+func TestSweepOrphansMarksRunsFromAPreviousProcess(t *testing.T) {
+	ctx := context.Background()
+	sup, st := testSupervisor(t, config.SubagentConfig{MaxDepth: 2, MaxCostUSD: 1, MaxConcurrent: 4}, &stubRunner{})
+	parent := parentSession(t, st)
+	orphan, err := st.CreateChildSession(ctx, "orphan", "/tmp/ws", parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.StartSubagentRun(ctx, store.SubagentRun{
+		SessionID: orphan, ParentID: parent, Prompt: "from a dead process", Depth: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := sup.SweepOrphans(ctx)
+	if err != nil {
+		t.Fatalf("SweepOrphans: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("swept %d, want 1", n)
+	}
+	got, _ := sup.Result(ctx, orphan)
+	if got.State != store.RunInterrupted {
+		t.Errorf("orphan state = %q, want interrupted", got.State)
 	}
 }
