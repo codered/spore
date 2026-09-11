@@ -162,7 +162,7 @@ func (s *Supervisor) Run(ctx context.Context, parentID, prompt string) (Status, 
 
 	// Try to reserve a slot under the root. If the cap is exceeded, finish the
 	// run row before returning the error so it reaches a terminal state.
-	err = s.tryTrack(childID, root, &child{cancel: cancel, prompt: prompt, depth: depth, start: time.Now().UTC(), root: root})
+	err = s.tryTrack(ctx, childID, root, &child{cancel: cancel, prompt: prompt, depth: depth, start: time.Now().UTC(), root: root})
 	if err != nil {
 		s.finish(ctx, childID, store.RunFailed, "", err.Error())
 		cancel()
@@ -202,7 +202,7 @@ func (s *Supervisor) untrack(id string) {
 // for the count-and-insert to close the race between admit's check and track's
 // insert. If the cap is reached under this root, it returns an error naming
 // max_concurrent and the child is not inserted.
-func (s *Supervisor) tryTrack(id string, root string, c *child) error {
+func (s *Supervisor) tryTrack(ctx context.Context, id string, root string, c *child) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -216,6 +216,18 @@ func (s *Supervisor) tryTrack(id string, root string, c *child) error {
 
 	if live >= s.cfg.MaxConcurrent {
 		return fmt.Errorf("refusing to launch: %d sub-agents are already running under this root and max_concurrent is %d. Wait for one to finish", live, s.cfg.MaxConcurrent)
+	}
+
+	// The cost ceiling is checked again here, under the lock that reserves
+	// the slot. admit reads TreeCost with no lock held, so two launches under
+	// one root -- possible once agent_spawn runs children in the background --
+	// could both pass it before either is tracked.
+	spent, err := s.store.TreeCost(ctx, root)
+	if err != nil {
+		return err
+	}
+	if spent >= s.cfg.MaxCostUSD {
+		return fmt.Errorf("refusing to launch: this agent tree has spent $%.4f of its $%.2f max_cost_usd. Do the work in this agent instead", spent, s.cfg.MaxCostUSD)
 	}
 
 	s.running[id] = c

@@ -302,3 +302,31 @@ func TestRefusalAfterStartLeavesNoRunningEntry(t *testing.T) {
 		}
 	}
 }
+
+func TestTryTrackRechecksTheCostCeiling(t *testing.T) {
+	sup, st := testSupervisor(t, config.SubagentConfig{MaxDepth: 2, MaxCostUSD: 0.05, MaxConcurrent: 4}, &stubRunner{})
+	root := parentSession(t, st)
+
+	// admit read the spend before this point, and the tree then crossed the
+	// ceiling before the slot was reserved: the gap a concurrent spawn opens.
+	if _, err := st.AppendMessage(context.Background(), store.Message{
+		SessionID: root, Role: "assistant",
+		BlocksJSON: []byte(`[{"type":"text","text":"x"}]`), CostUSD: 0.06,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := sup.tryTrack(context.Background(), "late", root, &child{cancel: func() {}, root: root})
+	if err == nil {
+		t.Fatal("tryTrack reserved a slot for a tree over its cost ceiling")
+	}
+	if !strings.Contains(err.Error(), "max_cost_usd") {
+		t.Errorf("error = %v, want it to name max_cost_usd", err)
+	}
+	sup.mu.Lock()
+	_, tracked := sup.running["late"]
+	sup.mu.Unlock()
+	if tracked {
+		t.Error("a refused child was left in the running set")
+	}
+}
