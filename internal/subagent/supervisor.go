@@ -227,7 +227,7 @@ func (s *Supervisor) tryTrack(id string, root string, c *child) error {
 func (s *Supervisor) finish(ctx context.Context, childID, state, result, errText string) {
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if err := s.store.FinishSubagentRun(writeCtx, childID, state, result, errText); err != nil {
+	if _, err := s.store.FinishSubagentRun(writeCtx, childID, state, result, errText); err != nil {
 		// The transcript is the record; a lost bookkeeping row costs the
 		// listing accuracy, never the work.
 		_ = err

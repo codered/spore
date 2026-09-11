@@ -43,15 +43,21 @@ func (s *Store) StartSubagentRun(ctx context.Context, r SubagentRun) error {
 // FinishSubagentRun records a terminal state. It only ever moves a running
 // row: a cancel racing a natural completion must not overwrite the result
 // the child actually produced.
-func (s *Store) FinishSubagentRun(ctx context.Context, sessionID, state, result, errText string) error {
-	_, err := s.db.ExecContext(ctx,
+func (s *Store) FinishSubagentRun(ctx context.Context, sessionID, state, result, errText string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
 		`UPDATE subagent_runs SET state = ?, result = ?, error = ?, ended_at = ?
 		 WHERE session_id = ? AND state = ?`,
 		state, result, errText, nowString(), sessionID, RunRunning)
 	if err != nil {
-		return fmt.Errorf("finish subagent run %s: %w", sessionID, err)
+		return false, fmt.Errorf("finish subagent run %s: %w", sessionID, err)
 	}
-	return nil
+	// Zero rows means the run had already settled: the caller lost the race
+	// and must not report that its own state took effect.
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("finish subagent run %s: %w", sessionID, err)
+	}
+	return n == 1, nil
 }
 
 func scanRun(sc interface{ Scan(...any) error }) (SubagentRun, error) {

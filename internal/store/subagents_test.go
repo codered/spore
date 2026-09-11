@@ -45,7 +45,7 @@ func TestSubagentRunRoundTrip(t *testing.T) {
 		t.Errorf("EndedAt = %v, want zero while running", got.EndedAt)
 	}
 
-	if err := s.FinishSubagentRun(ctx, child, "done", "no findings", ""); err != nil {
+	if _, err := s.FinishSubagentRun(ctx, child, "done", "no findings", ""); err != nil {
 		t.Fatalf("FinishSubagentRun: %v", err)
 	}
 	got, _, err = s.SubagentRun(ctx, child)
@@ -75,7 +75,7 @@ func TestInterruptRunningSubagentsMarksOrphans(t *testing.T) {
 	if err := s.StartSubagentRun(ctx, SubagentRun{SessionID: other, ParentID: parent, Prompt: "q", Depth: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FinishSubagentRun(ctx, other, "done", "ok", ""); err != nil {
+	if _, err := s.FinishSubagentRun(ctx, other, "done", "ok", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -128,5 +128,39 @@ func TestTreeCostSumsDescendants(t *testing.T) {
 	}
 	if want := 0.07; got < want-1e-9 || got > want+1e-9 {
 		t.Errorf("TreeCost = %v, want %v (an unrelated session must not count)", got, want)
+	}
+}
+
+func TestFinishSubagentRunReportsWhoWon(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	parent, child := newRunTree(t, s)
+	if err := s.StartSubagentRun(ctx, SubagentRun{SessionID: child, ParentID: parent, Prompt: "p", Depth: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	moved, err := s.FinishSubagentRun(ctx, child, RunDone, "first", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !moved {
+		t.Error("the first finish did not report moving the row")
+	}
+
+	// A cancel that arrives after the child settled must learn that it lost.
+	moved, err = s.FinishSubagentRun(ctx, child, RunInterrupted, "", "cancelled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved {
+		t.Error("a second finish reported moving a row that had already settled")
+	}
+
+	got, _, err := s.SubagentRun(ctx, child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != RunDone || got.Result != "first" {
+		t.Errorf("row = %s/%q, want the first finish to stand", got.State, got.Result)
 	}
 }
