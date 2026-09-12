@@ -53,30 +53,28 @@ would work here unchanged.
 2. Is anything else keyed by session root and unbounded, or are these the only
    two?
 
-## Sub-agents
+## Sub-agents: shipped
 
-Wanted: launching sub-agents, and seeing which are running.
+Closed. `agent_run` waits for a sub-agent's answer, `agent_spawn` starts one
+in the background and `agent_result` collects it. Two tools were chosen over
+one tool with a flag. `/agents` lists what a session launched. Section 1 of
+the design spec no longer lists sub-agents as a non-goal.
 
-The design spec lists "Sub-agents / agent teams" under **non-goals (v1)**,
-deferred until the single-agent loop is solid. Building this reverses that
-decision, so section 1 of the spec is amended by the same change, not merely
-extended.
+The four open questions were answered as follows:
 
-**Open questions**
-
-1. Approvals. A sub-agent that calls `shell_exec` reaches the same guard.
-   Does its approval surface to the parent's human tagged with its origin
-   (no new trust surface, and a Discord-launched sub-agent stays on the
-   `remote` profile), does it get a stricter profile of its own, or is it
-   confined to the allow list so it can never block on a human?
-2. Is a sub-agent a session? Making it one buys persistence, recall indexing
-   and `session show` for free, and costs a `parent_id` column and a rule for
-   what `ListSessions` hides.
-3. Budget. `maxIterations` bounds one turn's round trips; nothing bounds a
-   tree of agents. A sub-agent that launches sub-agents needs a depth cap and
-   a cost ceiling, and both belong in config next to `context`.
-4. What "seeing them running" means on each surface: the terminal has a live
-   view, the web UI has SSE, Discord has neither.
+1. Approvals: a child gets the trust profile of the agent that launched it,
+   so a Discord-launched child stays on `remote`. Its asks go to the human at
+   the root of the chain through an ancestor walk that only goes up, so a
+   child can answer neither its own approval nor a sibling's. Remembered
+   "this session" answers are looked up at the root, so one answer covers the
+   whole tree.
+2. A sub-agent is a session with a `parent_id`. `ListSessions` hides children
+   unless asked, and `spore session list --all` shows them.
+3. Budget: `[subagents]` sets the maximum depth, the maximum cost of the
+   whole tree and the maximum number of children running at once under one
+   root.
+4. Seeing them: `/agents` and `GET /api/sessions/{id}/agents` poll rather
+   than stream, so a child's output stays off the parent's stream.
 
 ## Deleting a fact leaves its vector behind
 
