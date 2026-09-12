@@ -155,6 +155,19 @@ func (c *client) listSkills(ctx context.Context, sessionID string) (skillListJSO
 	return out, nil
 }
 
+// agentListJSON is the /agents response, shared with the daemon so the two
+// cannot drift apart.
+type agentListJSON = daemon.AgentsJSON
+
+// listAgents fetches the sub-agents a session has launched.
+func (c *client) listAgents(ctx context.Context, sessionID string) (agentListJSON, error) {
+	var out agentListJSON
+	if err := c.do(ctx, "GET", "/api/sessions/"+sessionID+"/agents", nil, &out); err != nil {
+		return agentListJSON{}, err
+	}
+	return out, nil
+}
+
 // streamFrom reads the session's server-sent events until ctx is cancelled,
 // the connection drops, or fn returns an error. It closes `connected` once
 // the stream is actually open, which is what lets a caller post a message

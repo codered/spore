@@ -69,7 +69,8 @@ func chatTUI(ctx context.Context, cfg *config.Config, c *client, sessionID strin
 		return c.resolve(streamCtx, sessionID, pendingID, ans)
 	}
 
-	// slashHandler intercepts /clear, /compact, /context, /usage and /skills.
+	// slashHandler intercepts /clear, /compact, /context, /usage, /skills and
+	// /agents.
 	ui.slashHandler = func(input string) tea.Cmd {
 		cmd, _ := strings.CutPrefix(input, "/")
 		cmd = strings.ToLower(cmd)
@@ -84,6 +85,8 @@ func chatTUI(ctx context.Context, cfg *config.Config, c *client, sessionID strin
 			return ui.handleUsage(streamCtx, c, sessionID, cfg.ShowCost)
 		case "skills":
 			return ui.handleSkills(streamCtx, c, sessionID)
+		case "agents":
+			return ui.handleAgents(streamCtx, c, sessionID)
 		default:
 			return tea.Sequence(
 				ui.flush(styDanger.Render("  ✗ unknown command: /" + cmd)),
@@ -127,15 +130,23 @@ func chatTUI(ctx context.Context, cfg *config.Config, c *client, sessionID strin
 // line-oriented loop. It reports whether text was a command; true means the
 // caller must not send it as a model turn.
 func runPlainSlash(ctx context.Context, c *client, sessionID, text string, out io.Writer) (bool, error) {
-	if text != "/skills" {
-		return false, nil
-	}
-	list, err := c.listSkills(ctx, sessionID)
-	if err != nil {
+	switch text {
+	case "/skills":
+		list, err := c.listSkills(ctx, sessionID)
+		if err != nil {
+			return true, err
+		}
+		_, err = fmt.Fprint(out, formatSkills(list))
+		return true, err
+	case "/agents":
+		list, err := c.listAgents(ctx, sessionID)
+		if err != nil {
+			return true, err
+		}
+		_, err = fmt.Fprint(out, formatAgents(list))
 		return true, err
 	}
-	_, err = fmt.Fprint(out, formatSkills(list))
-	return true, err
+	return false, nil
 }
 
 // chatPlain is the line-oriented loop used when stdin or stdout is not a

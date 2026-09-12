@@ -37,6 +37,7 @@ type (
 		showCost bool
 	}
 	slashSkillsMsg struct{ list skillListJSON }
+	slashAgentsMsg struct{ list agentListJSON }
 )
 
 type chatState int
@@ -212,6 +213,8 @@ func (m *chatUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case slashSkillsMsg:
 		return m, m.renderSkills(msg.list)
+	case slashAgentsMsg:
+		return m, m.flush(formatAgents(msg.list))
 	case tea.KeyMsg:
 		return m, m.handleKey(msg)
 	}
@@ -538,7 +541,7 @@ func (m *chatUI) renderSlashHint(val string) string {
 	parts := []string{
 		styKey.Render("enter") + styMuted.Render(" send"),
 	}
-	cmds := []string{"clear", "compact", "context", "usage", "skills"}
+	cmds := []string{"clear", "compact", "context", "usage", "skills", "agents"}
 	for _, cmd := range cmds {
 		if strings.HasPrefix(cmd, val[1:]) || val[1:] == "" {
 			parts = append(parts, styKey.Render("/"+cmd)+styMuted.Render(" "+slashDesc(cmd)))
@@ -559,6 +562,8 @@ func slashDesc(cmd string) string {
 		return "show usage stats"
 	case "skills":
 		return "list skills"
+	case "agents":
+		return "list sub-agents"
 	default:
 		return ""
 	}
@@ -717,6 +722,38 @@ func (m *chatUI) handleSkills(ctx context.Context, c *client, sessionID string) 
 			return slashSkillsMsg{list: list}
 		},
 	)
+}
+
+// handleAgents shows the sub-agents this session has launched.
+func (m *chatUI) handleAgents(ctx context.Context, c *client, sessionID string) tea.Cmd {
+	return tea.Sequence(
+		m.flush(styMuted.Render("  · loading sub-agents…")),
+		func() tea.Msg {
+			list, err := c.listAgents(ctx, sessionID)
+			if err != nil {
+				return slashErrMsg{err}
+			}
+			return slashAgentsMsg{list: list}
+		},
+	)
+}
+
+// formatAgents renders the /agents listing. It is shared by the TUI and the
+// plain loop so both surfaces say the same thing.
+func formatAgents(list agentListJSON) string {
+	if len(list.Agents) == 0 {
+		return "  no sub-agents in this session\n"
+	}
+	var b strings.Builder
+	for _, a := range list.Agents {
+		elapsed := time.Since(a.Started).Round(time.Second)
+		if !a.Ended.IsZero() {
+			elapsed = a.Ended.Sub(a.Started).Round(time.Second)
+		}
+		fmt.Fprintf(&b, "  %s  %-11s  %6s  $%.4f  %s\n",
+			a.ID, a.State, elapsed, a.CostUSD, a.Prompt)
+	}
+	return b.String()
 }
 
 // renderContext displays a token breakdown for the session transcript.
