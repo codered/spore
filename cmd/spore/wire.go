@@ -92,7 +92,7 @@ func buildRecall(cfg *config.Config, st *store.Store, log *slog.Logger) (recall.
 
 // buildAgent turns configuration into a wired agent. Plan 1 registers no
 // tools, so the agent runs text-only turns; Plan 2 passes a real ToolRunner.
-func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (*agent.Agent, *mcphost.Host, *mirror.Mirror, error) {
+func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (*agent.Agent, *mcphost.Host, *mirror.Mirror, *subagent.Supervisor, error) {
 	reg := provider.NewRegistry()
 	for name, pc := range cfg.Providers {
 		price := provider.ProviderPrice{In: pc.PriceIn, Out: pc.PriceOut}
@@ -105,16 +105,16 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 			reg.Register(name, anthropic.New(pc.BaseURL, pc.APIKey, ws, nil), price)
 		case "openai", "openai-compatible":
 			if pc.BaseURL == "" {
-				return nil, nil, nil, fmt.Errorf("provider %q: base_url is required for kind %q", name, pc.Kind)
+				return nil, nil, nil, nil, fmt.Errorf("provider %q: base_url is required for kind %q", name, pc.Kind)
 			}
 			reg.Register(name, openaicompat.New(pc.BaseURL, pc.APIKey, nil), price)
 		default:
-			return nil, nil, nil, fmt.Errorf("provider %q: unknown kind %q (want anthropic or openai)", name, pc.Kind)
+			return nil, nil, nil, nil, fmt.Errorf("provider %q: unknown kind %q (want anthropic or openai)", name, pc.Kind)
 		}
 	}
 	rt, err := router.New(cfg.Routes, cfg.DefaultModel)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	// The fact cache is loaded once here; the memory tool reloads it after
@@ -158,7 +158,7 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 
 	recallBackend, mir, err := buildRecall(cfg, st, slog.Default())
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	// The same cache set feeds the skill tools and the prompt index: buildTools
 	// registers the tools around it, and Snapshot reads it every turn.
@@ -169,14 +169,14 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	sup := subagent.New(st, cfg.Subagents)
 	tools, host, err := buildTools(cfg, st, facts, recallBackend, skillsCache, sup, approver)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	a := agent.New(st, reg, rt, cfg, tools)
 	a.Facts = facts
 	a.Skills = skillsCache
 	a.Env = workspace.NewDescribers().Describe
 	sup.Attach(a)
-	return a, host, mir, nil
+	return a, host, mir, sup, nil
 }
 
 // buildServer wires the daemon. The ordering here is load-bearing: the guard
@@ -185,7 +185,7 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 // tools have been built around the server's broker.
 func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, *mcphost.Host, *mirror.Mirror, error) {
 	srv := daemon.New(daemon.Options{Store: st, Cfg: cfg})
-	a, host, mir, err := buildAgent(cfg, st, srv.Approver())
+	a, host, mir, sup, err := buildAgent(cfg, st, srv.Approver())
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -194,6 +194,7 @@ func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, *mcphost.
 		return nil, nil, nil, fmt.Errorf("internal: agent tools are %T, want *policy.Guard", a.Tools)
 	}
 	srv.Attach(a, guard)
+	srv.AttachSubagents(sup)
 	return srv, host, mir, nil
 }
 

@@ -103,6 +103,18 @@ func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []s
 	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// agent_spawn is available only here: a one-shot process has nothing to
+	// collect a detached result, and this is what makes the sweep below
+	// unambiguous -- no other live process owns a running row. The sweep runs
+	// before the server accepts a turn, so it can never mark a live run.
+	sup := srv.Subagents()
+	sup.AllowDetached(true)
+	if n, err := sup.SweepOrphans(ctx); err != nil {
+		slog.Default().Warn("could not reconcile sub-agent runs from a previous process", "error", err)
+	} else if n > 0 {
+		slog.Default().Info("marked sub-agent runs from a previous process interrupted", "count", n)
+	}
+
 	// MCP servers are supervised like the bridge: dialled in the background,
 	// retried when they fail, and joined at shutdown so no child outlives the
 	// daemon.
