@@ -36,6 +36,7 @@ type Config struct {
 	MCP       MCPConfig                 `toml:"mcp"`
 	Recall    RecallConfig              `toml:"recall"`
 	Skills    SkillsConfig              `toml:"skills"`
+	Subagents SubagentConfig            `toml:"subagents"`
 }
 
 // SkillsConfig chooses where skills are read from and installed to.
@@ -50,6 +51,23 @@ type SkillsConfig struct {
 	// Dir overrides the global directory. It is ignored under workspace
 	// scope, where the session's root decides.
 	Dir string `toml:"dir"`
+}
+
+// SubagentConfig bounds a tree of agents. maxIterations bounds one agent's
+// round trips; none of it bounds a parent that keeps spawning.
+type SubagentConfig struct {
+	// MaxDepth is the refusal point for nesting depth. The default 2 means a
+	// top-level session may spawn one level of children; those children may not
+	// spawn. With max_depth=3, a top-level session spawns children, and each of
+	// those may spawn one child.
+	MaxDepth int `toml:"max_depth"`
+	// MaxCostUSD is the ceiling for a whole tree: the root and every
+	// descendant, summed. Depth alone does not see a wide flat fan-out.
+	MaxCostUSD float64 `toml:"max_cost_usd"`
+	// MaxConcurrent is how many children may run at once under one root. An
+	// unbounded spawn batch reaches provider rate limits long before it
+	// reaches the cost ceiling.
+	MaxConcurrent int `toml:"max_concurrent"`
 }
 
 // Skills scope names.
@@ -417,9 +435,10 @@ func Default() *Config {
 				"remote": {Deny: []string{"mcp__*", "memory", "skill_install"}},
 			},
 		},
-		Web:    WebConfig{SearchProvider: "brave", UserAgent: "spore/0.1"},
-		Shell:  ShellConfig{TimeoutSeconds: 120},
-		Daemon: DaemonConfig{Addr: "127.0.0.1:7777", TickSeconds: 30},
+		Web:       WebConfig{SearchProvider: "brave", UserAgent: "spore/0.1"},
+		Shell:     ShellConfig{TimeoutSeconds: 120},
+		Daemon:    DaemonConfig{Addr: "127.0.0.1:7777", TickSeconds: 30},
+		Subagents: SubagentConfig{MaxDepth: 2, MaxCostUSD: 1.00, MaxConcurrent: 4},
 	}
 }
 
@@ -562,6 +581,17 @@ func Load(path string) (*Config, error) {
 	if cfg.Daemon.TickSeconds == 0 {
 		cfg.Daemon.TickSeconds = d.Daemon.TickSeconds
 	}
+	// Zero means "not set in the file", not "disabled": a partially written
+	// [subagents] block must not silently refuse every spawn.
+	if cfg.Subagents.MaxDepth == 0 {
+		cfg.Subagents.MaxDepth = 2
+	}
+	if cfg.Subagents.MaxCostUSD == 0 {
+		cfg.Subagents.MaxCostUSD = 1.00
+	}
+	if cfg.Subagents.MaxConcurrent == 0 {
+		cfg.Subagents.MaxConcurrent = 4
+	}
 	if err := validateDiscord(cfg.Bridge.Discord); err != nil {
 		return nil, err
 	}
@@ -640,6 +670,9 @@ func (c *Config) Validate() error {
 		if _, err := url.Parse(c.Recall.URL); err != nil {
 			return fmt.Errorf("recall.url: %w", err)
 		}
+	}
+	if c.Subagents.MaxDepth < 0 || c.Subagents.MaxCostUSD < 0 || c.Subagents.MaxConcurrent < 0 {
+		return fmt.Errorf("subagents: max_depth, max_cost_usd and max_concurrent must not be negative")
 	}
 	return nil
 }

@@ -294,3 +294,145 @@ func TestAnswerDeliveredConcurrentWithCancellationIsNotLost(t *testing.T) {
 		}
 	}
 }
+
+// Fix 1: Broker.Ask publishes to RootID topic so child approvals reach the human
+func TestBrokerAskPublishesToRootTopic(t *testing.T) {
+	h := NewHub()
+	b := NewBroker(h)
+
+	// Subscribe to root session
+	rootEvents, stopRoot := h.Subscribe("root")
+	defer stopRoot()
+	// Also subscribe to child session
+	childEvents, stopChild := h.Subscribe("child")
+	defer stopChild()
+
+	// Child's ask with RootID set to root
+	go func() {
+		_, _ = b.Ask(context.Background(), policy.Ask{
+			SessionID: "child",
+			Tool:      "shell_exec",
+			PendingID: 1,
+			Args:      json.RawMessage(`{"cmd":"ls"}`),
+			Rule:      "*",
+			RootID:    "root", // The root of the parent chain
+		})
+	}()
+
+	// The approval should be published to the ROOT topic, not the child's
+	select {
+	case ev := <-rootEvents:
+		if ev.Type != WireApproval || ev.PendingID != 1 {
+			t.Fatalf("root received %+v, want an approval for pending 1", ev)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("approval not published to root topic")
+	}
+
+	// Child should NOT receive the approval event (it subscribes to child topic)
+	select {
+	case <-childEvents:
+		t.Fatal("approval was published to child topic, should only be at root")
+	case <-time.After(100 * time.Millisecond):
+		// Expected - no event should arrive on child topic
+	}
+}
+
+// Fix 2: Broker.Answer authorization checks RootID - child cannot answer its own, root can
+func TestBrokerAnswerAuthorizesByRootID(t *testing.T) {
+	h := NewHub()
+	b := NewBroker(h)
+	_, stop := h.Subscribe("root")
+	defer stop()
+
+	// Create a waiter with child's session but root's ID in rootID field
+	type result struct {
+		ans policy.Answer
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ans, err := b.Ask(context.Background(), policy.Ask{
+			SessionID: "child",
+			Tool:      "shell_exec",
+			PendingID: 1,
+			Args:      json.RawMessage(`{"cmd":"ls"}`),
+			Rule:      "*",
+			RootID:    "root", // Only root can answer this
+		})
+		done <- result{ans, err}
+	}()
+
+	// Give Ask time to register the waiter
+	time.Sleep(50 * time.Millisecond)
+
+	// Child tries to answer its own approval - should fail
+	if b.Answer("child", 1, policy.Answer{Allow: true, Scope: policy.ScopeOnce}) {
+		t.Fatal("child was able to answer its own approval (should be blocked)")
+	}
+
+	// Root answers - should succeed
+	if !b.Answer("root", 1, policy.Answer{Allow: true, Scope: policy.ScopeOnce}) {
+		t.Fatal("root could not answer the approval")
+	}
+
+	// Ask should have returned successfully
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("Ask returned error: %v", res.err)
+		}
+		if !res.ans.Allow {
+			t.Fatal("Ask got denial but should have gotten allow")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Ask did not return after Answer")
+	}
+}
+
+// Fix 2 (top-level session case): Broker.Answer still works for top-level sessions
+// where RootID equals SessionID
+func TestBrokerAnswerStillWorksForTopLevelSessions(t *testing.T) {
+	h := NewHub()
+	b := NewBroker(h)
+	_, stop := h.Subscribe("toplevel")
+	defer stop()
+
+	type result struct {
+		ans policy.Answer
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ans, err := b.Ask(context.Background(), policy.Ask{
+			SessionID: "toplevel",
+			Tool:      "shell_exec",
+			PendingID: 1,
+			Args:      json.RawMessage(`{"cmd":"ls"}`),
+			Rule:      "*",
+			RootID:    "toplevel", // For top-level, root IS the session itself
+		})
+		done <- result{ans, err}
+	}()
+
+	// Give Ask time to register the waiter
+	time.Sleep(50 * time.Millisecond)
+
+	// Top-level session answers its own approval - should succeed
+	if !b.Answer("toplevel", 1, policy.Answer{Allow: true, Scope: policy.ScopeOnce}) {
+		t.Fatal("top-level session could not answer its own approval (backward compat)")
+	}
+
+	// Ask should have returned successfully
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("Ask returned error: %v", res.err)
+		}
+		if !res.ans.Allow {
+			t.Fatal("Ask got denial but should have gotten allow")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Ask did not return after Answer")
+	}
+}

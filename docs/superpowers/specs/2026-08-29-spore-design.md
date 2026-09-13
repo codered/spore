@@ -5,7 +5,7 @@ first bridge, Plan 4 splits into 4a and 4b; amended 2026-09-02: the MCP client
 host is designed in full, section 6; amended 2026-09-03: memory and recall are
 designed in full and Plan 5 splits into 5a and 5b, sections 5 and 11; amended
 2026-09-07: chat commands and the skills subsystem, sections 3, 5, 6, 8, 9
-and 11)
+and 11; amended 2026-09-11: sub-agents, sections 1, 2 and 11)
 **Status:** approved (brainstorming dialogue); Plans 1–7 implemented
 
 ## 1. What spore is
@@ -34,7 +34,6 @@ cross-compiles to ARM/RISC-V for free).
 - Multi-user or multi-tenant operation. spore serves one person.
 - A hosted service, auth system, or public endpoint.
 - A heavyweight frontend toolchain. No Node build step.
-- Sub-agents / agent teams. Deferred until the single-agent loop is solid.
 - Voice, image generation, or vision input. Deferred.
 
 ## 2. Architecture
@@ -45,6 +44,7 @@ One binary, one process, one SQLite file.
 spore (binary)
 ├── cmd/spore              CLI: serve, chat, once, session, recall, trace, mcp, doctor
 ├── internal/agent         the loop: turn execution, tool dispatch, compaction
+├── internal/subagent      sub-agent supervisor: launch, limits, cancel, startup sweep
 ├── internal/provider      anthropic/, openaicompat/ (+ shared Message/Tool types)
 ├── internal/router        rule-based model selection per call site
 ├── internal/tool          registry + builtins: fs, shell, web, schedule, memory, recall
@@ -903,3 +903,10 @@ plan is written only once its predecessor completes.
    a second surface that wants them either reimplements them or moves them
    into the API after all. `/skills` is not implemented — the subsystem it
    would list is here, but nothing yet lists it.
+8. **Sub-agents** — `agent_run`, `agent_spawn` and `agent_result`, the
+   supervisor in `internal/subagent`, and `/agents`. This stage removes the
+   sub-agents non-goal from section 1. A child is a session with a
+   `parent_id`. It gets its parent's trust profile and workspace, and its
+   approvals go to the root of the chain. Depth, tree cost and concurrency
+   bound the tree. Plan: `docs/superpowers/plans/2026-09-09-spore-subagents.md`;
+   design: `docs/superpowers/specs/2026-09-09-spore-subagents-design.md`.

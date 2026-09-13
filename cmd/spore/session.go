@@ -15,12 +15,23 @@ func cmdSession(ctx context.Context, st *store.Store, args []string) error {
 	}
 	switch args[0] {
 	case "list":
-		sessions, err := st.ListSessions(ctx, 50)
+		includeChildren := false
+		for _, arg := range args[1:] {
+			if arg == "--all" {
+				includeChildren = true
+				break
+			}
+		}
+		sessions, err := st.ListSessions(ctx, 50, includeChildren)
 		if err != nil {
 			return err
 		}
 		for _, s := range sessions {
-			fmt.Printf("%s  %s  %s  %s\n", s.ID, s.UpdatedAt.Format("2006-01-02 15:04"), s.Workspace, s.Title)
+			line := fmt.Sprintf("%s  %s  %s  %s", s.ID, s.UpdatedAt.Format("2006-01-02 15:04"), s.Workspace, s.Title)
+			if s.ParentID != "" {
+				line = fmt.Sprintf("%s  parent:%s", line, s.ParentID)
+			}
+			fmt.Println(line)
 		}
 		return nil
 	case "show":

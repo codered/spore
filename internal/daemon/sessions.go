@@ -55,7 +55,7 @@ func toSessionJSON(s store.Session) SessionJSON {
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	sessions, err := s.store.ListSessions(r.Context(), 200)
+	sessions, err := s.store.ListSessions(r.Context(), 200, false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list sessions: %v", err)
 		return

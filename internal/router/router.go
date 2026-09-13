@@ -16,11 +16,15 @@ const (
 	SiteCompaction = "compaction"
 	SiteTitle      = "title"
 	SiteClassify   = "classify"
+	// SiteSubagent is a sub-agent's own turns. It is a site of its own so
+	// delegated work can be routed to a cheaper model in configuration
+	// alone, with no model selection in the sub-agent path.
+	SiteSubagent = "subagent"
 )
 
 func ValidSite(s string) bool {
 	switch s {
-	case SiteChat, SiteCompaction, SiteTitle, SiteClassify:
+	case SiteChat, SiteCompaction, SiteTitle, SiteClassify, SiteSubagent:
 		return true
 	}
 	return false

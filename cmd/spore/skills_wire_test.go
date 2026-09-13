@@ -40,7 +40,7 @@ func TestBuildAgentWiresTheSkillsIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a, _, _, err := buildAgent(cfg, st, terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout})
+	a, _, _, _, err := buildAgent(cfg, st, terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout})
 	if err != nil {
 		t.Fatalf("buildAgent: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestBuildAgentSkillsAreEmptyForARootlessSessionUnderWorkspaceScope(t *testi
 		t.Fatal(err)
 	}
 
-	a, _, _, err := buildAgent(cfg, st, terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout})
+	a, _, _, _, err := buildAgent(cfg, st, terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout})
 	if err != nil {
 		t.Fatalf("buildAgent: %v", err)
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/store"
+	"github.com/codered/spore/internal/subagent"
 )
 
 // Options are the daemon's collaborators. Guard may be nil in tests that do
@@ -31,6 +32,10 @@ type Server struct {
 	guard  *policy.Guard
 	hub    *Hub
 	broker *Broker
+
+	// subagents is the supervisor the sub-agent tools launch through. It is
+	// nil in tests that do not exercise sub-agents.
+	subagents *subagent.Supervisor
 
 	// base bounds every turn's lifetime. It is the SERVER's context, never a
 	// request's: a turn survives the client that started it (spec invariant
@@ -77,6 +82,13 @@ func (s *Server) Attach(a *agent.Agent, g *policy.Guard) {
 	s.guard = g
 }
 
+// AttachSubagents supplies the sub-agent supervisor. It arrives with the
+// agent, after New, for the same reason Attach exists.
+func (s *Server) AttachSubagents(sup *subagent.Supervisor) { s.subagents = sup }
+
+// Subagents is the supervisor the daemon serves /agents from.
+func (s *Server) Subagents() *subagent.Supervisor { return s.subagents }
+
 // Close cancels every in-flight turn. Run calls it on shutdown.
 func (s *Server) Close() { s.cancel() }
 
@@ -94,6 +106,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/compact", s.handleCompact)
 	mux.HandleFunc("POST /api/sessions/{id}/clear", s.handleClear)
 	mux.HandleFunc("GET /api/sessions/{id}/skills", s.handleSkills)
+	mux.HandleFunc("GET /api/sessions/{id}/agents", s.handleAgents)
+	mux.HandleFunc("DELETE /api/sessions/{id}/agents/{child}", s.handleCancelAgent)
 	mux.HandleFunc("GET /api/sessions/{id}/approvals", s.handleListApprovals)
 	mux.HandleFunc("POST /api/sessions/{id}/approvals/{pending}", s.handleResolveApproval)
 	mux.HandleFunc("GET /api/jobs", s.handleListJobs)

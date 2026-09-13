@@ -135,7 +135,8 @@ line-at-a-time loop, so pipes and scripts behave as they always did.
 #### Slash commands
 
 Type `/` to see them. They are handled by the chat interface itself, so they
-are not available in the plain fallback loop, the web UI, or Discord.
+are not available in the web UI or Discord. Only `/skills` and `/agents` also
+work in the plain fallback loop.
 
 | Command | What it does |
 | --- | --- |
@@ -143,6 +144,7 @@ are not available in the plain fallback loop, the web UI, or Discord.
 | `/compact` | Fold the older messages into a summary now, without waiting for the automatic threshold. Reports how many messages were folded. |
 | `/context` | What is in the prompt right now: system, environment, facts, skills, summary and live messages, each with its token estimate. |
 | `/usage` | Tokens and cost, for this session and across every session. |
+| `/agents` | The sub-agents this session launched: id, state, running time, cost and prompt. |
 
 ### Skills
 
@@ -183,6 +185,53 @@ dir   = "~/.spore/skills"  # optional; ignored under workspace scope
 so a project's skills travel with it. Be deliberate about that one: a session
 rooted at a repository you cloned will read skills written by whoever wrote the
 repository.
+
+```toml
+[subagents]
+max_depth      = 2    # how deep the tree may go
+max_cost_usd   = 1.00 # ceiling for the whole tree
+max_concurrent = 4    # how many children may run at once
+```
+
+`max_depth` limits tree depth: the default 2 means a top-level session spawns
+children and those children may not spawn. `max_cost_usd` is the cost ceiling
+for a whole tree summing every agent in it; depth alone does not see a wide
+flat fan-out. `max_concurrent` bounds how many children may run under one root,
+since an unbounded spawn batch reaches provider rate limits before the cost
+ceiling.
+
+### Sub-agents
+
+An agent can give a self-contained task to a sub-agent. The sub-agent works in
+a session of its own and returns only its conclusion, so a long investigation
+stays out of the parent's context.
+
+| Tool | When the model uses it |
+| --- | --- |
+| `agent_run` | Run a sub-agent and wait for its answer. |
+| `agent_spawn` | Start a sub-agent in the background and continue; returns its id. |
+| `agent_result` | Read a spawned sub-agent's state, and its answer when it has finished. |
+
+`/agents` in `spore chat` lists the sub-agents that the session launched.
+`DELETE /api/sessions/{id}/agents/{child}` stops one that is still running.
+Only a human can stop a sub-agent, so no tool does it.
+
+Two rules:
+
+- A sub-agent gets the trust profile and workspace of the agent that launched
+  it. It cannot reach further than that agent. Its approvals go to the human
+  at the top of the chain, and a sub-agent can never answer its own approval
+  or the approval of a sibling.
+- `agent_spawn` needs the daemon (`spore serve`), because no other process
+  stays alive to collect a background result. When the daemon starts, it
+  marks as `interrupted` each sub-agent that was still running when the
+  previous daemon stopped.
+
+The `[subagents]` limits above bound the tree. When a limit refuses a launch,
+the model gets an ordinary tool error and does the work itself.
+
+`spore session list` does not show sub-agent sessions. `spore session list
+--all` shows them.
 
 ### Scheduled jobs
 
