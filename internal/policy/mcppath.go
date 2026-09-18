@@ -3,6 +3,7 @@ package policy
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,6 +21,8 @@ var (
 	gitRemote = regexp.MustCompile(`\A[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:`)
 	// winDrive matches a Windows drive path. spore runs on Unix only.
 	winDrive = regexp.MustCompile(`\A[A-Za-z]:[\\/]`)
+	// globMeta is the first wildcard a candidate is cut at.
+	globMeta = regexp.MustCompile(`[*?\[{]`)
 )
 
 // notAPath reports values that are never judged as paths, under a named key
@@ -27,6 +30,9 @@ var (
 func notAPath(s string) bool {
 	if s == "" {
 		return true
+	}
+	if strings.HasPrefix(strings.ToLower(s), "file://") {
+		return false
 	}
 	return anyURLScheme.MatchString(s) || gitRemote.MatchString(s) || winDrive.MatchString(s)
 }
@@ -45,6 +51,8 @@ func looksLikePath(s string) bool {
 	case strings.HasPrefix(s, "/"):
 		return true
 	case s == "~" || strings.HasPrefix(s, "~/"):
+		return true
+	case strings.HasPrefix(strings.ToLower(s), "file://"):
 		return true
 	}
 	return false
@@ -130,6 +138,24 @@ func mcpCandidates(c Call) []string {
 // machine, or explains why it cannot be one.
 func resolveMCPCandidate(cwd, raw string) (string, error) {
 	p := raw
+	if strings.HasPrefix(strings.ToLower(p), "file://") {
+		u, err := url.Parse(p)
+		if err != nil {
+			return "", fmt.Errorf("it is not a usable file:// URI")
+		}
+		if u.Host != "" && u.Host != "localhost" {
+			return "", fmt.Errorf("it names a remote host %q", u.Host)
+		}
+		if u.Path == "" {
+			return "", fmt.Errorf("the file:// URI has no path")
+		}
+		p = u.Path
+	}
+	// A glob is judged at the deepest directory it cannot escape, so
+	// /tmp/*.log and /tmp/a*.log are both judged as /tmp.
+	if i := globMeta.FindStringIndex(p); i != nil {
+		p = filepath.Dir(p[:i[0]])
+	}
 	if p == "~" || strings.HasPrefix(p, "~/") {
 		home, err := os.UserHomeDir()
 		if err != nil {

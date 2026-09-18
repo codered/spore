@@ -2,6 +2,7 @@ package policy
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/codered/spore/internal/config"
@@ -210,6 +211,7 @@ func TestMCPPathsFoundByShapeUnderAnyKey(t *testing.T) {
 	}{
 		{"absolute", `{"q":"/etc/passwd"}`, true},
 		{"home", `{"q":"~/.ssh/id_ed25519"}`, true},
+		{"file URI", `{"q":"file:///etc/passwd"}`, true},
 		{"nested absolute", `{"a":[{"b":"/etc/passwd"}]}`, true},
 		// Prose is not a path. Whitespace and "//" are what keep content
 		// arguments out of this predicate.
@@ -254,6 +256,38 @@ func TestMCPValuesThatAreNeverPaths(t *testing.T) {
 		if got := mcpCandidates(call("mcp__srv__t", args)); len(got) != 0 {
 			t.Errorf("mcpCandidates(%s) = %q, want none: this is not a local path", args, got)
 		}
+	}
+}
+
+func TestMCPGlobIsJudgedAtItsFirstWildcard(t *testing.T) {
+	r := mustRule(t, DecisionDeny, "mcp__*(any path outside workspace)")
+	// A glob is cut at its first wildcard and judged at the directory above
+	// it, so /tmp/*.log and /tmp/a*.log are both judged as /tmp -- and the
+	// explanation says /tmp, not the pattern, because /tmp is the bound the
+	// call actually broke.
+	for _, args := range []string{`{"path":"/tmp/*.log"}`, `{"path":"/tmp/a*.log"}`, `{"path":"/tmp/?.log"}`, `{"path":"/tmp/[ab].log"}`} {
+		c := call("mcp__srv__t", args)
+		if !r.Match(c, mcpEnv()) {
+			t.Fatalf("Match(%s) = false, want true", args)
+		}
+		if got := r.explain(c, mcpEnv()); !strings.Contains(got, "resolves to /tmp,") {
+			t.Errorf("explain(%s) = %q, want it to name /tmp", args, got)
+		}
+	}
+	for _, args := range []string{`{"path":"/ws/*.log"}`, `{"path":"/ws/a*.log"}`, `{"path":"/ws/sub/**/x.go"}`} {
+		if r.Match(call("mcp__srv__t", args), mcpEnv()) {
+			t.Errorf("Match(%s) = true, want false: the glob cannot leave /ws", args)
+		}
+	}
+}
+
+func TestMCPFileURIWithARemoteHostIsDenied(t *testing.T) {
+	r := mustRule(t, DecisionDeny, "mcp__*(any path outside workspace)")
+	if !r.Match(call("mcp__srv__t", `{"path":"file://example.com/ws/notes.txt"}`), mcpEnv()) {
+		t.Error("a file:// URI naming a remote host must not resolve to a local path")
+	}
+	if r.Match(call("mcp__srv__t", `{"path":"file://localhost/ws/notes.txt"}`), mcpEnv()) {
+		t.Error("file://localhost is this machine and /ws/notes.txt is inside the workspace")
 	}
 }
 
