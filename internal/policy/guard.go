@@ -168,6 +168,11 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 	case DecisionDeny:
 		// Deny is absolute and is never escalated to a human: offering an
 		// approval prompt here is exactly the lever prompt injection wants.
+		// A deny that carries a detail is one the model can recover from by
+		// sending a corrected path, so it does not tell the model to stop.
+		if res.Detail != "" {
+			return denied(call.ID, "denied by policy rule %q: %s", res.Rule, res.Detail)
+		}
 		return denied(call.ID, "denied by policy rule %q. Do not retry this call; choose another approach.", res.Rule)
 	case DecisionAllow:
 		return g.inner.Run(ctx, call)

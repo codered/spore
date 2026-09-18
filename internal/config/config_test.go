@@ -659,3 +659,36 @@ func TestSubagentNegativeValuesRejected(t *testing.T) {
 		t.Error("Validate accepted a negative max_depth")
 	}
 }
+func TestLoadFillsMCPPathsWithTheCeilingForStdioOnly(t *testing.T) {
+	cfg := loadTestConfig(t, `
+[policy]
+workspace = "/tmp/ceiling"
+
+[[mcp.server]]
+name = "files"
+transport = "stdio"
+command = "/bin/true"
+
+[[mcp.server]]
+name = "web"
+transport = "http"
+url = "https://example.com/mcp"
+`)
+	// A stdio server is started in the ceiling, so that is where a relative
+	// path it is handed opens. spore does not know an http server's working
+	// directory, so it claims none and such a path is refused instead.
+	if got := cfg.Policy.MCPPaths["files"].Cwd; got != "/tmp/ceiling" {
+		t.Errorf("MCPPaths[files].Cwd = %q, want the ceiling", got)
+	}
+	if got := cfg.Policy.MCPPaths["web"].Cwd; got != "" {
+		t.Errorf("MCPPaths[web].Cwd = %q, want empty", got)
+	}
+}
+
+func TestBaselineDenyBoundsMCPPathsAndCannotBeRemoved(t *testing.T) {
+	const rule = "mcp__*(any path outside workspace)"
+	cfg := loadTestConfig(t, "[policy]\ndeny = []\nallow = [\"fs_read\"]\n")
+	if !slices.Contains(cfg.Policy.Deny, rule) {
+		t.Fatalf("Policy.Deny = %v, want it to contain %q even when the operator wrote deny = []", cfg.Policy.Deny, rule)
+	}
+}

@@ -165,3 +165,28 @@ func TestLocalProfileCallReachesTheServer(t *testing.T) {
 		t.Fatalf("the allowed call did not reach the server: %v", err)
 	}
 }
+
+// The containment claim end to end: a local session, an approver that would
+// say yes, and a path outside the workspace. The call must be denied before
+// the subprocess is asked. The marker file's absence is the evidence.
+func TestMCPPathOutsideTheWorkspaceNeverReachesTheServer(t *testing.T) {
+	guard, _, workspace, sessionID := harness(t, denyingApprover{t}, "")
+	outside := t.TempDir()
+	marker := filepath.Join(outside, "reached-outside-the-workspace")
+
+	ctx := policy.WithSession(context.Background(), policy.Session{ID: sessionID, Profile: policy.ProfileLocal, Workspace: workspace})
+	args, _ := json.Marshal(map[string]string{"path": marker})
+	res := guard.Run(ctx, provider.Block{ID: "1", Name: "mcp__probe__touch", Input: args})
+
+	if !res.IsError {
+		t.Fatalf("Run = %+v, want a denial", res)
+	}
+	if !strings.Contains(res.Content, "any path outside workspace") {
+		t.Errorf("content = %q, want the containment rule named", res.Content)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("the denied call reached the MCP server: the marker file exists")
+	}
+	// The deny is not blanket: TestLocalProfileCallReachesTheServer above
+	// sends the same tool a path inside the workspace and watches it arrive.
+}

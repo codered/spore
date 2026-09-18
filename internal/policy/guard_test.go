@@ -580,3 +580,51 @@ func TestSkillInstallDeniedUnderRemote(t *testing.T) {
 		t.Fatalf("a bridge session must not install a skill, got %v", res.Decision)
 	}
 }
+
+// A path deny is recoverable: the model can send the same call with a path
+// inside the workspace. The message says what was wrong and does not tell it
+// to stop, which every other deny does.
+func TestMCPPathDenyExplainsItselfAndInvitesARetry(t *testing.T) {
+	ap := &scriptedApprover{answer: Answer{Allow: true, Scope: ScopeOnce}}
+	g, inner, _, sid := guardFixture(t, config.PolicyConfig{
+		Workspace: "/ws",
+		Ask:       []string{"mcp__*"},
+		Deny:      []string{"mcp__*(any path outside workspace)"},
+		MCPPaths:  map[string]config.MCPPathMode{"srv": {Checked: true, Cwd: "/ws"}},
+	}, ap)
+	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal, Workspace: "/ws"})
+	got := g.Run(ctx, toolCall("mcp__srv__read", "c1", `{"path":"/etc/passwd"}`))
+
+	if !got.IsError {
+		t.Fatal("a denied call must return a tool error")
+	}
+	if len(inner.calls) != 0 {
+		t.Error("a denied call must not reach the tool")
+	}
+	if ap.count() != 0 {
+		t.Error("a deny is never escalated to a human")
+	}
+	if !strings.Contains(got.Content, `mcp__*(any path outside workspace)`) {
+		t.Errorf("content = %q, want the rule named", got.Content)
+	}
+	if !strings.Contains(got.Content, "/etc/passwd") {
+		t.Errorf("content = %q, want the offending path named", got.Content)
+	}
+	if strings.Contains(got.Content, "Do not retry") {
+		t.Errorf("content = %q, want no do-not-retry: a corrected path is the recovery", got.Content)
+	}
+}
+
+// Every other deny keeps today's wording.
+func TestOtherDeniesKeepTheDoNotRetryWording(t *testing.T) {
+	ap := &scriptedApprover{}
+	g, _, _, sid := guardFixture(t, config.PolicyConfig{
+		Workspace: "/ws",
+		Deny:      []string{"shell_exec(matches sudo)"},
+	}, ap)
+	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal, Workspace: "/ws"})
+	got := g.Run(ctx, toolCall("shell_exec", "c1", `{"command":"sudo id"}`))
+	if !strings.Contains(got.Content, "Do not retry this call; choose another approach.") {
+		t.Errorf("content = %q, want the unchanged wording", got.Content)
+	}
+}

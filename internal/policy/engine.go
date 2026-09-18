@@ -13,6 +13,11 @@ import (
 type Result struct {
 	Decision Decision
 	Rule     string
+	// Detail explains one deny in terms the model can act on: which argument
+	// value offended, where it resolved and what the bound was. Only the MCP
+	// value offended, where it resolved and what the bound was. Only the MCP
+	// containment rule fills it; every other decision leaves it empty.
+	Detail string
 }
 
 // ruleset is the ordered evaluation list for one trust profile. deny is held
@@ -54,7 +59,7 @@ func NewEngine(cfg config.PolicyConfig) (*Engine, error) {
 		return nil, err
 	}
 	e := &Engine{
-		env:      Env{Workspace: cfg.Workspace},
+		env:      Env{Workspace: cfg.Workspace, MCP: cfg.MCPPaths},
 		base:     base,
 		profiles: map[Profile]ruleset{},
 		timeout:  timeout,
@@ -167,7 +172,7 @@ func (e *Engine) Evaluate(s Session, c Call) Result {
 	}
 	for _, r := range rs.deny {
 		if r.Match(c, env) {
-			return Result{Decision: DecisionDeny, Rule: r.Raw}
+			return Result{Decision: DecisionDeny, Rule: r.Raw, Detail: r.explain(c, env)}
 		}
 	}
 	for _, r := range rs.allowAndAsk {

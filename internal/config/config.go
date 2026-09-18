@@ -175,6 +175,10 @@ type PolicyConfig struct {
 	// Profiles override Default/Allow/Ask per trust profile ("local",
 	// "remote"). Deny is global and is never overridden.
 	Profiles map[string]ProfilePolicy `toml:"profile"`
+	// MCPPaths says, per declared MCP server, whether its calls are checked
+	// for paths and where it resolves a relative path. Load fills it from
+	// [[mcp.server]]; it cannot be set under [policy].
+	MCPPaths map[string]MCPPathMode `toml:"-"`
 }
 
 type LearnedPolicy struct {
@@ -270,6 +274,17 @@ type MCPServer struct {
 	URL     string   `toml:"url"`
 	// Timeout is a Go duration bounding one tool call. Defaults to 60s.
 	Timeout string `toml:"timeout"`
+}
+
+// MCPPathMode says how one declared MCP server's path arguments are judged.
+type MCPPathMode struct {
+	// Checked is false only for a server the operator exempted. A server that
+	// is not in the table at all is checked.
+	Checked bool
+	// Cwd is the directory the server resolves a relative path against. It is
+	// the workspace ceiling for stdio servers and empty for http servers,
+	// whose working directory spore does not know.
+	Cwd string
 }
 
 const defaultMCPCallTimeout = 60 * time.Second
@@ -402,6 +417,12 @@ var baselineDeny = []string{
 	// denied on the pipe itself, which costs the occasional false positive
 	// (a pipe into "shuf") and is the right trade for a deny baseline.
 	"shell_exec(matches rm -rf /, sudo , mkfs, dd if=, :(){, | sh, |sh, | bash, |bash, git push --force, shutdown, reboot)",
+	// Section 6 of the design spec promises that an MCP tool's path arguments
+	// are judged against the calling session's workspace. This is that bound.
+	// The predicate is valid only on an mcp__ glob, because it finds paths by
+	// shape as well as by key name and that breadth would be wrong anywhere
+	// else.
+	"mcp__*(any path outside workspace)",
 }
 
 func Default() *Config {
@@ -545,10 +566,20 @@ func Load(path string) (*Config, error) {
 		cfg.Policy.Allow, cfg.Policy.Ask = d.Policy.Allow, d.Policy.Ask
 	}
 	cfg.Policy.Deny = append(append([]string{}, baselineDeny...), cfg.Policy.Deny...)
+	// The MCP path table is derived, never decoded: it is filled here, after
+	// policy.workspace has been expanded, because a stdio server resolves a
+	// relative path against the ceiling it was started in.
+	cfg.Policy.MCPPaths = map[string]MCPPathMode{}
+	for _, s := range cfg.MCP.Servers {
+		mode := MCPPathMode{Checked: true}
+		if s.Transport == "stdio" {
+			mode.Cwd = cfg.Policy.Workspace
+		}
+		cfg.Policy.MCPPaths[s.Name] = mode
+	}
 	if cfg.Policy.Profiles == nil {
 		cfg.Policy.Profiles = map[string]ProfilePolicy{}
 	}
-	// A profile workspace is expanded and bounded at load, so an operator
 	// learns about a bad one at startup rather than when a bridge user's
 	// first tool call is refused.
 	for name, p := range cfg.Policy.Profiles {

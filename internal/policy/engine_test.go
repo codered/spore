@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -255,5 +256,115 @@ func TestEvaluateFallsBackToTheCeilingWithNoSessionWorkspace(t *testing.T) {
 		Call{Tool: "fs_read", Args: json.RawMessage(`{"path":"/ws/anything.md"}`)})
 	if res.Decision != DecisionAllow {
 		t.Fatalf("%+v, want allow: with no session the ceiling is the bound", res)
+	}
+}
+
+// mcpEngine builds an engine carrying the baseline MCP containment rule and a
+// server table, the way config.Load hands one over.
+func mcpEngine(t *testing.T, workspace string, paths map[string]config.MCPPathMode) *Engine {
+	t.Helper()
+	return engine(t, config.PolicyConfig{
+		Workspace: workspace,
+		Deny:      []string{"mcp__*(any path outside workspace)"},
+		Ask:       []string{"mcp__*"},
+		MCPPaths:  paths,
+	})
+}
+
+// A stdio server runs in the ceiling, not in the calling session's root, so a
+// relative path it is handed opens above that root. Judging it at the session
+// root would call it inside and let it through.
+func TestMCPRelativePathIsJudgedAtTheServersWorkingDirectory(t *testing.T) {
+	e := mcpEngine(t, "/ws", map[string]config.MCPPathMode{"srv": {Checked: true, Cwd: "/ws"}})
+	got := e.Evaluate(
+		Session{ID: "s", Profile: ProfileLocal, Workspace: "/ws/sub"},
+		Call{Tool: "mcp__srv__read", Args: json.RawMessage(`{"path":"notes.txt"}`)},
+	)
+	if got.Decision != DecisionDeny {
+		t.Fatalf("Decision = %q, want deny: notes.txt opens at /ws/notes.txt, above /ws/sub", got.Decision)
+	}
+	if got.Rule != "mcp__*(any path outside workspace)" {
+		t.Errorf("Rule = %q, want the containment rule", got.Rule)
+	}
+}
+
+func TestMCPRelativePathToAServerWithNoKnownDirectoryIsDenied(t *testing.T) {
+	e := mcpEngine(t, "/ws", map[string]config.MCPPathMode{"remote": {Checked: true, Cwd: ""}})
+	for _, tool := range []string{"mcp__remote__read", "mcp__undeclared__read"} {
+		got := e.Evaluate(
+			Session{ID: "s", Profile: ProfileLocal, Workspace: "/ws"},
+			Call{Tool: tool, Args: json.RawMessage(`{"path":"notes.txt"}`)},
+		)
+		if got.Decision != DecisionDeny {
+			t.Errorf("%s: Decision = %q, want deny: nothing says where this path opens", tool, got.Decision)
+		}
+	}
+}
+
+func TestMCPExemptServerIsNotCheckedForPaths(t *testing.T) {
+	e := mcpEngine(t, "/ws", map[string]config.MCPPathMode{"repos": {Checked: false}})
+	got := e.Evaluate(
+		Session{ID: "s", Profile: ProfileLocal, Workspace: "/ws"},
+		Call{Tool: "mcp__repos__read", Args: json.RawMessage(`{"path":"/etc/passwd"}`)},
+	)
+	if got.Decision == DecisionDeny {
+		t.Fatalf("Decision = deny (rule %q), want the exempt server's paths left alone", got.Rule)
+	}
+}
+
+// Inside resolves symlinks, so a link inside the session root that points out
+// of it is outside.
+func TestMCPSymlinkOutOfTheSessionRootIsDenied(t *testing.T) {
+	base := t.TempDir()
+	ws := filepath.Join(base, "ws")
+	outside := filepath.Join(base, "secrets")
+	for _, d := range []string{ws, outside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(outside, "key"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(ws, "link")); err != nil {
+		t.Fatal(err)
+	}
+	e := mcpEngine(t, ws, map[string]config.MCPPathMode{"srv": {Checked: true, Cwd: ws}})
+	args, _ := json.Marshal(map[string]string{"path": filepath.Join(ws, "link", "key")})
+	got := e.Evaluate(
+		Session{ID: "s", Profile: ProfileLocal, Workspace: ws},
+		Call{Tool: "mcp__srv__read", Args: args},
+	)
+	if got.Decision != DecisionDeny {
+		t.Fatalf("Decision = %q, want deny: the link leaves the session root", got.Decision)
+	}
+}
+
+func TestOnlyTheMCPRuleFillsResultDetail(t *testing.T) {
+	e := engine(t, config.PolicyConfig{
+		Workspace: "/ws",
+		Allow:     []string{"fs_read"},
+		Deny:      []string{"mcp__*(any path outside workspace)", "shell_exec(matches sudo)"},
+		MCPPaths:  map[string]config.MCPPathMode{"srv": {Checked: true, Cwd: "/ws"}},
+	})
+	sess := Session{ID: "s", Profile: ProfileLocal, Workspace: "/ws"}
+
+	mcpRes := e.Evaluate(sess, Call{Tool: "mcp__srv__read", Args: json.RawMessage(`{"path":"/etc/passwd"}`)})
+	if mcpRes.Decision != DecisionDeny {
+		t.Fatalf("Decision = %q, want deny", mcpRes.Decision)
+	}
+	for _, want := range []string{"/etc/passwd", "/ws"} {
+		if !strings.Contains(mcpRes.Detail, want) {
+			t.Errorf("Detail = %q, want it to name %q", mcpRes.Detail, want)
+		}
+	}
+
+	shellRes := e.Evaluate(sess, Call{Tool: "shell_exec", Args: json.RawMessage(`{"command":"sudo id"}`)})
+	if shellRes.Detail != "" {
+		t.Errorf("shell deny Detail = %q, want empty: only the MCP rule explains itself", shellRes.Detail)
+	}
+	allowRes := e.Evaluate(sess, Call{Tool: "fs_read", Args: json.RawMessage(`{"path":"/ws/a"}`)})
+	if allowRes.Detail != "" {
+		t.Errorf("allow Detail = %q, want empty", allowRes.Detail)
 	}
 }
