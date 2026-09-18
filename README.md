@@ -360,6 +360,12 @@ deny      = ["shell_exec(matches terraform destroy)"]
 brave_api_key = "${BRAVE_API_KEY}"
 ```
 
+Some rules are always in force and no approval, learned rule or profile can
+remove them: filesystem tools may not leave the workspace or read credential
+files, `shell_exec` may not run a handful of destructive shapes, and
+`mcp__*(any path outside workspace)` bounds MCP path arguments to the calling
+session's workspace (see **MCP servers** below).
+
 `[policy] workspace` is a **ceiling**, not a working directory. Each session
 records the directory it is rooted at: `spore chat` and `spore once` send the
 directory you ran them in, and a creator with no directory of its own — the
@@ -417,9 +423,34 @@ Declaring a server is the authorization to run it, so keep the file to servers
 you trust. The child process gets only what you list: `env` verbatim, the
 names in `inherit`, and `PATH`. Your provider API keys are not visible to it.
 Its working directory is `policy.workspace` — the ceiling, not any one
-session's root. One MCP host process is shared by every session. Unlike
-the filesystem tools, MCP tool path arguments are not currently checked
-against the calling session's workspace.
+session's root. One MCP host process is shared by every session.
+
+Path arguments **are** bounded by the calling session's workspace, by a
+baseline deny rule no approval can talk past:
+
+```text
+mcp__*(any path outside workspace)
+```
+
+A value is judged as a path when it sits under a path-shaped argument name
+(`path`, `paths`, `dir`, `directory`, `file`, `filename`, `filepath`,
+`source`, `destination`, `root`, `cwd`, `uri`, at any depth and in any
+spelling), or when it simply looks like one: absolute, `~`-rooted, or a
+`file://` URI. A relative path is judged where the server would open it —
+the ceiling, not the session root — so prefer sending MCP tools **absolute**
+paths; a relative path to an HTTP server, whose working directory spore does
+not know, is refused outright.
+
+A server whose "paths" are not files on this machine — repository paths,
+object keys, document ids — is exempted by its operator:
+
+```toml
+[[mcp.server]]
+name        = "repos"
+transport   = "http"
+url         = "https://mcp.example.com/mcp"
+local_paths = false     # its path arguments are not local files
+```
 
 Tool calls are subject to the same policy as everything else — `mcp__*` is
 asked by default, and denied outright for the `remote` trust profile, so a

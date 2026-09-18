@@ -140,44 +140,30 @@ neither.
 
 ## MCP path arguments are not checked against the session workspace
 
-Known gap, long-standing. The design spec (section 6) says MCP tool path
-arguments should be evaluated against the calling session's workspace, the
-same way filesystem tools are bounded by policy. The implementation does not:
-`internal/config/config.go` builds `path outside workspace` rules for `fs_*`
-only, and `mcp__*` appears only in the default `ask` list, with no path
-predicate. An MCP tool call naming an absolute path outside the calling
-session's workspace — or outside the ceiling entirely — resolves to `ask`,
-and if a human approves it, the call runs unbounded by the policy engine.
+Closed. The design spec (section 6) promised that MCP tool path arguments are
+evaluated against the calling session's workspace; `baselineDeny` bounded
+`fs_*` only, and `mcp__*` appeared solely in the editable default `ask` list.
+An MCP call naming a path outside the session's workspace resolved to `ask`,
+and a human who approved it ran it with nothing in the policy engine bounding
+it. `baselineDeny` now carries `mcp__*(any path outside workspace)`, which no
+approval, learned rule or profile can override. Design:
+`docs/superpowers/specs/2026-09-15-spore-mcp-path-containment-design.md`.
 
-The blast radius is bounded by the ask-gate and profile-based denial. For an
-interactive local session, every MCP call requires human approval before it
-runs, which gives the operator a chance to notice and refuse calls with
-suspicious paths. For a scheduled job — which is also a local session —
-the same ask-gate applies, but there is no one to answer the approval, so the
-call is denied when the approval times out. For the `remote` trust profile,
-which is what the Discord bridge runs under, `mcp__*` is denied outright, so
-a bridge user cannot reach any server at all. This gap predates stage 6 —
-before that change, the workspace was the single ceiling and `mcp__*` was
-equally unchecked then. It is not a regression.
+The three open questions are answered:
 
-Fixing it properly means adding an `mcp__*` path rule to the baseline deny
-set (the list no approval may override), which is a behaviour change with its
-own blast radius and needs its own design pass.
-
-**Open questions**
-
-1. Does the path-check rule belong in the baseline deny set (so it always
-   applies and no approval can override it) or in the default ask/deny lists
-   (editable by the operator)? The ask-gated behaviour of local sessions
-   already gives the human a chance to refuse; the baseline deny would be a
-   different level of containment.
-2. Path-argument extraction recognises only certain argument names (those
-   listed in the MCP spec as path-shaped). A server using a different name for
-   its path argument would slip past any rule. Does a rule give enough cover
-   to matter, or does it need to extract broader context?
-3. Does a server that legitimately works outside any session's root — a shared
-   index or an external tool — need an opt-out, or is it enough to rely on the
-   ask-gate to let the operator choose?
+1. **Baseline deny, not an editable default.** Section 6 already promised a
+   hard bound, and an editable rule protects only operators who never edit it.
+2. **Paths are found by name and by shape.** Values under path-like key names
+   at any depth, plus any string at any depth that looks like an absolute
+   path, a `~` path or a `file://` URI. Name-only detection misses servers
+   with unusual argument names; schema-based detection would trust a schema
+   written by the server being restricted, the same reason `readOnlyHint` is
+   ignored. Relative paths are judged where the server opens them, which is
+   the ceiling, not the session root.
+3. **Yes, an opt-out, per server.** `local_paths = false` on `[[mcp.server]]`,
+   set by the operator who declared the server, for one whose paths are remote
+   — repository paths, object keys. Not per tool: tool names change between
+   server versions and a per-tool list would silently stop matching.
 
 ## The skill cache evicts idle directories
 

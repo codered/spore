@@ -543,6 +543,10 @@ servers per session would multiply real subprocesses for a cosmetic gain.
 Containment does not depend on that cwd: path arguments to MCP tools are
 evaluated by the policy engine against the calling session's workspace like
 any other tool's, so the bound is per-session even though the process is not.
+That bound is the baseline rule `mcp__*(any path outside workspace)`, whose
+predicate finds paths by argument name and by shape and resolves a relative
+one at the server's own working directory. See
+`2026-09-15-spore-mcp-path-containment-design.md`.
 Shutdown cancels the
 context, closes the session, and kills the process group after a grace period,
 so a wedged server cannot outlive the daemon.
@@ -556,12 +560,17 @@ supplied by the very server being leashed, and believing it would let a server
 opt itself into concurrent dispatch. The cost of ignoring it is that MCP calls
 run serially.
 
-**Policy needs no new mechanism.** `mcp__*` is already a tool glob in the rule
-grammar. The default config asks on `mcp__*` in the base ruleset and denies it
-under `[policy.profile.remote]`, so a Discord user cannot reach a server a
-local operator can. Both are ordinary lines an operator may edit — they are
-not part of the baseline deny set `Load` appends, which stays reserved for the
-rules no approval may ever talk past.
+**Policy needed one baseline rule with an MCP-only predicate.** `mcp__*` is
+already a tool glob in the rule grammar, and the default `ask` on `mcp__*` and
+the `remote` profile's deny remain ordinary editable lines: a Discord user
+cannot reach a server a local operator can, and an operator may edit either.
+The containment rule is different. `mcp__*(any path outside workspace)` is in
+the baseline deny set `Load` appends, because section 6 promised a hard bound
+and an editable rule protects only the operator who never edits it. Its
+predicate is valid on `mcp__` globs alone: it finds paths by shape as well as
+by key name, and that breadth would judge `fs_write`'s `content` argument as a
+path. A server whose paths are not local files is exempted by its operator
+with `local_paths = false` on its `[[mcp.server]]` block.
 
 **Lifecycle.** Servers are dialled concurrently at startup with a bounded
 timeout; a failure is logged and the daemon starts anyway. One supervisor
@@ -910,3 +919,9 @@ plan is written only once its predecessor completes.
    approvals go to the root of the chain. Depth, tree cost and concurrency
    bound the tree. Plan: `docs/superpowers/plans/2026-09-09-spore-subagents.md`;
    design: `docs/superpowers/specs/2026-09-09-spore-subagents-design.md`.
+9. **MCP path containment** — the baseline deny rule
+   `mcp__*(any path outside workspace)` and its predicate, the per-server
+   `local_paths` opt-out, and `Result.Detail` so a refused call tells the
+   model which path offended. It closes the gap between section 6's promise
+   and what the engine actually checked. Design:
+   `docs/superpowers/specs/2026-09-15-spore-mcp-path-containment-design.md`.
