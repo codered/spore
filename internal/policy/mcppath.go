@@ -19,7 +19,7 @@ var (
 	// gitRemote matches scp-style remotes such as git@github.com:o/r.git.
 	gitRemote = regexp.MustCompile(`\A[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:`)
 	// winDrive matches a Windows drive path. spore runs on Unix only.
-	winDrive = regexp.MustCompile(`\A[A-Za-z]:[\/]`)
+	winDrive = regexp.MustCompile(`\A[A-Za-z]:[\\/]`)
 )
 
 // notAPath reports values that are never judged as paths, under a named key

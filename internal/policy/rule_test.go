@@ -8,6 +8,12 @@ import (
 )
 
 func call(tool string, args string) Call {
+	// A payload that does not decode is never judged: mcpCandidates and
+	// argPaths both bail on it, so every assertion about it would pass
+	// without reaching the code it names.
+	if !json.Valid([]byte(args)) {
+		panic("policy test: arguments are not valid JSON: " + args)
+	}
 	return Call{Tool: tool, Args: json.RawMessage(args)}
 }
 
@@ -210,31 +216,43 @@ func TestMCPPathsFoundByShapeUnderAnyKey(t *testing.T) {
 		{"comment line", `{"q":"// TODO fix /etc/passwd"}`, false},
 		{"sentence", `{"q":"/fix the typo"}`, false},
 		{"https URL", `{"q":"https://example.com/etc/passwd"}`, false},
-		{"multi-line text", `{"q":"first line
-/etc/passwd"}`, false},
+		{"multi-line text", `{"q":"first line\n/etc/passwd"}`, false},
 		// Found only by shape, a relative value is not judged at all.
 		{"relative by shape", `{"q":"../etc/passwd"}`, false},
 	}
 	for _, c := range cases {
-		if got := r.Match(call("mcp__srv__t", c.args), mcpEnv()); got != c.want {
+		call := call("mcp__srv__t", c.args)
+		if got := r.Match(call, mcpEnv()); got != c.want {
 			t.Errorf("%s: Match(%s) = %v, want %v", c.name, c.args, got, c.want)
+		}
+		// Match alone would not see a detection bug here: a value that
+		// slipped through would be judged as a relative path, join to the
+		// workspace and land inside it, which reads as "not denied" too.
+		want := 0
+		if c.want {
+			want = 1
+		}
+		if got := mcpCandidates(call); len(got) != want {
+			t.Errorf("%s: mcpCandidates(%s) = %q, want %d candidate(s)", c.name, c.args, got, want)
 		}
 	}
 }
 
 func TestMCPValuesThatAreNeverPaths(t *testing.T) {
-	r := mustRule(t, DecisionDeny, "mcp__*(any path outside workspace)")
 	// Every one of these sits under a named key, where a value is taken
-	// whatever it looks like. They are still not paths.
+	// whatever it looks like. They are still not paths, and the assertion
+	// is on the candidate list rather than on the decision: an excluded
+	// value that slipped through would resolve inside the workspace and
+	// be allowed, which is indistinguishable from never being judged.
 	for _, args := range []string{
 		`{"path":""}`,
 		`{"path":"https://example.com/x"}`,
 		`{"uri":"s3://bucket/key"}`,
 		`{"source":"git@github.com:owner/repo.git"}`,
-		`{"path":"C:\Windows\System32"}`,
+		`{"path":"C:\\Windows\\System32"}`,
 	} {
-		if r.Match(call("mcp__srv__t", args), mcpEnv()) {
-			t.Errorf("Match(%s) = true, want false: this is not a local path", args)
+		if got := mcpCandidates(call("mcp__srv__t", args)); len(got) != 0 {
+			t.Errorf("mcpCandidates(%s) = %q, want none: this is not a local path", args, got)
 		}
 	}
 }
