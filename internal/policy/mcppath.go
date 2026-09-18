@@ -5,11 +5,50 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/codered/spore/internal/config"
 )
+
+var (
+	// anyURLScheme matches the scheme of any absolute URL, so a value with a
+	// scheme is left alone.
+	anyURLScheme = regexp.MustCompile(`\A[A-Za-z][A-Za-z0-9+.-]*://`)
+	// gitRemote matches scp-style remotes such as git@github.com:o/r.git.
+	gitRemote = regexp.MustCompile(`\A[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:`)
+	// winDrive matches a Windows drive path. spore runs on Unix only.
+	winDrive = regexp.MustCompile(`\A[A-Za-z]:[\/]`)
+)
+
+// notAPath reports values that are never judged as paths, under a named key
+// or not.
+func notAPath(s string) bool {
+	if s == "" {
+		return true
+	}
+	return anyURLScheme.MatchString(s) || gitRemote.MatchString(s) || winDrive.MatchString(s)
+}
+
+// looksLikePath reports whether a string is path-shaped enough to be judged
+// under any key at all. It is deliberately narrow: prose containing a path is
+// out of scope, so anything with whitespace is not a path, and "//" keeps a
+// commented-out line from being read as one.
+func looksLikePath(s string) bool {
+	if strings.ContainsAny(s, " \t\n\r\v\f") {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(s, "//"):
+		return false
+	case strings.HasPrefix(s, "/"):
+		return true
+	case s == "~" || strings.HasPrefix(s, "~/"):
+		return true
+	}
+	return false
+}
 
 // mcpPathKeys are the argument names whose values are treated as paths
 // whatever they look like. Names are compared after lower-casing and removing
@@ -47,7 +86,8 @@ func mcpServerName(tool string) string {
 // mcpCandidates returns every path-shaped argument value in the call, in a
 // deterministic order so the reported offender does not change between runs.
 // A value under a path-like key is taken whatever its shape, including a
-// relative path.
+// relative path; a value found anywhere else is taken only when it looks like
+// a path.
 func mcpCandidates(c Call) []string {
 	var v any
 	if err := json.Unmarshal(c.Args, &v); err != nil {
@@ -58,10 +98,10 @@ func mcpCandidates(c Call) []string {
 	walk = func(n any, named bool) {
 		switch t := n.(type) {
 		case string:
-			if t == "" {
+			if notAPath(t) {
 				return
 			}
-			if named {
+			if named || looksLikePath(t) {
 				out = append(out, t)
 			}
 		case []any:

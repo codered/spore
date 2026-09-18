@@ -195,6 +195,50 @@ func TestMCPPathsFoundByKeyName(t *testing.T) {
 	}
 }
 
+func TestMCPPathsFoundByShapeUnderAnyKey(t *testing.T) {
+	r := mustRule(t, DecisionDeny, "mcp__*(any path outside workspace)")
+	cases := []struct {
+		name string
+		args string
+		want bool
+	}{
+		{"absolute", `{"q":"/etc/passwd"}`, true},
+		{"home", `{"q":"~/.ssh/id_ed25519"}`, true},
+		{"nested absolute", `{"a":[{"b":"/etc/passwd"}]}`, true},
+		// Prose is not a path. Whitespace and "//" are what keep content
+		// arguments out of this predicate.
+		{"comment line", `{"q":"// TODO fix /etc/passwd"}`, false},
+		{"sentence", `{"q":"/fix the typo"}`, false},
+		{"https URL", `{"q":"https://example.com/etc/passwd"}`, false},
+		{"multi-line text", `{"q":"first line
+/etc/passwd"}`, false},
+		// Found only by shape, a relative value is not judged at all.
+		{"relative by shape", `{"q":"../etc/passwd"}`, false},
+	}
+	for _, c := range cases {
+		if got := r.Match(call("mcp__srv__t", c.args), mcpEnv()); got != c.want {
+			t.Errorf("%s: Match(%s) = %v, want %v", c.name, c.args, got, c.want)
+		}
+	}
+}
+
+func TestMCPValuesThatAreNeverPaths(t *testing.T) {
+	r := mustRule(t, DecisionDeny, "mcp__*(any path outside workspace)")
+	// Every one of these sits under a named key, where a value is taken
+	// whatever it looks like. They are still not paths.
+	for _, args := range []string{
+		`{"path":""}`,
+		`{"path":"https://example.com/x"}`,
+		`{"uri":"s3://bucket/key"}`,
+		`{"source":"git@github.com:owner/repo.git"}`,
+		`{"path":"C:\Windows\System32"}`,
+	} {
+		if r.Match(call("mcp__srv__t", args), mcpEnv()) {
+			t.Errorf("Match(%s) = true, want false: this is not a local path", args)
+		}
+	}
+}
+
 func TestMCPPredicateIsRefusedOnANonMCPGlob(t *testing.T) {
 	// The predicate finds paths by shape at any depth. On fs_write that
 	// breadth would judge the content argument as a path, so the grammar
