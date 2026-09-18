@@ -659,3 +659,73 @@ func TestSubagentNegativeValuesRejected(t *testing.T) {
 		t.Error("Validate accepted a negative max_depth")
 	}
 }
+
+func TestLoadFillsMCPPathsWithTheCeilingForStdioOnly(t *testing.T) {
+	cfg := loadTestConfig(t, `
+[policy]
+workspace = "/tmp/ceiling"
+
+[[mcp.server]]
+name = "files"
+transport = "stdio"
+command = "/bin/true"
+
+[[mcp.server]]
+name = "web"
+transport = "http"
+url = "https://example.com/mcp"
+`)
+	// A stdio server is started in the ceiling, so that is where a relative
+	// path it is handed opens. spore does not know an http server's working
+	// directory, so it claims none and such a path is refused instead.
+	if got := cfg.Policy.MCPPaths["files"].Cwd; got != "/tmp/ceiling" {
+		t.Errorf("MCPPaths[files].Cwd = %q, want the ceiling", got)
+	}
+	if got := cfg.Policy.MCPPaths["web"].Cwd; got != "" {
+		t.Errorf("MCPPaths[web].Cwd = %q, want empty", got)
+	}
+}
+
+func TestBaselineDenyBoundsMCPPathsAndCannotBeRemoved(t *testing.T) {
+	const rule = "mcp__*(any path outside workspace)"
+	cfg := loadTestConfig(t, "[policy]\ndeny = []\nallow = [\"fs_read\"]\n")
+	if !slices.Contains(cfg.Policy.Deny, rule) {
+		t.Fatalf("Policy.Deny = %v, want it to contain %q even when the operator wrote deny = []", cfg.Policy.Deny, rule)
+	}
+}
+
+func TestMCPLocalPathsIsAcceptedOnBothTransports(t *testing.T) {
+	cfg := loadTestConfig(t, `
+[[mcp.server]]
+name = "files"
+transport = "stdio"
+command = "/bin/true"
+
+[[mcp.server]]
+name = "repos"
+transport = "http"
+url = "https://example.com/mcp"
+local_paths = false
+
+[[mcp.server]]
+name = "local"
+transport = "stdio"
+command = "/bin/true"
+local_paths = true
+`)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	// A missing key means the server IS checked. This is the assertion that
+	// keeps a plain bool from being reintroduced: a plain bool would decode
+	// the missing key as false and exempt every server.
+	for name, want := range map[string]bool{"files": true, "repos": false, "local": true} {
+		mode, ok := cfg.Policy.MCPPaths[name]
+		if !ok {
+			t.Fatalf("Policy.MCPPaths has no entry for %q", name)
+		}
+		if mode.Checked != want {
+			t.Errorf("MCPPaths[%q].Checked = %v, want %v", name, mode.Checked, want)
+		}
+	}
+}

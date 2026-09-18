@@ -31,6 +31,9 @@ func cmdPolicyCheck(cfg *config.Config, profile, workspace, toolName, argsJSON s
 		ID: "policy-check", Profile: policy.Profile(profile), Workspace: workspace,
 	}, policy.Call{Tool: toolName, Args: json.RawMessage(argsJSON)})
 	fmt.Printf("%s\t%s\t%s\t%s\n", res.Decision, toolName, res.Rule, workspace)
+	if res.Detail != "" {
+		fmt.Printf("  %s\n", res.Detail)
+	}
 	if res.Decision == policy.DecisionAsk {
 		pattern, ok := policy.PatternFor(policy.Call{Tool: toolName, Args: json.RawMessage(argsJSON)})
 		if ok {

@@ -2,10 +2,19 @@ package policy
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"github.com/codered/spore/internal/config"
 )
 
 func call(tool string, args string) Call {
+	// A payload that does not decode is never judged: mcpCandidates and
+	// argPaths both bail on it, so every assertion about it would pass
+	// without reaching the code it names.
+	if !json.Valid([]byte(args)) {
+		panic("policy test: arguments are not valid JSON: " + args)
+	}
 	return Call{Tool: tool, Args: json.RawMessage(args)}
 }
 
@@ -138,5 +147,160 @@ func TestRuleRawRoundTrips(t *testing.T) {
 	}
 	if r.Decision != DecisionDeny {
 		t.Errorf("Decision = %q", r.Decision)
+	}
+}
+
+// mcpEnv is the environment the MCP containment rule is exercised against:
+// one declared stdio server whose relative paths resolve at the ceiling.
+func mcpEnv() Env {
+	return Env{
+		Workspace: "/ws",
+		MCP:       map[string]config.MCPPathMode{"srv": {Checked: true, Cwd: "/ws"}},
+	}
+}
+
+func TestMCPPathsFoundByKeyName(t *testing.T) {
+	r := mustRule(t, DecisionDeny, "mcp__*(any path outside workspace)")
+	cases := []struct {
+		name string
+		args string
+		want bool
+	}{
+		{"path", `{"path":"/etc/passwd"}`, true},
+		{"paths array", `{"paths":["/ws/ok","/etc/passwd"]}`, true},
+		{"dir", `{"dir":"/etc"}`, true},
+		{"directory", `{"directory":"/etc"}`, true},
+		{"file", `{"file":"/etc/passwd"}`, true},
+		{"filename", `{"filename":"/etc/passwd"}`, true},
+		{"filepath", `{"filepath":"/etc/passwd"}`, true},
+		{"source", `{"source":"/etc/passwd"}`, true},
+		{"destination", `{"destination":"/etc/passwd"}`, true},
+		{"root", `{"root":"/etc"}`, true},
+		{"cwd", `{"cwd":"/etc"}`, true},
+		{"uri", `{"uri":"/etc/passwd"}`, true},
+		// One key, three spellings: comparison lower-cases and drops "_"
+		// and "-".
+		{"camelCase variant", `{"filePath":"/etc/passwd"}`, true},
+		{"snake_case variant", `{"file_path":"/etc/passwd"}`, true},
+		{"kebab-case variant", `{"file-path":"/etc/passwd"}`, true},
+		{"nested", `{"a":{"b":{"path":"/etc/passwd"}}}`, true},
+		{"array of objects", `{"edits":[{"path":"/ws/ok"},{"path":"/etc/passwd"}]}`, true},
+		// A relative value counts under a named key, and resolves at the
+		// server's working directory.
+		{"relative inside", `{"path":"notes.txt"}`, false},
+		{"relative escaping", `{"path":"../etc/passwd"}`, true},
+		{"absolute inside", `{"path":"/ws/notes.txt"}`, false},
+		// Glob and pattern keys are not path keys: the directory they are
+		// searched under is what gets checked.
+		{"pattern key ignored", `{"pattern":"**/*.go"}`, false},
+		{"excludePatterns ignored", `{"excludePatterns":["**/vendor/**"]}`, false},
+	}
+	for _, c := range cases {
+		if got := r.Match(call("mcp__srv__t", c.args), mcpEnv()); got != c.want {
+			t.Errorf("%s: Match(%s) = %v, want %v", c.name, c.args, got, c.want)
+		}
+	}
+}
+
+func TestMCPPathsFoundByShapeUnderAnyKey(t *testing.T) {
+	r := mustRule(t, DecisionDeny, "mcp__*(any path outside workspace)")
+	cases := []struct {
+		name string
+		args string
+		want bool
+	}{
+		{"absolute", `{"q":"/etc/passwd"}`, true},
+		{"home", `{"q":"~/.ssh/id_ed25519"}`, true},
+		{"file URI", `{"q":"file:///etc/passwd"}`, true},
+		{"nested absolute", `{"a":[{"b":"/etc/passwd"}]}`, true},
+		// Prose is not a path. Whitespace and "//" are what keep content
+		// arguments out of this predicate.
+		{"comment line", `{"q":"// TODO fix /etc/passwd"}`, false},
+		{"sentence", `{"q":"/fix the typo"}`, false},
+		{"https URL", `{"q":"https://example.com/etc/passwd"}`, false},
+		{"multi-line text", `{"q":"first line\n/etc/passwd"}`, false},
+		// Found only by shape, a relative value is not judged at all.
+		{"relative by shape", `{"q":"../etc/passwd"}`, false},
+	}
+	for _, c := range cases {
+		call := call("mcp__srv__t", c.args)
+		if got := r.Match(call, mcpEnv()); got != c.want {
+			t.Errorf("%s: Match(%s) = %v, want %v", c.name, c.args, got, c.want)
+		}
+		// Match alone would not see a detection bug here: a value that
+		// slipped through would be judged as a relative path, join to the
+		// workspace and land inside it, which reads as "not denied" too.
+		want := 0
+		if c.want {
+			want = 1
+		}
+		if got := mcpCandidates(call); len(got) != want {
+			t.Errorf("%s: mcpCandidates(%s) = %q, want %d candidate(s)", c.name, c.args, got, want)
+		}
+	}
+}
+
+func TestMCPValuesThatAreNeverPaths(t *testing.T) {
+	// Every one of these sits under a named key, where a value is taken
+	// whatever it looks like. They are still not paths, and the assertion
+	// is on the candidate list rather than on the decision: an excluded
+	// value that slipped through would resolve inside the workspace and
+	// be allowed, which is indistinguishable from never being judged.
+	for _, args := range []string{
+		`{"path":""}`,
+		`{"path":"https://example.com/x"}`,
+		`{"uri":"s3://bucket/key"}`,
+		`{"source":"git@github.com:owner/repo.git"}`,
+		`{"path":"C:\\Windows\\System32"}`,
+	} {
+		if got := mcpCandidates(call("mcp__srv__t", args)); len(got) != 0 {
+			t.Errorf("mcpCandidates(%s) = %q, want none: this is not a local path", args, got)
+		}
+	}
+}
+
+func TestMCPGlobIsJudgedAtItsFirstWildcard(t *testing.T) {
+	r := mustRule(t, DecisionDeny, "mcp__*(any path outside workspace)")
+	// A glob is cut at its first wildcard and judged at the directory above
+	// it, so /tmp/*.log and /tmp/a*.log are both judged as /tmp -- and the
+	// explanation says /tmp, not the pattern, because /tmp is the bound the
+	// call actually broke.
+	for _, args := range []string{`{"path":"/tmp/*.log"}`, `{"path":"/tmp/a*.log"}`, `{"path":"/tmp/?.log"}`, `{"path":"/tmp/[ab].log"}`} {
+		c := call("mcp__srv__t", args)
+		if !r.Match(c, mcpEnv()) {
+			t.Fatalf("Match(%s) = false, want true", args)
+		}
+		if got := r.explain(c, mcpEnv()); !strings.Contains(got, "resolves to /tmp,") {
+			t.Errorf("explain(%s) = %q, want it to name /tmp", args, got)
+		}
+	}
+	for _, args := range []string{`{"path":"/ws/*.log"}`, `{"path":"/ws/a*.log"}`, `{"path":"/ws/sub/**/x.go"}`} {
+		if r.Match(call("mcp__srv__t", args), mcpEnv()) {
+			t.Errorf("Match(%s) = true, want false: the glob cannot leave /ws", args)
+		}
+	}
+}
+
+func TestMCPFileURIWithARemoteHostIsDenied(t *testing.T) {
+	r := mustRule(t, DecisionDeny, "mcp__*(any path outside workspace)")
+	if !r.Match(call("mcp__srv__t", `{"path":"file://example.com/ws/notes.txt"}`), mcpEnv()) {
+		t.Error("a file:// URI naming a remote host must not resolve to a local path")
+	}
+	if r.Match(call("mcp__srv__t", `{"path":"file://localhost/ws/notes.txt"}`), mcpEnv()) {
+		t.Error("file://localhost is this machine and /ws/notes.txt is inside the workspace")
+	}
+}
+
+func TestMCPPredicateIsRefusedOnANonMCPGlob(t *testing.T) {
+	// The predicate finds paths by shape at any depth. On fs_write that
+	// breadth would judge the content argument as a path, so the grammar
+	// refuses it outside mcp__.
+	for _, src := range []string{"fs_*(any path outside workspace)", "shell_exec(any path outside workspace)", "*(any path outside workspace)"} {
+		if _, err := ParseRule(DecisionDeny, src); err == nil {
+			t.Errorf("ParseRule(%q) = nil error, want a refusal", src)
+		}
+	}
+	if _, err := ParseRule(DecisionDeny, "mcp__github__*(any path outside workspace)"); err != nil {
+		t.Errorf("ParseRule on an mcp__ glob: %v", err)
 	}
 }

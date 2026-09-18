@@ -9,6 +9,7 @@
 //	<tool-glob>(path outside workspace)      path arguments leaving the workspace
 //	<tool-glob>(path matches <glob>, ...)    path arguments matching any glob
 //	<tool-glob>(matches <text>, ...)         any string argument containing any text
+//	mcp__<glob>(any path outside workspace)  MCP only: paths by key AND shape
 //
 // Tool globs treat "." and "_" as the same separator, so the spec's "fs.read"
 // and the wire name "fs_read" are one rule.
@@ -19,6 +20,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/codered/spore/internal/config"
 )
 
 type Decision string
@@ -45,7 +48,14 @@ type Call struct {
 }
 
 // Env is the evaluation environment shared by every rule.
-type Env struct{ Workspace string }
+type Env struct {
+	// Workspace is the calling session's root.
+	Workspace string
+	// MCP is PolicyConfig.MCPPaths: how each declared server's path
+	// arguments are judged. A server missing from it is checked, so an
+	// unknown server fails closed.
+	MCP map[string]config.MCPPathMode
+}
 
 // Rule is one parsed policy line.
 type Rule struct {
@@ -60,6 +70,12 @@ type Rule struct {
 
 type predicate interface {
 	match(c Call, env Env) bool
+}
+
+// explainer is an optional predicate interface. Evaluate calls explain only
+// on a deny rule that has already matched, to fill Result.Detail.
+type explainer interface {
+	explain(c Call, env Env) string
 }
 
 // ParseRule compiles one rule string under the given decision.
@@ -85,7 +101,7 @@ func ParseRule(d Decision, src string) (Rule, error) {
 	}
 	r := Rule{Decision: d, Raw: raw, tool: re}
 	if predSrc != "" {
-		p, err := parsePredicate(predSrc)
+		p, err := parsePredicate(toolSrc, predSrc)
 		if err != nil {
 			return Rule{}, fmt.Errorf("policy rule %q: %w", raw, err)
 		}
@@ -103,6 +119,16 @@ func (r Rule) Match(c Call, env Env) bool {
 		return true
 	}
 	return r.pred.match(c, env)
+}
+
+// explain describes why this rule matched, for predicates that can. It is
+// called only after Match returned true.
+func (r Rule) explain(c Call, env Env) string {
+	e, ok := r.pred.(explainer)
+	if !ok {
+		return ""
+	}
+	return e.explain(c, env)
 }
 
 func normaliseToolName(s string) string { return strings.ReplaceAll(s, ".", "_") }
@@ -165,10 +191,18 @@ func splitList(s string) []string {
 	return out
 }
 
-func parsePredicate(src string) (predicate, error) {
+func parsePredicate(toolSrc, src string) (predicate, error) {
 	switch {
 	case src == "path outside workspace":
 		return outsideWorkspace{}, nil
+	case src == "any path outside workspace":
+		// Restricted to MCP globs on purpose: this predicate finds paths by
+		// shape at any depth, which would judge fs_write's content argument
+		// as a path.
+		if !strings.HasPrefix(normaliseToolName(toolSrc), "mcp__") {
+			return nil, fmt.Errorf("predicate %q is only valid on an mcp__ tool glob, not %q", src, toolSrc)
+		}
+		return mcpOutsideWorkspace{}, nil
 	case strings.HasPrefix(src, "path matches "):
 		globs := splitList(strings.TrimPrefix(src, "path matches "))
 		if len(globs) == 0 {
@@ -193,7 +227,7 @@ func parsePredicate(src string) (predicate, error) {
 		}
 		return argMatches{needles}, nil
 	default:
-		return nil, fmt.Errorf("unknown predicate %q (want \"path outside workspace\", \"path matches ...\" or \"matches ...\")", src)
+		return nil, fmt.Errorf("unknown predicate %q (want \"path outside workspace\", \"any path outside workspace\", \"path matches ...\" or \"matches ...\")", src)
 	}
 }
 
