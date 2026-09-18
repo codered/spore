@@ -17,6 +17,20 @@ import (
 	"github.com/codered/spore/internal/store"
 )
 
+// realTemp resolves the temp dir through symlinks so comparisons are stable
+// on macOS, where /tmp itself is a link. A session's recorded workspace is the
+// resolved path, so a ceiling built from an unresolved temp dir yields the two
+// spellings of the same directory and fails only on the platform with the
+// link.
+func realTemp(t *testing.T) string {
+	t.Helper()
+	d, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
 // TestStartTurnCarriesTheProfile asserts that the profile parameter reaches
 // the policy engine and affects decisions. We use a policy where fs_read is
 // allowed for local but not for remote, then run the same tool call under
@@ -153,7 +167,7 @@ func TestStartTurnRefusesASecondTurn(t *testing.T) {
 
 func TestCreateSessionRecordsTheRequestedWorkspace(t *testing.T) {
 	srv, ts := newTestServer(t)
-	srv.cfg.Policy.Workspace = t.TempDir()
+	srv.cfg.Policy.Workspace = realTemp(t)
 	inside := filepath.Join(srv.cfg.Policy.Workspace, "project")
 	if err := os.MkdirAll(inside, 0o700); err != nil {
 		t.Fatal(err)
@@ -188,7 +202,7 @@ func TestCreateSessionWithoutAWorkspaceGetsASessionDirectory(t *testing.T) {
 
 func TestPatchSessionReRoots(t *testing.T) {
 	srv, ts := newTestServer(t)
-	srv.cfg.Policy.Workspace = t.TempDir()
+	srv.cfg.Policy.Workspace = realTemp(t)
 	created := decodeSession(t, postJSON(t, ts.URL+"/api/sessions",
 		map[string]string{}), http.StatusCreated)
 
