@@ -6,6 +6,20 @@ import (
 	"testing"
 )
 
+// realTemp resolves the temp dir through symlinks so comparisons are stable
+// on macOS, where /tmp itself is a link. Root records the resolved path, so a
+// test that builds its expectation from an unresolved one compares the two
+// spellings of the same directory and fails only on the platform with the
+// link.
+func realTemp(t *testing.T) string {
+	t.Helper()
+	d, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
 func TestRootAllocatesWhenNothingRequested(t *testing.T) {
 	got, err := Root(Request{Ceiling: "/home/user"})
 	if err != nil {
@@ -17,7 +31,7 @@ func TestRootAllocatesWhenNothingRequested(t *testing.T) {
 }
 
 func TestRootAcceptsADirectoryInsideTheCeiling(t *testing.T) {
-	ceiling := t.TempDir()
+	ceiling := realTemp(t)
 	inside := filepath.Join(ceiling, "project")
 	got, err := Root(Request{Requested: inside, Ceiling: ceiling})
 	if err != nil {
