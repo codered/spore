@@ -274,12 +274,24 @@ type MCPServer struct {
 	URL     string   `toml:"url"`
 	// Timeout is a Go duration bounding one tool call. Defaults to 60s.
 	Timeout string `toml:"timeout"`
+	// LocalPaths says whether this server's path-shaped arguments name files
+	// on this machine. When unset it is true, and the baseline rule
+	// mcp__*(any path outside workspace) checks them. Set it to false for a
+	// server whose paths are remote, such as repository paths or object keys;
+	// its calls are then not checked for paths at all. It is a pointer
+	// because a plain bool decodes a missing key as false, which would exempt
+	// every server by default.
+	LocalPaths *bool `toml:"local_paths"`
 }
+
+// PathsChecked reports whether this server's path arguments are judged by the
+// baseline MCP containment rule. A missing local_paths key means yes.
+func (s MCPServer) PathsChecked() bool { return s.LocalPaths == nil || *s.LocalPaths }
 
 // MCPPathMode says how one declared MCP server's path arguments are judged.
 type MCPPathMode struct {
-	// Checked is false only for a server the operator exempted. A server that
-	// is not in the table at all is checked.
+	// Checked is false only for a server the operator marked local_paths =
+	// false. A server that is not in the table at all is checked.
 	Checked bool
 	// Cwd is the directory the server resolves a relative path against. It is
 	// the workspace ceiling for stdio servers and empty for http servers,
@@ -414,7 +426,8 @@ var baselineDeny = []string{
 	// are judged against the calling session's workspace. This is that bound.
 	// The predicate is valid only on an mcp__ glob, because it finds paths by
 	// shape as well as by key name and that breadth would be wrong anywhere
-	// else.
+	// else. An operator exempts a server whose paths are not local files with
+	// local_paths = false on its [[mcp.server]] block.
 	"mcp__*(any path outside workspace)",
 	"fs_*(path matches **/.env, **/.env.*, **/.ssh/**, **/*_rsa, **/*_ed25519, **/.aws/**, **/.gnupg/**)",
 	// "matches" is plain substring containment after whitespace collapsing,
@@ -571,7 +584,7 @@ func Load(path string) (*Config, error) {
 	// relative path against the ceiling it was started in.
 	cfg.Policy.MCPPaths = map[string]MCPPathMode{}
 	for _, s := range cfg.MCP.Servers {
-		mode := MCPPathMode{Checked: true}
+		mode := MCPPathMode{Checked: s.PathsChecked()}
 		if s.Transport == "stdio" {
 			mode.Cwd = cfg.Policy.Workspace
 		}

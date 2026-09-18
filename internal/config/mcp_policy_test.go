@@ -96,3 +96,23 @@ func TestMCPPathOutsideTheWorkspaceIsDeniedThroughLoad(t *testing.T) {
 		t.Errorf("a path inside the workspace = deny (rule %q), want it allowed through to the ask list", inside.Rule)
 	}
 }
+
+func TestOperatorCanExemptAServerWithLocalPathsFalse(t *testing.T) {
+	ws := t.TempDir()
+	path := writeMCPTestConfig(t, "[policy]\nworkspace = "+strconv.Quote(ws)+"\n\n[[mcp.server]]\nname = \"repos\"\ntransport = \"http\"\nurl = \"https://example.com/mcp\"\nlocal_paths = false\n")
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	e, err := policy.NewEngine(cfg.Policy)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	got := e.Evaluate(
+		policy.Session{ID: "test", Profile: policy.ProfileLocal, Workspace: ws},
+		policy.Call{Tool: "mcp__repos__read", Args: json.RawMessage(`{"path":"/owner/repo/README.md"}`)},
+	)
+	if got.Decision == policy.DecisionDeny {
+		t.Errorf("an exempt server's call = deny (rule %q), want it not checked for paths", got.Rule)
+	}
+}

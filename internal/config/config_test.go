@@ -693,3 +693,39 @@ func TestBaselineDenyBoundsMCPPathsAndCannotBeRemoved(t *testing.T) {
 		t.Fatalf("Policy.Deny = %v, want it to contain %q even when the operator wrote deny = []", cfg.Policy.Deny, rule)
 	}
 }
+
+func TestMCPLocalPathsIsAcceptedOnBothTransports(t *testing.T) {
+	cfg := loadTestConfig(t, `
+[[mcp.server]]
+name = "files"
+transport = "stdio"
+command = "/bin/true"
+
+[[mcp.server]]
+name = "repos"
+transport = "http"
+url = "https://example.com/mcp"
+local_paths = false
+
+[[mcp.server]]
+name = "local"
+transport = "stdio"
+command = "/bin/true"
+local_paths = true
+`)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	// A missing key means the server IS checked. This is the assertion that
+	// keeps a plain bool from being reintroduced: a plain bool would decode
+	// the missing key as false and exempt every server.
+	for name, want := range map[string]bool{"files": true, "repos": false, "local": true} {
+		mode, ok := cfg.Policy.MCPPaths[name]
+		if !ok {
+			t.Fatalf("Policy.MCPPaths has no entry for %q", name)
+		}
+		if mode.Checked != want {
+			t.Errorf("MCPPaths[%q].Checked = %v, want %v", name, mode.Checked, want)
+		}
+	}
+}
