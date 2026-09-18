@@ -659,6 +659,7 @@ func TestSubagentNegativeValuesRejected(t *testing.T) {
 		t.Error("Validate accepted a negative max_depth")
 	}
 }
+
 func TestLoadFillsMCPPathsWithTheCeilingForStdioOnly(t *testing.T) {
 	cfg := loadTestConfig(t, `
 [policy]

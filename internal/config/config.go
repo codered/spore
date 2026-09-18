@@ -410,6 +410,12 @@ func validateMCP(c MCPConfig) error {
 // able to talk past.
 var baselineDeny = []string{
 	"fs_*(path outside workspace)",
+	// Section 6 of the design spec promises that an MCP tool's path arguments
+	// are judged against the calling session's workspace. This is that bound.
+	// The predicate is valid only on an mcp__ glob, because it finds paths by
+	// shape as well as by key name and that breadth would be wrong anywhere
+	// else.
+	"mcp__*(any path outside workspace)",
 	"fs_*(path matches **/.env, **/.env.*, **/.ssh/**, **/*_rsa, **/*_ed25519, **/.aws/**, **/.gnupg/**)",
 	// "matches" is plain substring containment after whitespace collapsing,
 	// so a needle cannot span the middle of a command: "curl | sh" would
@@ -417,12 +423,6 @@ var baselineDeny = []string{
 	// denied on the pipe itself, which costs the occasional false positive
 	// (a pipe into "shuf") and is the right trade for a deny baseline.
 	"shell_exec(matches rm -rf /, sudo , mkfs, dd if=, :(){, | sh, |sh, | bash, |bash, git push --force, shutdown, reboot)",
-	// Section 6 of the design spec promises that an MCP tool's path arguments
-	// are judged against the calling session's workspace. This is that bound.
-	// The predicate is valid only on an mcp__ glob, because it finds paths by
-	// shape as well as by key name and that breadth would be wrong anywhere
-	// else.
-	"mcp__*(any path outside workspace)",
 }
 
 func Default() *Config {
@@ -580,6 +580,7 @@ func Load(path string) (*Config, error) {
 	if cfg.Policy.Profiles == nil {
 		cfg.Policy.Profiles = map[string]ProfilePolicy{}
 	}
+	// A profile workspace is expanded and bounded at load, so an operator
 	// learns about a bad one at startup rather than when a bridge user's
 	// first tool call is refused.
 	for name, p := range cfg.Policy.Profiles {

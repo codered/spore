@@ -30,7 +30,7 @@ func cmdPolicyCheck(cfg *config.Config, profile, workspace, toolName, argsJSON s
 	res := engine.Evaluate(policy.Session{
 		ID: "policy-check", Profile: policy.Profile(profile), Workspace: workspace,
 	}, policy.Call{Tool: toolName, Args: json.RawMessage(argsJSON)})
-	fmt.Printf("%s	%s	%s	%s\n", res.Decision, toolName, res.Rule, workspace)
+	fmt.Printf("%s\t%s\t%s\t%s\n", res.Decision, toolName, res.Rule, workspace)
 	if res.Detail != "" {
 		fmt.Printf("  %s\n", res.Detail)
 	}

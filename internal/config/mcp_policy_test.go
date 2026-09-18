@@ -71,14 +71,7 @@ func TestOperatorCanOverrideTheRemoteMCPDeny(t *testing.T) {
 // predicate would still pass if Load never filled MCPPaths.
 func TestMCPPathOutsideTheWorkspaceIsDeniedThroughLoad(t *testing.T) {
 	ws := t.TempDir()
-	path := writeMCPTestConfig(t, `[policy]
-workspace = `+strconv.Quote(ws)+`
-
-[[mcp.server]]
-name = "files"
-transport = "stdio"
-command = "/bin/true"
-`)
+	path := writeMCPTestConfig(t, "[policy]\nworkspace = "+strconv.Quote(ws)+"\n\n[[mcp.server]]\nname = \"files\"\ntransport = \"stdio\"\ncommand = \"/bin/true\"\n")
 	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)

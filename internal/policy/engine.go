@@ -15,7 +15,6 @@ type Result struct {
 	Rule     string
 	// Detail explains one deny in terms the model can act on: which argument
 	// value offended, where it resolved and what the bound was. Only the MCP
-	// value offended, where it resolved and what the bound was. Only the MCP
 	// containment rule fills it; every other decision leaves it empty.
 	Detail string
 }
