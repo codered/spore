@@ -24,7 +24,7 @@ type terminalApprover struct {
 
 func (t terminalApprover) Ask(ctx context.Context, a policy.Ask) (policy.Answer, error) {
 	args := string(a.Args)
-	if pretty, err := json.MarshalIndent(json.RawMessage(a.Args), "  ", "  "); err == nil {
+	if pretty, err := json.MarshalIndent(a.Args, "  ", "  "); err == nil {
 		args = string(pretty)
 	}
 	fmt.Fprintf(t.out, "\n\033[1mspore wants to run %s\033[0m  (matched policy rule %q)\n  %s\n", a.Tool, a.Rule, args)

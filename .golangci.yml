@@ -18,3 +18,5 @@ linters:
   default: none
   enable:
     - govet
+    - ineffassign
+    - unconvert
