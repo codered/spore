@@ -73,10 +73,7 @@ func TestBrokerOnlyOneAnswerWins(t *testing.T) {
 	go b.Ask(context.Background(), policy.Ask{SessionID: "s1", Tool: "fs_write", PendingID: 3})
 
 	deadline := time.After(2 * time.Second)
-	for {
-		if b.Answer("s1", 3, policy.Answer{Allow: true, Scope: policy.ScopeOnce}) {
-			break
-		}
+	for !b.Answer("s1", 3, policy.Answer{Allow: true, Scope: policy.ScopeOnce}) {
 		select {
 		case <-deadline:
 			t.Fatal("the waiter never registered")

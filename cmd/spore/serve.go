@@ -85,7 +85,7 @@ func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []s
 		}
 		return err
 	}
-	defer daemon.ReleasePidFile(pidPath)
+	defer func() { _ = daemon.ReleasePidFile(pidPath) }()
 
 	srv, mcpHost, recallMirror, err := buildServer(cfg, st)
 	if err != nil {
@@ -127,7 +127,7 @@ func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []s
 	}
 
 	sched := scheduler.New(st, srv, nil)
-	go sched.Run(ctx, time.Duration(cfg.Daemon.TickSeconds)*time.Second)
+	go func() { _ = sched.Run(ctx, time.Duration(cfg.Daemon.TickSeconds)*time.Second) }()
 
 	if recallMirror != nil {
 		// The mirror runs for the daemon's lifetime and never inside a turn:

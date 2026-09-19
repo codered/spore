@@ -32,7 +32,7 @@ func migrateJobs(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("inspect jobs table: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var columns int
 	hasKind := false
 	for rows.Next() {
@@ -78,7 +78,7 @@ func (s *Store) CreateJob(ctx context.Context, j Job) (int64, error) {
 }
 
 func scanJobs(rows *sql.Rows) ([]Job, error) {
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Job
 	for rows.Next() {
 		var j Job

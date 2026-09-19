@@ -72,11 +72,11 @@ volumes:
 
 // WriteCompose puts the compose file where teardown can find it again.
 func WriteCompose(dir string) (string, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil { //nolint:gosec // G301: directory is for the weaviate docker compose file
 		return "", fmt.Errorf("create %s: %w", dir, err)
 	}
 	path := filepath.Join(dir, "compose.yml")
-	if err := os.WriteFile(path, []byte(ComposeFile()), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(ComposeFile()), 0o600); err != nil {
 		return "", fmt.Errorf("write %s: %w", path, err)
 	}
 	return path, nil

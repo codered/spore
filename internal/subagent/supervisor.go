@@ -192,12 +192,6 @@ func (s *Supervisor) Run(ctx context.Context, parentID, prompt string) (Status, 
 	return s.Result(ctx, childID)
 }
 
-func (s *Supervisor) track(id string, c *child) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.running[id] = c
-}
-
 func (s *Supervisor) untrack(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -342,7 +336,7 @@ func (s *Supervisor) Spawn(ctx context.Context, parentID, prompt string) (string
 		defer s.untrack(childID)
 		ch, err := runner.RunSite(bg, childID, prompt, router.SiteSubagent)
 		if err != nil {
-			s.finish(context.Background(), childID, store.RunFailed, "", err.Error())
+			s.finish(bg, childID, store.RunFailed, "", err.Error())
 			return
 		}
 		text, turnErr := drain(ch)
@@ -350,11 +344,11 @@ func (s *Supervisor) Spawn(ctx context.Context, parentID, prompt string) (string
 		case turnErr != nil && bg.Err() != nil:
 			// Cancel has normally recorded this already, and then the write
 			// is a no-op; it still covers a stop that came from anywhere else.
-			s.finish(context.Background(), childID, store.RunInterrupted, text, "cancelled")
+			s.finish(bg, childID, store.RunInterrupted, text, "cancelled")
 		case turnErr != nil:
-			s.finish(context.Background(), childID, store.RunFailed, text, turnErr.Error())
+			s.finish(bg, childID, store.RunFailed, text, turnErr.Error())
 		default:
-			s.finish(context.Background(), childID, store.RunDone, text, "")
+			s.finish(bg, childID, store.RunDone, text, "")
 		}
 	}()
 	return childID, nil

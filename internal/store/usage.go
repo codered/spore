@@ -29,7 +29,7 @@ func (s *Store) usage(ctx context.Context, query string, args ...any) ([]UsageRo
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []UsageRow
 	for rows.Next() {
 		var r UsageRow

@@ -1,0 +1,22 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 52984a7..71fa34c 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -43,6 +43,17 @@ jobs:
+       - name: fmt
+         run: make fmtcheck
+         shell: bash
++      - name: golangci-lint
++        uses: golangci/golangci-lint-action@v6
++        with:
++          version: latest
++          args: --timeout 5m --issues-exit-code 1
++      - name: govulncheck
++        run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
++        shell: bash
++      - name: go mod tidy check
++        run: go mod tidy && git diff --exit-code go.mod go.sum
++        shell: bash
+       - name: test
+         # -race needs cgo, which is already on. The shell tool's tests drive
+         # real processes and deadlines, so they are slower than the rest.

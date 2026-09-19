@@ -154,7 +154,7 @@ func TestTimeFormatSortsChronologically(t *testing.T) {
 	if len(a) != len(b) {
 		t.Fatalf("timeFormat is variable width: %q (%d) vs %q (%d)", a, len(a), b, len(b))
 	}
-	if !(a < b) {
+	if a >= b {
 		t.Errorf("later timestamp must sort after earlier one: %q should be < %q", a, b)
 	}
 	if _, err := time.Parse(time.RFC3339, b); err != nil {

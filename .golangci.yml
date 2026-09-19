@@ -1,0 +1,45 @@
+# The lint gate. `make lint` runs exactly this, here and in CI.
+#
+# Linters are enabled one at a time, as their findings are cleared. An
+# enabled linter with open findings is a gate that is expected to be red,
+# and a gate that is expected to be red stops being read. `default: none`
+# keeps the set explicit, so a golangci-lint release cannot enable a linter
+# on our behalf.
+version: "2"
+
+run:
+  # The store needs SQLite FTS5. Without the tag the linters cannot see the
+  # files behind it.
+  build-tags:
+    - sqlite_fts5
+  timeout: 5m
+
+linters:
+  exclusions:
+    rules:
+      # A test that ignores a teardown error is not a defect, and making
+      # every test check one buries the ones that matter.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - unparam
+  default: none
+  settings:
+    gosec:
+      severity: medium
+      confidence: medium
+      # G204 is "subprocess launched with variable". Running the command the
+      # user asked for is what the shell and MCP tools are; the confinement
+      # that makes it safe lives in internal/policy, and is tested there.
+      excludes:
+        - G204
+  enable:
+    - errcheck
+    - gosec
+    - govet
+    - ineffassign
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused

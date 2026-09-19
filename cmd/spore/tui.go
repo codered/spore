@@ -100,7 +100,6 @@ type chatUI struct {
 	draft   string
 	// slashHandler runs slash commands; nil when no client context is available.
 	slashHandler func(input string) tea.Cmd
-	slashHint    string
 
 	// fatal is the error the program exits with, read by the caller once the
 	// program has stopped.
@@ -287,6 +286,8 @@ func (m *chatUI) finishTurn() tea.Cmd {
 
 // nextApproval promotes the head of the queue to the visible prompt when no
 // approval is on screen already.
+//
+//nolint:unparam // returns nil but is required by tea.Cmd signature for tea.Sequence
 func (m *chatUI) nextApproval() tea.Cmd {
 	if m.pending != nil || len(m.approvalQueue) == 0 {
 		return nil

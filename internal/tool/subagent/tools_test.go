@@ -61,3 +61,28 @@ func TestAgentResultRequiresAnID(t *testing.T) {
 		t.Errorf("error = %v, want it to name the missing id", err)
 	}
 }
+
+func TestToolDescriptionsAreNonEmpty(t *testing.T) {
+	tools := New(nil)
+	for _, tl := range tools {
+		desc := tl.Description()
+		if desc == "" {
+			t.Errorf("%s.Description() returned empty string", tl.Name())
+		}
+	}
+}
+
+func TestToolSchemasAreValidJSON(t *testing.T) {
+	tools := New(nil)
+	for _, tl := range tools {
+		schema := tl.Schema()
+		if schema == nil {
+			t.Errorf("%s.Schema() returned nil", tl.Name())
+			continue
+		}
+		var obj map[string]interface{}
+		if err := json.Unmarshal(schema, &obj); err != nil {
+			t.Errorf("%s.Schema() returned invalid JSON: %v", tl.Name(), err)
+		}
+	}
+}

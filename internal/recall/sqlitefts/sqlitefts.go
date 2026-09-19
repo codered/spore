@@ -69,7 +69,7 @@ func (b *Backend) Index(ctx context.Context, chunks []recall.Chunk) error {
 	if err != nil {
 		return fmt.Errorf("begin index transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	for _, c := range chunks {
 		if _, err := tx.ExecContext(ctx,
@@ -130,7 +130,7 @@ func (b *Backend) Search(ctx context.Context, q recall.Query) ([]recall.Hit, err
 	if err != nil {
 		return nil, fmt.Errorf("recall search: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var hits []recall.Hit
 	for rows.Next() {
@@ -151,7 +151,7 @@ func (b *Backend) Status(ctx context.Context) (recall.Status, error) {
 	if err != nil {
 		return st, fmt.Errorf("recall status: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var kind string
 		var n int

@@ -104,18 +104,6 @@ func attachStream(t *testing.T, ts *httptest.Server, sessionID string) *bufio.Re
 	return bufio.NewReader(res.Body)
 }
 
-func newSession(t *testing.T, ts *httptest.Server, title string) string {
-	t.Helper()
-	res := postJSON(t, ts.URL+"/api/sessions", map[string]string{"title": title})
-	defer res.Body.Close()
-	var s SessionJSON
-	json.NewDecoder(res.Body).Decode(&s)
-	if s.ID == "" {
-		t.Fatal("no session created")
-	}
-	return s.ID
-}
-
 // An allowed tool call runs for real: the model asks to read a file, the
 // guard allows it, the fs builtin reads it, and the content comes back.
 func TestEndToEndAllowedToolCallReachesTheRealBuiltin(t *testing.T) {

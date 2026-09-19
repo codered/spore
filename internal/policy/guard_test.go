@@ -260,13 +260,20 @@ func TestUnansweredApprovalDeniesAtTheTimeout(t *testing.T) {
 
 func TestApproverErrorDenies(t *testing.T) {
 	ap := &scriptedApprover{err: errors.New("no tty")}
-	g, inner, _, sid := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
+	g, inner, st, sid := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
 	got := g.Run(WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal, Workspace: "/ws"}), toolCall("fs_write", "c1", `{"path":"/ws/a"}`))
 	if !got.IsError {
 		t.Error("an approver failure must deny, not allow")
 	}
 	if len(inner.calls) != 0 {
 		t.Error("the tool ran despite an approver failure")
+	}
+	// Same as the timeout: the suspension is answered, so it must not stay
+	// pending. A row left behind here comes back as a prompt for a call that
+	// was already denied.
+	pending, _ := st.PendingCalls(context.Background(), sid)
+	if len(pending) != 0 {
+		t.Errorf("%d pending calls left behind after an approver failure", len(pending))
 	}
 }
 

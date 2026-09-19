@@ -241,7 +241,7 @@ func TestAssemblePlacesEnvironmentAfterTheSystemPrompt(t *testing.T) {
 	if sysIdx < 0 || envIdx < 0 || factIdx < 0 {
 		t.Fatalf("missing a section in system block:\n%s", req.System)
 	}
-	if !(sysIdx < envIdx && envIdx < factIdx) {
+	if sysIdx >= envIdx || envIdx >= factIdx {
 		t.Errorf("wrong section order (system %d, env %d, facts %d):\n%s", sysIdx, envIdx, factIdx, req.System)
 	}
 }

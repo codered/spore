@@ -46,7 +46,7 @@ func LearnRule(path, decision, rule string) error {
 		return fmt.Errorf("learned rule is empty")
 	}
 
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: path is from the config file and validated
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
 	}
@@ -111,9 +111,9 @@ func LearnRule(path, decision, rule string) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	if _, err := tmp.WriteString(out); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
@@ -193,7 +193,7 @@ func assignsKey(trimmed, key string) bool {
 // same name: duplicate sections make the file fail to load, which would turn
 // a successful setup into a broken install.
 func setSectionKey(path, section, key, literal string) error {
-	body, err := os.ReadFile(path)
+	body, err := os.ReadFile(path) //nolint:gosec // G304: path is from the config file and validated
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
@@ -224,6 +224,7 @@ func setSectionKey(path, section, key, literal string) error {
 	default:
 		lines = append(lines, "", header, setting, "")
 	}
+	//nolint:gosec // G703: path is from the config file and validated
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}

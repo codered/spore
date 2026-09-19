@@ -112,6 +112,7 @@ func Load(dir string) ([]Fact, []error) {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
+		//nolint:gosec // G304: path is from the memory file system and validated
 		data, err := os.ReadFile(path)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", e.Name(), err))
@@ -209,9 +210,9 @@ func Write(dir string, f Fact) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	if _, err := tmp.WriteString(Render(f)); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {

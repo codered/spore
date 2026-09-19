@@ -32,7 +32,7 @@ func cmdRecall(ctx context.Context, cfg *config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	// The operator sees what the model sees, so search and status go through
 	// the configured backend rather than always through the keyword index.
@@ -185,14 +185,14 @@ func recallStatusCmd(ctx context.Context, backend recall.Recall) error {
 		fmt.Printf("degraded: %s\n", st.Reason)
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "KIND\tINDEXED")
+	_, _ = fmt.Fprintln(w, "KIND\tINDEXED")
 	kinds := make([]string, 0, len(st.Counts))
 	for k := range st.Counts {
 		kinds = append(kinds, k)
 	}
 	sort.Strings(kinds)
 	for _, k := range kinds {
-		fmt.Fprintf(w, "%s\t%d\n", k, st.Counts[k])
+		_, _ = fmt.Fprintf(w, "%s\t%d\n", k, st.Counts[k])
 	}
 	return w.Flush()
 }

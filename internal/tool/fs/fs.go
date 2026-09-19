@@ -117,7 +117,7 @@ func (t readTool) Call(ctx context.Context, args json.RawMessage) (string, error
 	if err != nil {
 		return "", err
 	}
-	raw, err := os.ReadFile(p)
+	raw, err := os.ReadFile(p) //nolint:gosec // G304: p is from the file system tool and validated by policy
 	if err != nil {
 		return "", err
 	}
@@ -177,10 +177,10 @@ func (t writeTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(p, []byte(a.Content), 0o644); err != nil {
+	if err := os.WriteFile(p, []byte(a.Content), 0o600); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(a.Content), t.rel(ctx, p)), nil
@@ -221,7 +221,7 @@ func (t editTool) Call(ctx context.Context, args json.RawMessage) (string, error
 	if err != nil {
 		return "", err
 	}
-	raw, err := os.ReadFile(p)
+	raw, err := os.ReadFile(p) //nolint:gosec // G304: p is from the file system tool and validated by policy
 	if err != nil {
 		return "", err
 	}
@@ -243,7 +243,8 @@ func (t editTool) Call(ctx context.Context, args json.RawMessage) (string, error
 	if err == nil {
 		mode = info.Mode().Perm()
 	}
-	if err := os.WriteFile(p, []byte(body), mode); err != nil {
+	//nolint:gosec // G703: p is from the file system tool and validated by policy
+	if err := os.WriteFile(p, []byte(body), mode); err != nil { //nolint:gosec // G703: p is from the file system tool and validated by policy
 		return "", err
 	}
 	return fmt.Sprintf("replaced %d occurrence(s) in %s", n, t.rel(ctx, p)), nil
@@ -418,11 +419,11 @@ func (t grepTool) Call(ctx context.Context, args json.RawMessage) (string, error
 		if filter != nil && !filter.MatchString(r) && !filter.MatchString(filepath.Base(p)) {
 			return nil
 		}
-		f, err := os.Open(p)
+		f, err := os.Open(p) //nolint:gosec // G304: p is from the file system tool and validated by policy
 		if err != nil {
 			return nil
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		sc := bufio.NewScanner(f)
 		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for line := 1; sc.Scan(); line++ {

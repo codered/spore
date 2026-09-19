@@ -109,7 +109,7 @@ func (b *Backend) Index(ctx context.Context, chunks []recall.Chunk) error {
 		end := min(start+batchLimit, len(chunks))
 		batcher := b.c.Batch().ObjectsBatcher()
 		for _, c := range chunks[start:end] {
-			batcher = batcher.WithObject(chunkObject(c))
+			batcher = batcher.WithObjects(chunkObject(c))
 		}
 		res, err := batcher.Do(ctx)
 		if err != nil {

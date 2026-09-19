@@ -74,7 +74,7 @@ func migrateSessions(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("inspect sessions table: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var columns int
 	have := map[string]bool{}
 	for rows.Next() {
@@ -122,15 +122,15 @@ func Open(path string) (*Store, error) {
 	// single process and writes are short.
 	db.SetMaxOpenConns(1)
 	if err := migrateJobs(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	if err := migrateSessions(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	if _, err := db.Exec(schemaSQL); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 	// A backfill failure is deliberately not fatal here, unlike the schema and
@@ -192,7 +192,7 @@ func (s *Store) ListSessions(ctx context.Context, limit int, includeChildren boo
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Session
 	for rows.Next() {
 		var sess Session
@@ -317,7 +317,7 @@ func (s *Store) AppendMessage(ctx context.Context, m Message) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var next int
 	if err := tx.QueryRowContext(ctx,
@@ -357,7 +357,7 @@ func (s *Store) Messages(ctx context.Context, sessionID string) ([]Message, erro
 	if err != nil {
 		return nil, fmt.Errorf("read messages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Message
 	for rows.Next() {
 		var m Message
@@ -378,7 +378,7 @@ func (s *Store) SetSummary(ctx context.Context, sessionID, summary string, throu
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	now := nowString()
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO summaries (session_id, text, through_seq, created_at) VALUES (?, ?, ?, ?)
@@ -419,7 +419,7 @@ func (s *Store) ClearThroughLatestMessage(ctx context.Context, sessionID string)
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var through int
 	if err := tx.QueryRowContext(ctx,
@@ -500,7 +500,7 @@ func (s *Store) PendingCalls(ctx context.Context, sessionID string) ([]PendingCa
 	if err != nil {
 		return nil, fmt.Errorf("read pending calls: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []PendingCall
 	for rows.Next() {
 		var p PendingCall
@@ -529,7 +529,7 @@ func (s *Store) PendingCallsTree(ctx context.Context, sessionID string) ([]Pendi
 	if err != nil {
 		return nil, fmt.Errorf("read pending calls for tree: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []PendingCall
 	for rows.Next() {
 		var p PendingCall
@@ -596,7 +596,7 @@ func (s *Store) ClaimPendingCall(ctx context.Context, id int64, sessionID, decis
 	if err != nil {
 		return PendingCall{}, false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var p PendingCall
 	var args, created string
@@ -651,7 +651,7 @@ func (s *Store) Approvals(ctx context.Context, sessionID string) ([]Approval, er
 	if err != nil {
 		return nil, fmt.Errorf("read approvals: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []Approval
 	for rows.Next() {
 		var a Approval

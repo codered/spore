@@ -27,7 +27,7 @@ func recorder(t *testing.T) *tracetest.SpanRecorder {
 func attrs(kvs []attribute.KeyValue) map[string]string {
 	m := map[string]string{}
 	for _, kv := range kvs {
-		m[string(kv.Key)] = kv.Value.Emit()
+		m[string(kv.Key)] = kv.Value.String()
 	}
 	return m
 }
@@ -37,7 +37,7 @@ func TestLLMSpanCarriesOpenInferenceAttributes(t *testing.T) {
 	SetRedact(false)
 
 	ctx, turn := StartTurn(context.Background(), "sess-1", "cli")
-	ctx, llm := StartLLM(ctx, "chat", "anthropic/claude-opus-5")
+	_, llm := StartLLM(ctx, "chat", "anthropic/claude-opus-5")
 	EndLLM(llm, "what module is this?", "spore", provider.Usage{InputTokens: 100, OutputTokens: 20}, 0.0021)
 	turn.End()
 

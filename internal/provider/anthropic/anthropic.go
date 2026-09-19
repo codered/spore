@@ -147,7 +147,7 @@ func (c *Client) post(ctx context.Context, buf []byte) (*http.Response, error) {
 		return resp, nil
 	}
 
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	body := strings.TrimSpace(string(msg))
 
@@ -162,7 +162,7 @@ func (c *Client) post(ctx context.Context, buf []byte) (*http.Response, error) {
 		if retry.StatusCode == http.StatusOK {
 			return retry, nil
 		}
-		defer retry.Body.Close()
+		defer func() { _ = retry.Body.Close() }()
 		msg, _ = io.ReadAll(io.LimitReader(retry.Body, 4096))
 		return nil, fmt.Errorf("anthropic %s: %s", retry.Status, strings.TrimSpace(string(msg)))
 	}
@@ -204,7 +204,7 @@ func (c *Client) send(ctx context.Context, buf []byte, workspaceID string) (*htt
 // emitted only at content_block_stop.
 func (c *Client) parse(rc io.ReadCloser, ch chan<- provider.Event) {
 	defer close(ch)
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	type pending struct {
 		id, name string
