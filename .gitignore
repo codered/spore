@@ -6,3 +6,5 @@
 *.db-wal
 *.db-shm
 /spore-*-*
+coverage.out
+coverage_subagent.out

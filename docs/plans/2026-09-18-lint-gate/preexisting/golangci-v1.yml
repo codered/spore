@@ -1,0 +1,16 @@
+# .golangci.yml
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - gosec
+    - staticcheck
+    - errcheck
+    - unconvert
+    - unparam
+
+linters-settings:
+  gosec:
+    severity: medium
+    confidence: medium
