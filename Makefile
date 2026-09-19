@@ -46,4 +46,17 @@ lint-install:
 lint:
 	golangci-lint run ./...
 
-.PHONY: build install test test-weaviate test-phoenix vet fmt fmtcheck lint lint-install
+# The dependency gate, pinned and run through a target for the same reason
+# as the linter: CI and a developer must run the same command.
+GOVULNCHECK_VERSION := v1.8.0
+
+vulncheck-install:
+	go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+
+vulncheck:
+	govulncheck -tags sqlite_fts5 ./...
+
+tidycheck:
+	go mod tidy && git diff --exit-code go.mod go.sum
+
+.PHONY: build install test test-weaviate test-phoenix vet fmt fmtcheck lint lint-install vulncheck vulncheck-install tidycheck

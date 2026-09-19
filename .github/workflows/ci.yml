@@ -46,6 +46,12 @@ jobs:
       - name: lint
         run: make lint-install && make lint
         shell: bash
+      - name: vulncheck
+        run: make vulncheck-install && make vulncheck
+        shell: bash
+      - name: tidy
+        run: make tidycheck
+        shell: bash
       - name: test
         # -race needs cgo, which is already on. The shell tool's tests drive
         # real processes and deadlines, so they are slower than the rest.
