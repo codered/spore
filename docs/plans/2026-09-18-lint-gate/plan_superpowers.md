@@ -215,7 +215,7 @@ git commit -q -m "ci: wire the lint gate end to end"
 
 ---
 
-- [ ] **Task 02 — Clear ineffassign and unconvert** <!-- task_02_ineffassign_unconvert.py -->
+- [x] **Task 02 — Clear ineffassign and unconvert** <!-- task_02_ineffassign_unconvert.py -->
 
 Two findings. See them first:
 
@@ -261,7 +261,7 @@ git add -u && git commit -q -m "fix: clear ineffassign and unconvert"
 
 ---
 
-- [ ] **Task 03 — Clear unused and staticcheck** <!-- task_03_unused_staticcheck.py -->
+- [x] **Task 03 — Clear unused and staticcheck** <!-- task_03_unused_staticcheck.py -->
 
 ```bash
 golangci-lint run --enable-only staticcheck,unused ./...
@@ -340,7 +340,7 @@ git commit -q -m "fix: clear unused and staticcheck"
 
 ---
 
-- [ ] **Task 04 — Clear errcheck** <!-- task_04_errcheck.py -->
+- [x] **Task 04 — Clear errcheck** <!-- task_04_errcheck.py -->
 
 First add the exclusion block, then fix what remains. In `.golangci.yml`, find:
 
@@ -418,7 +418,7 @@ git add -u && git commit -q -m "fix: clear errcheck"
 
 ---
 
-- [ ] **Task 05 — Clear unparam** <!-- task_05_unparam.py -->
+- [x] **Task 05 — Clear unparam** <!-- task_05_unparam.py -->
 
 ```bash
 golangci-lint run --enable-only unparam ./...
@@ -465,7 +465,7 @@ git add -u && git commit -q -m "fix: clear unparam"
 
 ---
 
-- [ ] **Task 06 — Put gosec on the gate** <!-- task_06_gosec.py -->
+- [x] **Task 06 — Put gosec on the gate** <!-- task_06_gosec.py -->
 
 spore runs subprocesses and reads paths its user names. Most of what gosec says
 here is a description of the product. Two groups are not.
@@ -538,7 +538,7 @@ git add -u && git commit -q -m "fix: put gosec on the lint gate"
 
 ---
 
-- [ ] **Task 07 — Wire the dependency gate and clear its findings** <!-- task_07_vulnerability_gate.py -->
+- [x] **Task 07 — Wire the dependency gate and clear its findings** <!-- task_07_vulnerability_gate.py -->
 
 `govulncheck` reports 11 vulnerabilities the code actually reaches. Seven are in
 the standard library and go away with the toolchain line; three are modules.

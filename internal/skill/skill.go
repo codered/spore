@@ -98,7 +98,7 @@ func Load(dir string) ([]Skill, []error) {
 		path := filepath.Join(dir, e.Name(), "SKILL.md")
 		//nolint:gosec // G304: path is from the skills directory and validated
 		//nolint:gosec // G304: path is from the skills directory and validated
-	data, err := os.ReadFile(path) //nolint:gosec // G304: path is from the skills directory and validated
+		data, err := os.ReadFile(path) //nolint:gosec // G304: path is from the skills directory and validated
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue // a directory with no SKILL.md is not a skill

@@ -181,7 +181,7 @@ func (c *client) streamFrom(ctx context.Context, sessionID string, connected cha
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
-//nolint:gosec // G704: c.base is the local daemon URL, sessionID is from the API
+	//nolint:gosec // G704: c.base is the local daemon URL, sessionID is from the API
 	res, err := c.streamClient.Do(req) //nolint:gosec // G704: c.base is the local daemon URL
 	if err != nil {
 		return err

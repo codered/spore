@@ -243,7 +243,7 @@ func (t editTool) Call(ctx context.Context, args json.RawMessage) (string, error
 	if err == nil {
 		mode = info.Mode().Perm()
 	}
-//nolint:gosec // G703: p is from the file system tool and validated by policy
+	//nolint:gosec // G703: p is from the file system tool and validated by policy
 	if err := os.WriteFile(p, []byte(body), mode); err != nil { //nolint:gosec // G703: p is from the file system tool and validated by policy
 		return "", err
 	}
