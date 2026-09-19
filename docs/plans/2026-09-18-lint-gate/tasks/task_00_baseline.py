@@ -37,8 +37,11 @@ def apply():
 
 def verify():
     gate.structural(
+        # Absence holds only until task 01 writes the v2 config, so what is
+        # gated is that the v1 file is gone -- not that no config exists.
         "the v1 .golangci.yml is off the tree",
-        lambda: not os.path.exists(".golangci.yml"),
+        lambda: not os.path.exists(".golangci.yml")
+        or taskkit.file_contains(".golangci.yml", 'version: "2"'),
     )
     gate.structural(
         "ci.yml is back at its committed state (no unpinned lint step)",

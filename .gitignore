@@ -8,3 +8,4 @@
 /spore-*-*
 coverage.out
 coverage_subagent.out
+__pycache__/

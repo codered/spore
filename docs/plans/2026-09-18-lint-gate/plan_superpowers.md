@@ -180,7 +180,7 @@ ci: baseline the tree for the lint gate
 
 ---
 
-- [ ] **Task 01 — Wire the lint seam end to end** <!-- task_01_wire_lint_seam.py -->
+- [x] **Task 01 — Wire the lint seam end to end** <!-- task_01_wire_lint_seam.py -->
 
 This task is scripted: it writes `.golangci.yml`, adds the `lint` and
 `lint-install` targets to the `Makefile`, and adds the CI step. One linter is
@@ -633,7 +633,7 @@ git commit -q -m "ci: wire the dependency gate and clear its findings"
 
 ---
 
-- [ ] **Task 08 — Final gate and report** <!-- task_08_final_gate.py -->
+- [x] **Task 08 — Final gate and report** <!-- task_08_final_gate.py -->
 
 Write `docs/plans/2026-09-18-lint-gate/REPORT.md` with exactly these headings,
 then run the gate. The headings are checked; the content is what the owner
