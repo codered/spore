@@ -24,9 +24,9 @@ func cmdMCPList(ctx context.Context, cfg *config.Config) error {
 	host.DialAll(ctx)
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SERVER\tTRANSPORT\tSTATE\tTOOLS\tERROR")
+	_, _ = fmt.Fprintln(w, "SERVER\tTRANSPORT\tSTATE\tTOOLS\tERROR")
 	for _, s := range host.Status() {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n", s.Name, s.Transport, s.State, len(s.Tools), s.LastErr)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n", s.Name, s.Transport, s.State, len(s.Tools), s.LastErr)
 	}
 	if err := w.Flush(); err != nil {
 		return err

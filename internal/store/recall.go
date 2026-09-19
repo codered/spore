@@ -79,7 +79,7 @@ func (s *Store) IndexFact(ctx context.Context, name, text string) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if err := deleteIndex(ctx, tx, kindFact, name); err != nil {
 		return err
 	}
@@ -119,7 +119,7 @@ func (s *Store) ReindexAll(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `DELETE FROM recall_fts WHERE kind IN (?, ?)`, kindMessage, kindSummary); err != nil {
 		return 0, fmt.Errorf("clear index: %w", err)
 	}
@@ -139,12 +139,12 @@ func (s *Store) ReindexAll(ctx context.Context) (int, error) {
 	for rows.Next() {
 		var r row
 		if err := rows.Scan(&r.id, &r.session, &r.text, &r.created); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return 0, err
 		}
 		msgs = append(msgs, r)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
@@ -167,12 +167,12 @@ func (s *Store) ReindexAll(ctx context.Context) (int, error) {
 	for srows.Next() {
 		var r row
 		if err := srows.Scan(&r.session, &r.text, &r.created); err != nil {
-			srows.Close()
+			_ = srows.Close()
 			return 0, err
 		}
 		sums = append(sums, r)
 	}
-	srows.Close()
+	_ = srows.Close()
 	if err := srows.Err(); err != nil {
 		return 0, err
 	}
@@ -234,7 +234,7 @@ func (s *Store) IndexRowsSince(ctx context.Context, cursor int64, limit int) ([]
 	if err != nil {
 		return nil, fmt.Errorf("read index rows: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []IndexRow
 	for rows.Next() {
 		var r IndexRow

@@ -107,7 +107,7 @@ func (s ignoreStack) load(root, dir string) (ignoreStack, bool) {
 	if err != nil {
 		return s, false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var rs ruleSet
 	rs.dir = dir
 	scan := bufio.NewScanner(f)

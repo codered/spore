@@ -54,7 +54,7 @@ func (c *client) do(ctx context.Context, method, path string, body, out any) err
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	payload, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
 		return err
@@ -183,7 +183,7 @@ func (c *client) streamFrom(ctx context.Context, sessionID string, connected cha
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
 		return fmt.Errorf("attach to session %s: %s", sessionID, res.Status)
 	}

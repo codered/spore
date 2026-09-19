@@ -65,7 +65,7 @@ func (b *Brave) Search(ctx context.Context, query string, count int) ([]Hit, err
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("brave search: %s", resp.Status)
 	}

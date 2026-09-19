@@ -55,7 +55,7 @@ func ensureDaemon(ctx context.Context, cfg *config.Config) (*client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open the daemon log: %w", err)
 	}
-	defer logFile.Close()
+	defer func() { _ = logFile.Close() }()
 
 	cmd := exec.Command(exe, "-config", cfg.Path, "serve", "--detach")
 	cmd.Stdout, cmd.Stderr = logFile, logFile
@@ -105,7 +105,7 @@ func tailFile(path string, n int64) string {
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
 		return ""

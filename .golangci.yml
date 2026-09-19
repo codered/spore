@@ -15,8 +15,18 @@ run:
   timeout: 5m
 
 linters:
+  exclusions:
+    rules:
+      # A test that ignores a teardown error is not a defect, and making
+      # every test check one buries the ones that matter.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - unparam
   default: none
   enable:
+    - errcheck
     - govet
     - ineffassign
     - staticcheck

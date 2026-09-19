@@ -94,7 +94,7 @@ func (s *Store) SubagentRunsByParent(ctx context.Context, parentID string) ([]Su
 	if err != nil {
 		return nil, fmt.Errorf("list subagent runs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []SubagentRun
 	for rows.Next() {
 		r, err := scanRun(rows)

@@ -75,7 +75,7 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("init tracing: %w", err)
 	}
-	defer shutdown(ctx)
+	go func() { _ = shutdown(ctx) }()
 
 	switch args[0] {
 	case "once":
@@ -102,14 +102,14 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		defer st.Close()
+		defer func() { _ = st.Close() }()
 		return cmdServe(ctx, cfg, st, args[1:])
 	case "session":
 		st, err := openStore(ctx, cfg)
 		if err != nil {
 			return err
 		}
-		defer st.Close()
+		defer func() { _ = st.Close() }()
 		return cmdSession(ctx, st, args[1:])
 	case "policy":
 		// spore policy check <tool> [json-args] [-profile local|remote] [-workspace <dir>]

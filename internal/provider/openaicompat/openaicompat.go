@@ -117,7 +117,7 @@ func (c *Client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 		return nil, fmt.Errorf("openai-compatible request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("openai-compatible %s: %s", resp.Status, strings.TrimSpace(string(msg)))
 	}
@@ -129,7 +129,7 @@ func (c *Client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 
 func parse(rc io.ReadCloser, ch chan<- provider.Event) {
 	defer close(ch)
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	type pending struct {
 		id, name string

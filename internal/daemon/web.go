@@ -48,5 +48,5 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", contentType)
-	w.Write(body)
+	_, _ = w.Write(body)
 }

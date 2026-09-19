@@ -50,7 +50,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-ticker.C:
-			fmt.Fprint(w, ": ping\n\n")
+			_, _ = fmt.Fprint(w, ": ping\n\n")
 			flusher.Flush()
 		case <-r.Context().Done():
 			// The client went away. Unsubscribing is all that happens: the

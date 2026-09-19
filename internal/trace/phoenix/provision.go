@@ -126,7 +126,7 @@ func Ready(ctx context.Context, healthURL string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return fmt.Errorf("%s answered %s", healthURL, resp.Status)
 	}
