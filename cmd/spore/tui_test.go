@@ -221,7 +221,7 @@ func TestTextAndToolCallsKeepTheirOrder(t *testing.T) {
 	if iBefore < 0 || iTool < 0 || iAfter < 0 {
 		t.Fatalf("a segment is missing from the transcript:\n%s", tr)
 	}
-	if !(iBefore < iTool && iTool < iAfter) {
+	if iBefore >= iTool || iTool >= iAfter {
 		t.Errorf("segments out of order (%d, %d, %d):\n%s", iBefore, iTool, iAfter, tr)
 	}
 	if !strings.Contains(tr, "opus") {

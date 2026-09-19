@@ -100,7 +100,6 @@ type chatUI struct {
 	draft   string
 	// slashHandler runs slash commands; nil when no client context is available.
 	slashHandler func(input string) tea.Cmd
-	slashHint    string
 
 	// fatal is the error the program exits with, read by the caller once the
 	// program has stopped.

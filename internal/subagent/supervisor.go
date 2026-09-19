@@ -192,12 +192,6 @@ func (s *Supervisor) Run(ctx context.Context, parentID, prompt string) (Status, 
 	return s.Result(ctx, childID)
 }
 
-func (s *Supervisor) track(id string, c *child) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.running[id] = c
-}
-
 func (s *Supervisor) untrack(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

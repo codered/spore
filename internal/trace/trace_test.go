@@ -27,7 +27,7 @@ func recorder(t *testing.T) *tracetest.SpanRecorder {
 func attrs(kvs []attribute.KeyValue) map[string]string {
 	m := map[string]string{}
 	for _, kv := range kvs {
-		m[string(kv.Key)] = kv.Value.Emit()
+		m[string(kv.Key)] = kv.Value.String()
 	}
 	return m
 }

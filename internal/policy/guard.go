@@ -249,11 +249,6 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 		sporetrace.RecordPolicy(ctx, "deny", "approval timed out")
 		return denied(call.ID, "approval for %s timed out after %s and was denied", call.Name, g.engine.ApprovalTimeout())
 	case err != nil:
-		// Same as timeout branch: only write the audit row if we claimed the
-		// suspension, not if another path already answered it.
-		if claimed, err := g.store.ResolvePendingCall(book, pendingID, "error"); err == nil && claimed {
-			// Note: error case doesn't write an audit row in the original code
-		}
 		sporetrace.RecordPolicy(ctx, "deny", "approver unavailable")
 		return denied(call.ID, "could not ask for approval: %v", err)
 	}
