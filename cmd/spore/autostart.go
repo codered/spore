@@ -48,16 +48,16 @@ func ensureDaemon(ctx context.Context, cfg *config.Config) (*client, error) {
 		return nil, fmt.Errorf("locate the spore binary to start a daemon: %w", err)
 	}
 	logPath := filepath.Join(cfg.DataDir, "daemon.log")
-	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
+	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil { //nolint:gosec // G703: cfg.DataDir is from the config file and validated by the config loader
 		return nil, err
 	}
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // G304: logPath is from the config file and validated
 	if err != nil {
 		return nil, fmt.Errorf("open the daemon log: %w", err)
 	}
 	defer func() { _ = logFile.Close() }()
 
-	cmd := exec.Command(exe, "-config", cfg.Path, "serve", "--detach")
+	cmd := exec.Command(exe, "-config", cfg.Path, "serve", "--detach") //nolint:gosec // G702: exe and cfg.Path are from the config file; this is the command the user asked the daemon to run
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	cmd.Stdin = nil
 	detach(cmd) // put it in its own process group; see proc_*.go
@@ -101,7 +101,7 @@ func waitForHealth(ctx context.Context, c *client, timeout time.Duration) error 
 // tailFile returns the last n bytes of a file, for putting a failed daemon's
 // own error message in front of the user instead of "it did not start".
 func tailFile(path string, n int64) string {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // G304: path is from the log file location and validated
 	if err != nil {
 		return ""
 	}

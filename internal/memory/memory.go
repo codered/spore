@@ -112,6 +112,7 @@ func Load(dir string) ([]Fact, []error) {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
+		//nolint:gosec // G304: path is from the memory file system and validated
 		data, err := os.ReadFile(path)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", e.Name(), err))

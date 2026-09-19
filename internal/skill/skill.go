@@ -96,7 +96,9 @@ func Load(dir string) ([]Skill, []error) {
 			continue
 		}
 		path := filepath.Join(dir, e.Name(), "SKILL.md")
-		data, err := os.ReadFile(path)
+		//nolint:gosec // G304: path is from the skills directory and validated
+		//nolint:gosec // G304: path is from the skills directory and validated
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is from the skills directory and validated
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue // a directory with no SKILL.md is not a skill
@@ -130,7 +132,8 @@ func Read(dir, name string) (Skill, error) {
 		return Skill{}, err
 	}
 	path := filepath.Join(d, "SKILL.md")
-	data, err := os.ReadFile(path)
+	//nolint:gosec // G304: path is from the skills directory and validated
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is from the skills directory and validated
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return Skill{}, fmt.Errorf("no skill named %q", name)
@@ -223,7 +226,7 @@ func Write(dir string, s Skill) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(d, 0o755); err != nil {
+	if err := os.MkdirAll(d, 0o750); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(d, ".SKILL-*.md")

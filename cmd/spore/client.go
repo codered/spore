@@ -43,14 +43,16 @@ func (c *client) do(ctx context.Context, method, path string, body, out any) err
 		}
 		rdr = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, rdr)
+	//nolint:gosec // G704: c.base is the local daemon URL, path is from the API
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, rdr) //nolint:gosec // G704: c.base is the local daemon URL, path is from the API
 	if err != nil {
 		return err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	res, err := c.short.Do(req)
+	//nolint:gosec // G704: c.base is the local daemon URL
+	res, err := c.short.Do(req) //nolint:gosec // G704: c.base is the local daemon URL
 	if err != nil {
 		return err
 	}
@@ -174,12 +176,13 @@ func (c *client) listAgents(ctx context.Context, sessionID string) (agentListJSO
 // knowing that no event published in the meantime can be missed — attaching
 // in a goroutine and posting immediately would race.
 func (c *client) streamFrom(ctx context.Context, sessionID string, connected chan<- struct{}, fn func(daemon.WireEvent) error) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.base+"/api/sessions/"+sessionID+"/events", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", c.base+"/api/sessions/"+sessionID+"/events", nil) //nolint:gosec // G704: c.base is the local daemon URL, sessionID is from the API
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
-	res, err := c.streamClient.Do(req)
+//nolint:gosec // G704: c.base is the local daemon URL, sessionID is from the API
+	res, err := c.streamClient.Do(req) //nolint:gosec // G704: c.base is the local daemon URL
 	if err != nil {
 		return err
 	}

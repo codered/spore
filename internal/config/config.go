@@ -529,7 +529,7 @@ func interpolate(src string) (string, error) {
 }
 
 func Load(path string) (*Config, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: path is from the config file and validated
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}

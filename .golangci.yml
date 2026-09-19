@@ -25,10 +25,21 @@ linters:
           - gosec
           - unparam
   default: none
+  settings:
+    gosec:
+      severity: medium
+      confidence: medium
+      # G204 is "subprocess launched with variable". Running the command the
+      # user asked for is what the shell and MCP tools are; the confinement
+      # that makes it safe lives in internal/policy, and is tested there.
+      excludes:
+        - G204
   enable:
     - errcheck
+    - gosec
     - govet
     - ineffassign
     - staticcheck
     - unconvert
+    - unparam
     - unused

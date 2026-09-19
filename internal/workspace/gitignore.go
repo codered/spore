@@ -103,7 +103,7 @@ type ignoreStack []ruleSet
 // the stack unchanged, so a directory without rules simply inherits its
 // parents'.
 func (s ignoreStack) load(root, dir string) (ignoreStack, bool) {
-	f, err := os.Open(filepath.Join(root, filepath.FromSlash(dir), ".gitignore"))
+	f, err := os.Open(filepath.Join(root, filepath.FromSlash(dir), ".gitignore")) //nolint:gosec // G304: path is from the workspace and validated
 	if err != nil {
 		return s, false
 	}

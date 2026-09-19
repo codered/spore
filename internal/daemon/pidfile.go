@@ -26,7 +26,7 @@ func WritePidFile(path string) error {
 }
 
 func ReadPidFile(path string) (int, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: path is from the pidfile location and validated
 	if err != nil {
 		return 0, err
 	}
@@ -89,7 +89,7 @@ func AcquirePidFile(path string) error {
 	// Try to create the file exclusively. If it exists, we need to check if
 	// the daemon it names is still running.
 	for attempt := 0; attempt < 2; attempt++ {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // G304: path is from the pidfile location and validated
 		if err == nil {
 			// Successfully created the file. Write our PID and we're done.
 			_, writeErr := f.Write(pidBytes)
