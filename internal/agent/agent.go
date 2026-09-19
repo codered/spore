@@ -281,10 +281,7 @@ func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Eve
 			return fmt.Errorf("model called tool %q but no tools are registered", calls[0].Name)
 		}
 
-		results, err := a.runTools(ctx, calls, out)
-		if err != nil {
-			return err
-		}
+		results := a.runTools(ctx, calls, out)
 		pctx2, cancelPersist2 := persistCtx(ctx)
 		err = a.appendMessage(pctx2, sessionID, provider.RoleTool, results, "", "", provider.Usage{}, 0)
 		cancelPersist2()
@@ -297,7 +294,7 @@ func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Eve
 
 // runTools dispatches a batch. Calls run concurrently only when every call in
 // the batch is read-only; any mutating call forces strict sequential order.
-func (a *Agent) runTools(ctx context.Context, calls []provider.Block, out chan<- Event) ([]provider.Block, error) {
+func (a *Agent) runTools(ctx context.Context, calls []provider.Block, out chan<- Event) []provider.Block {
 	allReadOnly := true
 	for _, c := range calls {
 		if !a.Tools.ReadOnly(c.Name) {
@@ -338,5 +335,5 @@ func (a *Agent) runTools(ctx context.Context, calls []provider.Block, out chan<-
 		b := results[i]
 		out <- Event{Type: EvToolResult, Block: &b}
 	}
-	return results, nil
+	return results
 }
