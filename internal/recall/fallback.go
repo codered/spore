@@ -32,6 +32,15 @@ func (f *Fallback) Index(ctx context.Context, chunks []Chunk) error {
 	return f.primary.Index(ctx, chunks)
 }
 
+// Delete forwards to the primary. The secondary is the keyword index and is
+// already correct by the time this runs.
+// Delete writes only the primary, for the same reason Index does: the
+// secondary is the keyword index, and the store already removed the row there
+// inside the transaction that wrote the tombstone driving this call.
+func (f *Fallback) Delete(ctx context.Context, kind, refID string) error {
+	return f.primary.Delete(ctx, kind, refID)
+}
+
 func (f *Fallback) Search(ctx context.Context, q Query) ([]Hit, error) {
 	hits, err := f.primary.Search(ctx, q)
 	if err == nil {

@@ -145,6 +145,19 @@ func (b *Backend) Search(ctx context.Context, q recall.Query) ([]recall.Hit, err
 	return hits, rows.Err()
 }
 
+// Delete is not a mirror target because the store owns writes to recall_fts,
+// but the method is real rather than a stub so the interface does not lie.
+// Delete removes the rows for one key. This backend is never a mirror target
+// -- the store owns writes to recall_fts and deletes the row itself -- so
+// nothing in spore calls this. It is implemented rather than stubbed so the
+// interface does not promise a delete path some backend silently lacks.
+func (b *Backend) Delete(ctx context.Context, kind, refID string) error {
+	if _, err := b.db.ExecContext(ctx, `DELETE FROM recall_fts WHERE kind = ? AND ref_id = ?`, kind, refID); err != nil {
+		return fmt.Errorf("recall delete %s %s: %w", kind, refID, err)
+	}
+	return nil
+}
+
 func (b *Backend) Status(ctx context.Context) (recall.Status, error) {
 	st := recall.Status{Backend: "sqlitefts", Counts: map[string]int{}}
 	rows, err := b.db.QueryContext(ctx, `SELECT kind, count(*) FROM recall_fts GROUP BY kind`)

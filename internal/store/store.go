@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -63,6 +64,42 @@ const timeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 const maxAncestorWalk = 64
 
 func nowString() string { return time.Now().UTC().Format(timeFormat) }
+
+// migrateRecallSync adds recall_sync.del_cursor when it is missing. The column
+// is not in schemaSQL: recall_sync ships in databases written before the delete
+// path existed, and CREATE TABLE IF NOT EXISTS leaves those alone. Keeping the
+// column in one place -- here -- means a fresh database and an upgraded one
+// cannot disagree about it.
+func migrateRecallSync(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(recall_sync)`)
+	if err != nil {
+		return fmt.Errorf("inspect recall_sync table: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var haveDelCursor bool
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "del_cursor" {
+			haveDelCursor = true
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !haveDelCursor {
+		if _, err := db.Exec(`ALTER TABLE recall_sync ADD COLUMN del_cursor INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add recall_sync.del_cursor: %w", err)
+		}
+	}
+	return nil
+}
 
 // migrateSessions adds missing columns to a database written before they
 // were added. Unlike migrateJobs this preserves every row: sessions hold
@@ -132,6 +169,13 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schemaSQL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
+	}
+	// This one runs after the schema rather than before it, unlike the two
+	// above: recall_sync is created by schemaSQL on a fresh database, so the
+	// column has to be added to a table that already exists either way.
+	if err := migrateRecallSync(db); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 	// A backfill failure is deliberately not fatal here, unlike the schema and
 	// open errors above it. cmdRecall opens the store the same way everything
@@ -737,6 +781,97 @@ func (s *Store) PruneSeen(ctx context.Context, olderThan time.Duration) error {
 	cutoff := time.Now().UTC().Add(-olderThan).Format(timeFormat)
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM bridge_seen WHERE created_at <= ?`, cutoff); err != nil {
 		return fmt.Errorf("prune seen: %w", err)
+	}
+	return nil
+}
+
+// SyncDelCursor reports how far a mirror has caught up on deletes.
+func (s *Store) SyncDelCursor(ctx context.Context, backend string) (int64, error) {
+	var cursor int64
+	err := s.db.QueryRowContext(ctx, `SELECT del_cursor FROM recall_sync WHERE backend = ?`, backend).Scan(&cursor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read sync del cursor: %w", err)
+	}
+	return cursor, nil
+}
+
+// SetSyncDelCursor records delete progress.
+func (s *Store) SetSyncDelCursor(ctx context.Context, backend string, delCursor int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO recall_sync (backend, del_cursor, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(backend) DO UPDATE SET del_cursor = excluded.del_cursor, updated_at = excluded.updated_at`,
+		backend, delCursor, nowString())
+	if err != nil {
+		return fmt.Errorf("write sync del cursor: %w", err)
+	}
+	return nil
+}
+
+// TombstonesSince returns tombstones with id > delCursor, oldest first.
+func (s *Store) TombstonesSince(ctx context.Context, delCursor int64, limit int) ([]TombstoneRow, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, kind, ref_id, created_at FROM recall_tombstones WHERE id > ? ORDER BY id LIMIT ?`, delCursor, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read tombstones: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []TombstoneRow
+	for rows.Next() {
+		var r TombstoneRow
+		if err := rows.Scan(&r.ID, &r.Kind, &r.RefID, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// HasTombstoneKey checks whether recall_fts holds a row for (kind, ref_id).
+func (s *Store) HasTombstoneKey(ctx context.Context, kind, refID string) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM recall_fts WHERE kind = ? AND ref_id = ?`, kind, refID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("check tombstone key: %w", err)
+	}
+	return count > 0, nil
+}
+
+// SweepTombstones removes tombstones older than before.
+func (s *Store) SweepTombstones(ctx context.Context, before time.Time) error {
+	// The cutoff is formatted with the store's own timeFormat, not RFC3339:
+	// created_at is a string and the comparison is lexicographic, so the two
+	// sides have to be the same shape to order correctly.
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM recall_tombstones WHERE created_at < ?`, before.UTC().Format(timeFormat))
+	if err != nil {
+		return fmt.Errorf("sweep tombstones: %w", err)
+	}
+	return nil
+}
+
+// ResetDelCursor zeroes the del_cursor for a backend.
+func (s *Store) ResetDelCursor(ctx context.Context, backend string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO recall_sync (backend, cursor, del_cursor, updated_at) VALUES (?, 0, 0, ?)
+		 ON CONFLICT(backend) DO UPDATE SET cursor = 0, del_cursor = 0, updated_at = excluded.updated_at`,
+		backend, nowString())
+	if err != nil {
+		return fmt.Errorf("reset del cursor: %w", err)
+	}
+	return nil
+}
+
+// ClearTombstones removes all tombstones.
+func (s *Store) ClearTombstones(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM recall_tombstones`)
+	if err != nil {
+		return fmt.Errorf("clear tombstones: %w", err)
 	}
 	return nil
 }

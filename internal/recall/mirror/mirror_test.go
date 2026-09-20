@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/codered/spore/internal/recall"
 	"github.com/codered/spore/internal/store"
@@ -14,9 +15,10 @@ import (
 // fakeSource is the store as the mirror sees it: rows with rising ids and a
 // cursor it can move.
 type fakeSource struct {
-	rows    []store.IndexRow
-	cursors map[string]int64
-	err     error
+	rows       []store.IndexRow
+	cursors    map[string]int64
+	err        error
+	tombstones []store.TombstoneRow
 }
 
 func newSource(texts ...string) *fakeSource {
@@ -55,9 +57,59 @@ func (s *fakeSource) SetSyncCursor(_ context.Context, backend string, c int64) e
 	return nil
 }
 
+func (s *fakeSource) SyncDelCursor(_ context.Context, backend string) (int64, error) {
+	return s.cursors[backend+"_del"], nil
+}
+
+func (s *fakeSource) SetSyncDelCursor(_ context.Context, backend string, c int64) error {
+	s.cursors[backend+"_del"] = c
+	return nil
+}
+
+func (s *fakeSource) TombstonesSince(_ context.Context, delCursor int64, limit int) ([]store.TombstoneRow, error) {
+	var out []store.TombstoneRow
+	for _, t := range s.tombstones {
+		if t.ID > delCursor {
+			out = append(out, t)
+		}
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeSource) HasTombstoneKey(_ context.Context, kind, refID string) (bool, error) {
+	for _, r := range s.rows {
+		if r.Kind == kind && r.RefID == refID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *fakeSource) SweepTombstones(_ context.Context, _ time.Time) error {
+	// For the test fake, just remove tombstones that are old enough.
+	// We don't track created_at for simplicity in the test.
+	return nil
+}
+
+func (s *fakeSource) ResetDelCursor(_ context.Context, backend string) error {
+	s.cursors[backend+"_del"] = 0
+	return nil
+}
+
+func (s *fakeSource) ClearTombstones(_ context.Context) error {
+	s.tombstones = nil
+	return nil
+}
+
 type fakeTarget struct {
-	got  []recall.Chunk
-	fail int // fail this many calls before succeeding
+	got        []recall.Chunk
+	fail       int // fail this many calls before succeeding
+	failDelete bool
+	deleted    []string // ref ids, in the order they were deleted
+	calls      []string // "index" and "delete", in the order they arrived
 }
 
 func (t *fakeTarget) Index(_ context.Context, chunks []recall.Chunk) error {
@@ -66,11 +118,20 @@ func (t *fakeTarget) Index(_ context.Context, chunks []recall.Chunk) error {
 		return errors.New("weaviate: connection refused")
 	}
 	t.got = append(t.got, chunks...)
+	t.calls = append(t.calls, "index")
 	return nil
 }
 
 func (t *fakeTarget) Search(context.Context, recall.Query) ([]recall.Hit, error) { return nil, nil }
 func (t *fakeTarget) Status(context.Context) (recall.Status, error)              { return recall.Status{}, nil }
+func (t *fakeTarget) Delete(_ context.Context, _, refID string) error {
+	if t.failDelete {
+		return errors.New("weaviate: delete failed")
+	}
+	t.deleted = append(t.deleted, refID)
+	t.calls = append(t.calls, "delete")
+	return nil
+}
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
@@ -206,5 +267,45 @@ func TestMirrorPagesThroughMoreThanOneBatch(t *testing.T) {
 	}
 	if n != len(texts) {
 		t.Errorf("wrote %d chunks, want %d -- the pass stopped at one batch", n, len(texts))
+	}
+}
+
+// A target that errors leaves del_cursor unmoved, so the next pass retries the
+// same tombstone. Head-of-line blocking is intended: the tombstones behind it
+// wait rather than being skipped, because a skipped one is a vector that
+// survives its fact forever, which is the whole bug this feed exists to fix.
+func TestDeleteFailureKeepsCursor(t *testing.T) {
+	src := &fakeSource{
+		cursors: map[string]int64{"weaviate": 0, "weaviate_del": 0},
+		tombstones: []store.TombstoneRow{
+			{ID: 1, Kind: "fact", RefID: "fail-me"},
+			{ID: 2, Kind: "fact", RefID: "behind-it"},
+		},
+	}
+	tgt := &fakeTarget{failDelete: true}
+	m := New(src, tgt, "weaviate", quiet())
+
+	// The failure is returned rather than swallowed, so Run reports the mirror
+	// as behind instead of logging that it caught up.
+	if _, err := m.Once(context.Background()); err == nil {
+		t.Fatal("a failed delete was reported as a clean pass")
+	}
+	if src.cursors["weaviate_del"] != 0 {
+		t.Fatalf("del_cursor advanced to %d despite the failure", src.cursors["weaviate_del"])
+	}
+	if len(tgt.deleted) != 0 {
+		t.Fatalf("the tombstone behind the failing one was applied: %v", tgt.deleted)
+	}
+
+	// The sidecar comes back. Both deletions land, oldest first.
+	tgt.failDelete = false
+	if _, err := m.Once(context.Background()); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if got := tgt.deleted; len(got) != 2 || got[0] != "fail-me" || got[1] != "behind-it" {
+		t.Fatalf("deleted %v, want [fail-me behind-it] in that order", got)
+	}
+	if src.cursors["weaviate_del"] != 2 {
+		t.Errorf("del_cursor = %d, want 2", src.cursors["weaviate_del"])
 	}
 }

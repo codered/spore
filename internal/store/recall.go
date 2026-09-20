@@ -89,9 +89,23 @@ func (s *Store) IndexFact(ctx context.Context, name, text string) error {
 	return tx.Commit()
 }
 
-// UnindexFact drops a deleted fact from the index.
+// UnindexFact drops a deleted fact from the index and writes a tombstone so
+// the mirror knows to delete the vector.
 func (s *Store) UnindexFact(ctx context.Context, name string) error {
-	return deleteIndex(ctx, s.db, kindFact, name)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := deleteIndex(ctx, tx, kindFact, name); err != nil {
+		return err
+	}
+	createdAt := nowString()
+	_, err = tx.ExecContext(ctx, `INSERT INTO recall_tombstones (kind, ref_id, created_at) VALUES (?, ?, ?)`, kindFact, name, createdAt)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ClearFactIndex drops every indexed fact. Facts are file-owned, and nothing
@@ -102,11 +116,20 @@ func (s *Store) UnindexFact(ctx context.Context, name string) error {
 // first, so the index afterward matches the directory exactly instead of
 // accumulating rows for files that no longer exist.
 func (s *Store) ClearFactIndex(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM recall_fts WHERE kind = ?`, kindFact)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	createdAt := nowString()
+	_, err = tx.ExecContext(ctx, `INSERT INTO recall_tombstones (kind, ref_id, created_at) SELECT kind, ref_id, ? FROM recall_fts WHERE kind = ?`, createdAt, kindFact)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM recall_fts WHERE kind = ?`, kindFact); err != nil {
 		return fmt.Errorf("clear fact index: %w", err)
 	}
-	return nil
+	return tx.Commit()
 }
 
 // ReindexAll rebuilds the message and summary rows from the source tables and
@@ -218,6 +241,14 @@ type IndexRow struct {
 	SessionID string
 	CreatedAt string
 	Text      string
+}
+
+// TombstoneRow is one tombstone row the mirror drains.
+type TombstoneRow struct {
+	ID        int64
+	Kind      string
+	RefID     string
+	CreatedAt string
 }
 
 // IndexRowsSince returns up to limit rows written after cursor, oldest first.

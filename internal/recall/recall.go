@@ -69,6 +69,11 @@ type Recall interface {
 	Index(ctx context.Context, chunks []Chunk) error
 	Search(ctx context.Context, q Query) ([]Hit, error)
 	Status(ctx context.Context) (Status, error)
+	// Delete removes one indexed chunk. It is not an error for the chunk to
+	// be absent: the mirror can hold a tombstone for a row whose insert never
+	// reached the backend, and a delete that can never succeed would stall
+	// the cursor behind it forever.
+	Delete(ctx context.Context, kind, refID string) error
 }
 
 // ClampK applies DefaultK and MaxK. Backends share it so `k` means the same
