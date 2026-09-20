@@ -65,9 +65,11 @@ const maxAncestorWalk = 64
 
 func nowString() string { return time.Now().UTC().Format(timeFormat) }
 
-// migrateRecallSync adds the del_cursor column to recall_sync if it is missing.
-// recall_sync already exists in shipped databases, so this is a migration rather
-// than a schema-string edit.
+// migrateRecallSync adds recall_sync.del_cursor when it is missing. The column
+// is not in schemaSQL: recall_sync ships in databases written before the delete
+// path existed, and CREATE TABLE IF NOT EXISTS leaves those alone. Keeping the
+// column in one place -- here -- means a fresh database and an upgraded one
+// cannot disagree about it.
 func migrateRecallSync(db *sql.DB) error {
 	rows, err := db.Query(`PRAGMA table_info(recall_sync)`)
 	if err != nil {
@@ -167,6 +169,13 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schemaSQL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
+	}
+	// This one runs after the schema rather than before it, unlike the two
+	// above: recall_sync is created by schemaSQL on a fresh database, so the
+	// column has to be added to a table that already exists either way.
+	if err := migrateRecallSync(db); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 	// A backfill failure is deliberately not fatal here, unlike the schema and
 	// open errors above it. cmdRecall opens the store the same way everything

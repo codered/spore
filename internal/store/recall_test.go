@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -401,5 +402,114 @@ func TestSyncCursorRoundTripsPerBackend(t *testing.T) {
 	}
 	if got, _ := st.SyncCursor(ctx, "other"); got != 0 {
 		t.Errorf("a different backend saw %d, want its own cursor of 0", got)
+	}
+}
+
+func countTombstones(t *testing.T, st *Store, where string, args ...any) int {
+	t.Helper()
+	var n int
+	q := `SELECT count(*) FROM recall_tombstones`
+	if where != "" {
+		q += " WHERE " + where
+	}
+	if err := st.DB().QueryRow(q, args...).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// The tombstone is the only record a deletion leaves. The FTS row is gone, so
+// a test that checked the error and the row count alone would pass with the
+// write missing -- which is how the mirror was blind to deletions to begin
+// with.
+func TestUnindexFactWritesTombstone(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+
+	if err := st.IndexFact(ctx, "prefers-tabs", "the user prefers tabs"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UnindexFact(ctx, "prefers-tabs"); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := countFTS(t, st, "kind = 'fact' AND ref_id = 'prefers-tabs'"); n != 0 {
+		t.Errorf("the fact is still in the keyword index (%d rows)", n)
+	}
+	if n := countTombstones(t, st, "kind = 'fact' AND ref_id = 'prefers-tabs'"); n != 1 {
+		t.Fatalf("got %d tombstones, want exactly 1 -- the mirror learns of the deletion from this row alone", n)
+	}
+}
+
+// IndexFact's delete-and-insert is an update, not a removal. A tombstone here
+// would be discarded by the mirror's guard anyway, but it would be written on
+// every fact load at daemon start -- one row per fact, per restart, forever.
+func TestIndexFactWritesNoTombstone(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+
+	if err := st.IndexFact(ctx, "prefers-tabs", "the user prefers tabs"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.IndexFact(ctx, "prefers-tabs", "the user prefers tabs, still"); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := countTombstones(t, st, ""); n != 0 {
+		t.Errorf("re-indexing a fact wrote %d tombstones, want 0", n)
+	}
+	if n := countFTS(t, st, "kind = 'fact' AND ref_id = 'prefers-tabs'"); n != 1 {
+		t.Errorf("got %d index rows for the fact, want the replacement only", n)
+	}
+}
+
+// A database written before the delete path existed has a recall_sync without
+// del_cursor. Opening it must add the column: every mirror pass reads it, so a
+// missing migration turns "no such column: del_cursor" into a permanently
+// failing sync on exactly the installations that have history worth mirroring.
+func TestRecallSyncGainsDelCursor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+
+	old, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`CREATE TABLE recall_sync (
+		backend    TEXT PRIMARY KEY,
+		cursor     INTEGER NOT NULL DEFAULT 0,
+		updated_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`INSERT INTO recall_sync (backend, cursor, updated_at) VALUES ('weaviate', 41, '2026-09-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	ctx := context.Background()
+	del, err := st.SyncDelCursor(ctx, "weaviate")
+	if err != nil {
+		t.Fatalf("SyncDelCursor on a migrated database: %v", err)
+	}
+	if del != 0 {
+		t.Errorf("del_cursor = %d, want 0 for a backend that has never applied a delete", del)
+	}
+
+	// The insert watermark must survive the migration: losing it would re-send
+	// the whole corpus to the vector store on the next pass.
+	cursor, err := st.SyncCursor(ctx, "weaviate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor != 41 {
+		t.Errorf("cursor = %d, want the 41 the old database recorded", cursor)
 	}
 }

@@ -85,7 +85,7 @@ Nothing calls it yet; this task proves the far end of the seam works.
 
 ---
 
-- [ ] **Task 02 — Tombstone feed and the delete phase** <!-- task_02_tombstone_feed.py -->
+- [x] **Task 02 — Tombstone feed and the delete phase** <!-- task_02_tombstone_feed.py -->
 
 The vertical slice: a fact deleted in SQLite becomes a `Delete` at the backend.
 
