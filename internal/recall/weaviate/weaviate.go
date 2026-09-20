@@ -8,6 +8,7 @@ import (
 	"time"
 
 	client "github.com/weaviate/weaviate-go-client/v5/weaviate"
+	"github.com/weaviate/weaviate-go-client/v5/weaviate/fault"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate/graphql"
 
 	"github.com/codered/spore/internal/recall"
@@ -182,6 +183,36 @@ func (b *Backend) Status(ctx context.Context) (recall.Status, error) {
 		st.Counts[kind] = n
 	}
 	return st, nil
+}
+
+// Delete removes one indexed chunk. It is not an error for the chunk to be
+// absent: the mirror can hold a tombstone for a row whose insert never
+// reached the backend, and a delete that can never succeed would stall the
+// cursor behind it forever.
+func (b *Backend) Delete(ctx context.Context, kind, refID string) error {
+	objID := string(objectID(kind, refID))
+	err := b.c.Data().Deleter().
+		WithClassName(Collection).
+		WithID(objID).
+		Do(ctx)
+	if err != nil {
+		// A 404 from the client is success: the object was already gone or
+		// never existed. The weaviate-go-client returns a WeaviateClientError
+		// with StatusCode 404 for this case.
+		if isNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("%s: delete object: %s", Name, tidy(err))
+	}
+	return nil
+}
+
+// isNotFound reports whether an error from the weaviate client is a 404 not found.
+func isNotFound(err error) bool {
+	if weavErr, ok := err.(*fault.WeaviateClientError); ok {
+		return weavErr.StatusCode == 404
+	}
+	return false
 }
 
 // tidy strips the client's boilerplate from a transport error. The wrapped

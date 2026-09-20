@@ -139,6 +139,20 @@ CREATE TRIGGER IF NOT EXISTS recall_fts_summaries_ad AFTER DELETE ON summaries B
   DELETE FROM recall_fts WHERE kind = 'summary' AND ref_id = old.session_id;
 END;
 
+-- recall_tombstones is the feed of deletions the mirror drains. A tombstone is
+-- written in the same transaction as the recall_fts delete, so the mirror
+-- never sees a deletion before it is durable. AUTOINCREMENT ensures the id
+-- never reuses a rowid after a delete, which would move a backend's delete
+-- cursor backwards over rows it had already applied.
+CREATE TABLE IF NOT EXISTS recall_tombstones (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind       TEXT NOT NULL,
+  ref_id     TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_recall_tombstones_age ON recall_tombstones(created_at);
+
 -- recall_sync is the watermark for a mirror backend. A vector store cannot
 -- join the transaction that writes recall_fts -- an HTTP call inside an open
 -- write transaction is how a database gets wedged -- so it is brought forward

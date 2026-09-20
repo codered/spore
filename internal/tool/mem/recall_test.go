@@ -30,6 +30,7 @@ func (f *fakeRecall) Search(_ context.Context, q recall.Query) ([]recall.Hit, er
 func (f *fakeRecall) Status(context.Context) (recall.Status, error) {
 	return recall.Status{Backend: "fake"}, nil
 }
+func (f *fakeRecall) Delete(_ context.Context, kind, refID string) error { return nil }
 
 func hit(kind, id, session, text, excerpt string) recall.Hit {
 	return recall.Hit{

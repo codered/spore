@@ -43,7 +43,7 @@ Read it before task 01. It carries the reasoning; this file carries the steps.
 
 ---
 
-- [ ] **Task 01 — Delete reaches Weaviate** <!-- task_01_delete_reaches_weaviate.py -->
+- [x] **Task 01 — Delete reaches Weaviate** <!-- task_01_delete_reaches_weaviate.py -->
 
 Add the method and implement it everywhere, before any of the tombstone work.
 Nothing calls it yet; this task proves the far end of the seam works.

@@ -303,3 +303,32 @@ func TestIndexFallbackPath(t *testing.T) {
 }
 
 var _ recall.Recall = (*Backend)(nil)
+
+// Nothing in spore calls this backend's Delete -- the store removes the row
+// itself. The test exists because the method is part of the interface every
+// backend answers for, and an interface method nobody exercises is where a
+// silent no-op hides.
+func TestDeleteRemovesRow(t *testing.T) {
+	b := New(newDB(t))
+	seed(t, b,
+		chunk(recall.KindFact, "prefers-tabs", "", "the user prefers tabs"),
+		chunk(recall.KindFact, "prefers-dark", "", "the user prefers dark mode"),
+	)
+
+	if err := b.Delete(context.Background(), recall.KindFact, "prefers-tabs"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	hits, err := b.Search(context.Background(), recall.Query{Text: "prefers"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hits {
+		if h.ID == "prefers-tabs" {
+			t.Fatal("the deleted fact is still searchable")
+		}
+	}
+	if len(hits) != 1 {
+		t.Errorf("got %d hits, want the one fact that was not deleted", len(hits))
+	}
+}

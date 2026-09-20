@@ -16,6 +16,7 @@ type fake struct {
 	hits    []Hit
 	indexed []Chunk
 	status  Status
+	deleted []struct{ kind, refID string }
 }
 
 func (f *fake) Index(_ context.Context, c []Chunk) error {
@@ -31,6 +32,14 @@ func (f *fake) Search(context.Context, Query) ([]Hit, error) {
 		return nil, f.err
 	}
 	return f.hits, nil
+}
+
+func (f *fake) Delete(_ context.Context, kind, refID string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.deleted = append(f.deleted, struct{ kind, refID string }{kind, refID})
+	return nil
 }
 
 func (f *fake) Status(context.Context) (Status, error) {
@@ -154,3 +163,38 @@ func TestFallbackRecoversWhenThePrimaryComesBack(t *testing.T) {
 }
 
 var _ Recall = (*Fallback)(nil)
+
+// A delete goes to the primary alone. Sending it to the secondary as well
+// would delete the keyword row the store is the owner of, and the keyword
+// index is the record the mirror is driven from.
+func TestFallbackDeleteUsesPrimary(t *testing.T) {
+	primary, secondary := &fake{}, &fake{}
+	f := NewFallback(primary, secondary, quietLogger())
+
+	if err := f.Delete(context.Background(), KindFact, "prefers-tabs"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if len(primary.deleted) != 1 || primary.deleted[0].refID != "prefers-tabs" {
+		t.Errorf("primary deleted %v, want one delete of prefers-tabs", primary.deleted)
+	}
+	if len(secondary.deleted) != 0 {
+		t.Errorf("secondary deleted %v, want nothing", secondary.deleted)
+	}
+}
+
+// A failing primary is not a reason to fall back here. Search degrades because
+// a stale answer beats no answer; a delete that silently did nothing would
+// leave the vector the tombstone exists to remove.
+func TestFallbackDeleteReportsAFailingPrimary(t *testing.T) {
+	primary := &fake{err: errors.New("vector store down")}
+	secondary := &fake{}
+	f := NewFallback(primary, secondary, quietLogger())
+
+	if err := f.Delete(context.Background(), KindFact, "prefers-tabs"); err == nil {
+		t.Fatal("a failing primary was reported as a successful delete")
+	}
+	if len(secondary.deleted) != 0 {
+		t.Errorf("secondary deleted %v, want nothing", secondary.deleted)
+	}
+}
