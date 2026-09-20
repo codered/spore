@@ -150,7 +150,7 @@ The vertical slice: a fact deleted in SQLite becomes a `Delete` at the backend.
 
 ---
 
-- [ ] **Task 03 — Every removal writes a tombstone** <!-- task_03_all_removal_producers.py -->
+- [x] **Task 03 — Every removal writes a tombstone** <!-- task_03_all_removal_producers.py -->
 
 Task 02 covered `UnindexFact`. Two producers remain.
 

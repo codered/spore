@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/codered/spore/internal/provider"
@@ -511,5 +512,81 @@ func TestRecallSyncGainsDelCursor(t *testing.T) {
 	}
 	if cursor != 41 {
 		t.Errorf("cursor = %d, want the 41 the old database recorded", cursor)
+	}
+}
+
+// Nothing deletes a session in spore today, so this trigger fires for nobody.
+// It is wired now because the day something does delete one, the alternative
+// is a silent stack of orphaned vectors nobody thinks to look for.
+func TestMessageDeleteTriggerWritesTombstone(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	sid, err := st.CreateSession(ctx, "t", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := st.AppendMessage(ctx, Message{
+		SessionID:  sid,
+		Role:       "user",
+		BlocksJSON: blocks(t, provider.Block{Type: provider.BlockText, Text: "a searchable line"}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := st.DB().Exec(`DELETE FROM messages WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := countFTS(t, st, "kind = 'message'"); n != 0 {
+		t.Errorf("the message is still in the keyword index (%d rows)", n)
+	}
+	ref := strconv.FormatInt(id, 10)
+	if n := countTombstones(t, st, "kind = 'message' AND ref_id = ?", ref); n != 1 {
+		t.Fatalf("got %d tombstones for the deleted message, want 1", n)
+	}
+}
+
+func TestSummaryDeleteTriggerWritesTombstone(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	sid, err := st.CreateSession(ctx, "t", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSummary(ctx, sid, "what the session was about", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := st.DB().Exec(`DELETE FROM summaries WHERE session_id = ?`, sid); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := countTombstones(t, st, "kind = 'summary' AND ref_id = ?", sid); n != 1 {
+		t.Fatalf("got %d tombstones for the deleted summary, want 1", n)
+	}
+}
+
+// A fact file deleted by hand is invisible to the store: nothing watches the
+// filesystem. The wipe-and-reload at daemon start is what notices, so it is
+// also the only place that can tell the mirror.
+func TestClearFactIndexWritesTombstones(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	for _, name := range []string{"prefers-tabs", "prefers-dark"} {
+		if err := st.IndexFact(ctx, name, "a fact about "+name); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := st.ClearFactIndex(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := countFTS(t, st, "kind = 'fact'"); n != 0 {
+		t.Errorf("the fact index was not cleared (%d rows)", n)
+	}
+	if n := countTombstones(t, st, "kind = 'fact'"); n != 2 {
+		t.Fatalf("got %d tombstones, want one per wiped fact", n)
 	}
 }

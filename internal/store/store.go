@@ -844,10 +844,11 @@ func (s *Store) HasTombstoneKey(ctx context.Context, kind, refID string) (bool, 
 
 // SweepTombstones removes tombstones older than before.
 func (s *Store) SweepTombstones(ctx context.Context, before time.Time) error {
-	// Convert before to RFC3339 format for SQLite comparison
-	beforeStr := before.UTC().Format(time.RFC3339)
+	// The cutoff is formatted with the store's own timeFormat, not RFC3339:
+	// created_at is a string and the comparison is lexicographic, so the two
+	// sides have to be the same shape to order correctly.
 	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM recall_tombstones WHERE created_at < ?`, beforeStr)
+		`DELETE FROM recall_tombstones WHERE created_at < ?`, before.UTC().Format(timeFormat))
 	if err != nil {
 		return fmt.Errorf("sweep tombstones: %w", err)
 	}

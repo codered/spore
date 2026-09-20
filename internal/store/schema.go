@@ -131,11 +131,29 @@ CREATE VIRTUAL TABLE IF NOT EXISTS recall_fts USING fts5(
 -- Deletion is the one sync path a trigger can own, because it needs no
 -- knowledge of the block format. Insertion happens in Go, where the block
 -- types are real types rather than JSON to be re-parsed in SQL.
-CREATE TRIGGER IF NOT EXISTS recall_fts_messages_ad AFTER DELETE ON messages BEGIN
+-- Both triggers are dropped and recreated rather than created IF NOT EXISTS.
+-- They ship in databases written before tombstones existed, and IF NOT EXISTS
+-- would leave those on the old body -- a deletion that removes the keyword row
+-- and tells the mirror nothing, which is the bug this feed closes. A trigger
+-- holds no data, so recreating one costs nothing.
+DROP TRIGGER IF EXISTS recall_fts_messages_ad;
+DROP TRIGGER IF EXISTS recall_fts_summaries_ad;
+
+-- The tombstone is inserted before the delete because it reads the row that
+-- the delete is about to remove. A trigger cannot be attached to an FTS5
+-- virtual table, so this sits in the trigger that already owns the delete
+-- rather than in one trigger on recall_fts.
+CREATE TRIGGER recall_fts_messages_ad AFTER DELETE ON messages BEGIN
+  INSERT INTO recall_tombstones (kind, ref_id, created_at)
+    SELECT kind, ref_id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM recall_fts
+     WHERE kind = 'message' AND ref_id = CAST(old.id AS TEXT);
   DELETE FROM recall_fts WHERE kind = 'message' AND ref_id = CAST(old.id AS TEXT);
 END;
 
-CREATE TRIGGER IF NOT EXISTS recall_fts_summaries_ad AFTER DELETE ON summaries BEGIN
+CREATE TRIGGER recall_fts_summaries_ad AFTER DELETE ON summaries BEGIN
+  INSERT INTO recall_tombstones (kind, ref_id, created_at)
+    SELECT kind, ref_id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM recall_fts
+     WHERE kind = 'summary' AND ref_id = old.session_id;
   DELETE FROM recall_fts WHERE kind = 'summary' AND ref_id = old.session_id;
 END;
 

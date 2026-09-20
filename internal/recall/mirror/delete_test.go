@@ -3,6 +3,7 @@ package mirror
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/codered/spore/internal/store"
@@ -121,5 +122,45 @@ func TestInsertsRunBeforeDeletes(t *testing.T) {
 
 	if len(tgt.calls) != 2 || tgt.calls[0] != "index" || tgt.calls[1] != "delete" {
 		t.Fatalf("calls = %v, want [index delete]", tgt.calls)
+	}
+}
+
+// The end of the path the triggers open: a deleted message loses its vector
+// without anything in the mirror knowing what a message is.
+func TestMessageDeletePropagates(t *testing.T) {
+	ctx := context.Background()
+	st := realStore(t)
+	tgt := &fakeTarget{}
+	m := New(st, tgt, "weaviate", quiet())
+
+	sid, err := st.CreateSession(ctx, "t", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := st.AppendMessage(ctx, store.Message{
+		SessionID:  sid,
+		Role:       "user",
+		BlocksJSON: []byte(`[{"type":"text","text":"a searchable line"}]`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(tgt.got) != 1 {
+		t.Fatalf("the message was not mirrored in the first place: %v", tgt.got)
+	}
+
+	if _, err := st.DB().Exec(`DELETE FROM messages WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	want := strconv.FormatInt(id, 10)
+	if got := tgt.deleted; len(got) != 1 || got[0] != want {
+		t.Fatalf("deleted %v, want [%s]", got, want)
 	}
 }
