@@ -200,7 +200,7 @@ Task 02 covered `UnindexFact`. Two producers remain.
 
 ---
 
-- [ ] **Task 05 — Live Weaviate proof, backlog closed** <!-- task_05_live_weaviate_proof.py -->
+- [x] **Task 05 — Live Weaviate proof, backlog closed** <!-- task_05_live_weaviate_proof.py -->
 
 1. `TestDeletedFactLeavesNoVector` in
    `internal/recall/weaviate/integration_test.go`, under the existing

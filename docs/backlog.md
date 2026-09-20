@@ -78,33 +78,42 @@ The four open questions were answered as follows:
 
 ## Deleting a fact leaves its vector behind
 
-Known gap, shipped that way in 5b, deliberately. The FTS index is written
-inside `AppendMessage`'s transaction and `UnindexFact` deletes the row there,
-but Weaviate is a mirror driven forward from a watermark over `recall_fts` and
-the mirror only moves forward. It has no delete path, so the vector copy of a
-deleted fact survives until the next `recall reindex` and can surface in a
-semantic search in the meantime.
+Closed. The mirror now carries deletions as well as insertions. A removal from
+`recall_fts` writes a row to `recall_tombstones` in the same transaction, and
+the mirror drains that feed under a second cursor, `recall_sync.del_cursor`,
+after each insert pass. `recall.Recall` gained `Delete`, so every backend
+answers for deletion rather than one of them silently lacking it. Design:
+`docs/superpowers/specs/2026-09-19-spore-recall-delete-path-design.md`.
 
-The blast radius is bounded -- a stale hit on content the user removed, never a
-wrong answer to a keyword search, and never data loss -- which is why 5b landed
-without it. Fixing it properly is a delete path through the mirror, which is a
-task of its own rather than something to smuggle into a backend review.
+The three open questions are answered:
 
-**Open questions**
+1. **A tombstone, not a diff.** The tombstone is exact and costs one table plus
+   a seven-day sweep; the diff needed no schema but cost a full scan of both
+   sides and left a stale window measured in minutes. The feed is general over
+   `(kind, ref_id)`: fact deletion is its only producer today, but the
+   `messages` and `summaries` delete triggers write tombstones too, so message
+   and summary deletion work on the day something deletes one.
+2. **Deletion may fail, and is retried rather than lost.** A failed delete
+   stops the pass with the cursor where it was, so the next tick retries the
+   same tombstone; the ones behind it wait. The error is returned rather than
+   swallowed, so `Run` reports the mirror as behind instead of logging that it
+   caught up. This is the head-of-line blocking that insert batches already
+   have.
+3. **`recall reindex` stays the escape hatch**, and now also clears the
+   tombstone table and zeroes `del_cursor` -- deletes queued against a dropped
+   collection mean nothing. It is not worth running on a schedule: the sweep
+   discards a tombstone only after seven days, which is far longer than a
+   sidecar is plausibly down.
 
-1. What does the mirror learn deletions from? The watermark is a high-water
-   mark over an append-only feed, and a deletion is not an append. Either
-   `UnindexFact` writes a tombstone row the feed carries forward, or the
-   mirror periodically diffs its object ids against `recall_fts`. The
-   tombstone is exact and costs a table plus a retention rule; the diff needs
-   no schema change and costs a full scan of both sides.
-2. Is deletion allowed to fail? Every other Weaviate write is non-fatal by
-   design -- the store is a mirror and the keyword index is the record. A
-   delete that silently fails leaves exactly the stale object this entry is
-   about, so it may need a retry that the mirror's forward-only model has no
-   place to put.
-3. Does `recall reindex` stay the escape hatch either way, and is it worth
-   running on a schedule until the delete path exists?
+The one case worth remembering: a fact deleted and written again under the same
+name occupies the same object id, because `objectID` hashes kind and ref id
+alone. Before applying a tombstone the mirror asks whether `recall_fts` holds a
+row for that key, and skips it if so. Without that guard the delete path
+destroys live vectors, which is worse than the bug it fixes.
+
+Proved end to end against a real Weaviate by `TestDeletedFactLeavesNoVector`
+in the `weaviate`-tagged suite: index a fact, find it by semantic search,
+delete it, run one mirror pass, and it is gone.
 
 ## The container tests: both suites have now run
 

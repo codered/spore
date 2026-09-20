@@ -4,12 +4,17 @@ package weaviate
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/codered/spore/internal/recall"
+	"github.com/codered/spore/internal/recall/mirror"
+	"github.com/codered/spore/internal/store"
 )
 
 // This file asserts the same properties the unit tests do, against a real
@@ -141,4 +146,73 @@ func TestLiveRoundTrip(t *testing.T) {
 	if st.Counts[recall.KindFact] != 1 {
 		t.Errorf("fact count = %d, want 1", st.Counts[recall.KindFact])
 	}
+}
+
+// The bug this whole feed exists to close, end to end against a real server:
+// delete a fact and its vector goes with it. Every other test in the tree
+// proves a part -- that a tombstone is written, that the mirror drains it,
+// that a DELETE goes out. Only this one proves the vector is actually gone
+// from a store that has really embedded it.
+func TestDeletedFactLeavesNoVector(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	b := liveBackend(t)
+
+	if err := b.DropAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.EnsureCollection(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	m := mirror.New(st, b, Name, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	const fact = "takes-coffee-black"
+	if err := st.IndexFact(ctx, fact, "the user drinks their coffee black"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Once(ctx); err != nil {
+		t.Fatalf("mirror pass: %v", err)
+	}
+	// Indexing is asynchronous server-side; wait rather than asserting into a
+	// race.
+	time.Sleep(3 * time.Second)
+
+	hits, err := b.Search(ctx, recall.Query{Text: "what does the user drink", K: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !holds(hits, fact) {
+		t.Fatalf("the fact never reached the vector store, so the deletion proves nothing: %v", hits)
+	}
+
+	if err := st.UnindexFact(ctx, fact); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Once(ctx); err != nil {
+		t.Fatalf("mirror pass after the deletion: %v", err)
+	}
+	time.Sleep(3 * time.Second)
+
+	hits, err = b.Search(ctx, recall.Query{Text: "what does the user drink", K: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if holds(hits, fact) {
+		t.Fatalf("the deleted fact is still searchable: %v", hits)
+	}
+}
+
+func holds(hits []recall.Hit, refID string) bool {
+	for _, h := range hits {
+		if h.ID == refID {
+			return true
+		}
+	}
+	return false
 }
