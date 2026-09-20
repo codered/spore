@@ -180,7 +180,7 @@ Task 02 covered `UnindexFact`. Two producers remain.
 
 ---
 
-- [ ] **Task 04 — Sweep and reindex reset** <!-- task_04_sweep_and_reset.py -->
+- [x] **Task 04 — Sweep and reindex reset** <!-- task_04_sweep_and_reset.py -->
 
 1. `tombstoneTTL = 7 * 24 * time.Hour`, a package constant in `mirror` beside
    `batchSize`. At the end of each pass, sweep rows older than it — a store

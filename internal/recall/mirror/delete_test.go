@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/codered/spore/internal/store"
 )
@@ -162,5 +163,111 @@ func TestMessageDeletePropagates(t *testing.T) {
 	want := strconv.FormatInt(id, 10)
 	if got := tgt.deleted; len(got) != 1 || got[0] != want {
 		t.Fatalf("deleted %v, want [%s]", got, want)
+	}
+}
+
+// timeFormat is the shape the store writes created_at in. The tests below
+// write the column directly rather than sleeping, so the age of a tombstone is
+// a fact about the row instead of a fact about how long the test ran.
+const timeFormat = "2006-01-02T15:04:05.000000000Z07:00"
+
+func writeTombstone(t *testing.T, st *store.Store, refID string, age time.Duration) {
+	t.Helper()
+	when := time.Now().UTC().Add(-age).Format(timeFormat)
+	if _, err := st.DB().Exec(
+		`INSERT INTO recall_tombstones (kind, ref_id, created_at) VALUES ('fact', ?, ?)`,
+		refID, when); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func countTombstones(t *testing.T, st *store.Store) int {
+	t.Helper()
+	var n int
+	if err := st.DB().QueryRow(`SELECT count(*) FROM recall_tombstones`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// The table is bounded by the sweep alone. Without it the feed grows with the
+// history of every deletion the installation has ever made.
+func TestSweepDropsAgedTombstones(t *testing.T) {
+	ctx := context.Background()
+	st := realStore(t)
+	m := New(st, &fakeTarget{}, "weaviate", quiet())
+
+	writeTombstone(t, st, "long-gone", tombstoneTTL+time.Hour)
+
+	if _, err := m.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := countTombstones(t, st); n != 0 {
+		t.Fatalf("%d tombstones survived the sweep, want 0", n)
+	}
+}
+
+// A tombstone inside the window stays, because a backend that has not caught
+// up yet still has to see it.
+func TestSweepSparesFreshTombstones(t *testing.T) {
+	ctx := context.Background()
+	st := realStore(t)
+	m := New(st, &fakeTarget{}, "weaviate", quiet())
+
+	writeTombstone(t, st, "just-deleted", time.Hour)
+
+	if _, err := m.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := countTombstones(t, st); n != 1 {
+		t.Fatalf("got %d tombstones, want the fresh one kept", n)
+	}
+}
+
+// `recall reindex` drops the collection and rebuilds recall_fts, which
+// renumbers every rowid. Deletes queued against the collection that no longer
+// exists mean nothing, and a del_cursor pointing into a cleared table would
+// silence the tombstones written after it.
+func TestResetClearsTombstonesAndDelCursor(t *testing.T) {
+	ctx := context.Background()
+	st := realStore(t)
+	tgt := &fakeTarget{}
+	m := New(st, tgt, "weaviate", quiet())
+
+	if err := st.IndexFact(ctx, "prefers-tabs", "the user prefers tabs"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UnindexFact(ctx, "prefers-tabs"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if del, err := st.SyncDelCursor(ctx, "weaviate"); err != nil || del == 0 {
+		t.Fatalf("del_cursor = %d (err %v); the test needs it moved before Reset", del, err)
+	}
+
+	if err := m.Reset(ctx); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+
+	if n := countTombstones(t, st); n != 0 {
+		t.Errorf("%d tombstones survived Reset, want 0", n)
+	}
+	del, err := st.SyncDelCursor(ctx, "weaviate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if del != 0 {
+		t.Errorf("del_cursor = %d after Reset, want 0", del)
+	}
+	cursor, err := st.SyncCursor(ctx, "weaviate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor != 0 {
+		t.Errorf("cursor = %d after Reset, want 0", cursor)
 	}
 }
