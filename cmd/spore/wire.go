@@ -102,7 +102,7 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 			if ws == "" {
 				ws = os.Getenv("ANTHROPIC_WORKSPACE_ID")
 			}
-			reg.Register(name, anthropic.New(pc.BaseURL, pc.APIKey, ws, nil), price)
+			reg.Register(name, anthropic.New(pc.BaseURL, pc.APIKey, ws, pc.CacheEnabled(), nil), price)
 		case "openai", "openai-compatible":
 			if pc.BaseURL == "" {
 				return nil, nil, nil, nil, fmt.Errorf("provider %q: base_url is required for kind %q", name, pc.Kind)

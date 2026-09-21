@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -34,7 +35,7 @@ func TestStreamParsesTextToolCallAndUsage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", "wrkspc_test", srv.Client())
+	c := New(srv.URL, "sk-test", "wrkspc_test", true, srv.Client())
 	ch, err := c.Stream(context.Background(), provider.Request{
 		Model:     "claude-opus-5",
 		System:    []provider.Block{{Type: provider.BlockText, Text: "you are spore"}},
@@ -77,8 +78,15 @@ func TestStreamParsesTextToolCallAndUsage(t *testing.T) {
 	if usage.InputTokens != 112 || usage.OutputTokens != 37 {
 		t.Errorf("usage = %+v", usage)
 	}
-	if gotBody["system"] != "you are spore" || gotBody["stream"] != true {
-		t.Errorf("request body = %+v", gotBody)
+	systemBlocks, ok := gotBody["system"].([]any)
+	if !ok || len(systemBlocks) != 1 {
+		t.Errorf("system blocks = %+v, want array with 1 block", gotBody["system"])
+	}
+	if blockText, ok := systemBlocks[0].(map[string]any)["text"].(string); !ok || blockText != "you are spore" {
+		t.Errorf("system block text = %+v, want 'you are spore'", systemBlocks[0])
+	}
+	if gotBody["stream"] != true {
+		t.Errorf("stream = %+v, want true", gotBody["stream"])
 	}
 }
 
@@ -89,7 +97,7 @@ func TestStreamSurfacesHTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", "wrkspc_test", srv.Client())
+	c := New(srv.URL, "sk-test", "wrkspc_test", true, srv.Client())
 	_, err := c.Stream(context.Background(), provider.Request{Model: "nope", MaxTokens: 16})
 	if err == nil {
 		t.Fatal("Stream succeeded on a 400; want error")
@@ -107,7 +115,7 @@ func TestStreamTruncatedWithoutMessageStopIsAnError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", "wrkspc_test", srv.Client())
+	c := New(srv.URL, "sk-test", "wrkspc_test", true, srv.Client())
 	ch, err := c.Stream(context.Background(), provider.Request{Model: "claude-opus-5", MaxTokens: 1024})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -139,7 +147,7 @@ func TestStreamSurfacesUpstreamErrorEvent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", "wrkspc_test", srv.Client())
+	c := New(srv.URL, "sk-test", "wrkspc_test", true, srv.Client())
 	ch, err := c.Stream(context.Background(), provider.Request{Model: "claude-opus-5", MaxTokens: 1024})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -205,7 +213,7 @@ func TestToWireSendsToolResultAsUserRole(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", "wrkspc_test", srv.Client())
+	c := New(srv.URL, "sk-test", "wrkspc_test", true, srv.Client())
 	ch, err := c.Stream(context.Background(), provider.Request{
 		Model:     "claude-opus-5",
 		MaxTokens: 1024,
@@ -247,7 +255,7 @@ func TestStreamOmitsWorkspaceHeaderThenAdoptsTheDefault(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", "", srv.Client())
+	c := New(srv.URL, "sk-test", "", true, srv.Client())
 	for i := 0; i < 2; i++ {
 		ch, err := c.Stream(context.Background(), provider.Request{Model: "claude-opus-5", MaxTokens: 16})
 		if err != nil {
@@ -285,7 +293,7 @@ func TestStreamRetriesWithDefaultWorkspaceOn400(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", "", srv.Client())
+	c := New(srv.URL, "sk-test", "", true, srv.Client())
 	ch, err := c.Stream(context.Background(), provider.Request{Model: "claude-opus-5", MaxTokens: 16})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -307,12 +315,103 @@ func TestStreamWorkspaceErrorIsActionable(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", "", srv.Client())
+	c := New(srv.URL, "sk-test", "", true, srv.Client())
 	_, err := c.Stream(context.Background(), provider.Request{Model: "claude-opus-5", MaxTokens: 16})
 	if err == nil {
 		t.Fatal("Stream succeeded on a 400; want error")
 	}
 	if !strings.Contains(err.Error(), "workspace_id") {
 		t.Errorf("error = %q, want it to name workspace_id", err)
+	}
+}
+
+// bodyOf runs one Stream against a recording server and returns the decoded
+// request body. The wire format is the contract with the API, so it is
+// asserted on the bytes rather than on an intermediate struct.
+func bodyOf(t *testing.T, cache bool, req provider.Request) map[string]any {
+	t.Helper()
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New(srv.URL, "k", "", cache, nil)
+	ch, err := c.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+	return got
+}
+
+func cachedRequest() provider.Request {
+	return provider.Request{
+		Model:     "claude-opus-5",
+		MaxTokens: 100,
+		System: []provider.Block{
+			{Type: provider.BlockText, Text: "stable"},
+			{Type: provider.BlockText, Text: "summary", CacheBreak: true},
+		},
+		Messages: []provider.Message{{Role: provider.RoleUser, Blocks: []provider.Block{
+			{Type: provider.BlockText, Text: "hello", CacheBreak: true},
+			{Type: provider.BlockText, Text: "env"},
+		}}},
+	}
+}
+
+func TestSystemIsBlocksWithCacheControlOnTheMarkedOne(t *testing.T) {
+	body := bodyOf(t, true, cachedRequest())
+
+	blocks, ok := body["system"].([]any)
+	if !ok {
+		t.Fatalf("system = %T, want an array of blocks", body["system"])
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("got %d system blocks, want 2", len(blocks))
+	}
+	if _, marked := blocks[0].(map[string]any)["cache_control"]; marked {
+		t.Error("the first system block carries cache_control; only the last should")
+	}
+	cc, marked := blocks[1].(map[string]any)["cache_control"].(map[string]any)
+	if !marked {
+		t.Fatal("the last system block carries no cache_control")
+	}
+	if cc["type"] != "ephemeral" {
+		t.Errorf("cache_control type = %v, want ephemeral", cc["type"])
+	}
+}
+
+func TestMessageBreakpointRendersAndTheEnvironmentDoesNot(t *testing.T) {
+	body := bodyOf(t, true, cachedRequest())
+
+	msgs := body["messages"].([]any)
+	content := msgs[0].(map[string]any)["content"].([]any)
+	if _, marked := content[0].(map[string]any)["cache_control"]; !marked {
+		t.Error("the marked message block carries no cache_control")
+	}
+	if _, marked := content[1].(map[string]any)["cache_control"]; marked {
+		t.Error("the environment block carries cache_control; it changes every turn")
+	}
+}
+
+// The escape hatch exists for a proxy that rejects the field.
+func TestCacheDisabledEmitsNoCacheControl(t *testing.T) {
+	body := bodyOf(t, false, cachedRequest())
+
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("cache_control")) {
+		t.Fatalf("cache_control was sent with caching off: %s", raw)
+	}
+	if _, ok := body["system"].([]any); !ok {
+		t.Errorf("system = %T, want an array of blocks even with caching off", body["system"])
 	}
 }

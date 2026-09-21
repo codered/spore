@@ -122,7 +122,14 @@ type ProviderConfig struct {
 	WorkspaceID string  `toml:"workspace_id"`
 	PriceIn     float64 `toml:"price_in"`
 	PriceOut    float64 `toml:"price_out"`
+	// Cache turns prompt caching on for an anthropic provider. Unset means
+	// true: cheaper and faster is the right default, and an operator should
+	// not have to find a flag to get it.
+	Cache *bool `toml:"cache"`
 }
+
+// CacheEnabled reports whether to send cache breakpoints. Unset is true.
+func (p ProviderConfig) CacheEnabled() bool { return p.Cache == nil || *p.Cache }
 
 // Route maps call sites to a model ref. When is a regexp matched against the
 // whole call-site name.
