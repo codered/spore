@@ -79,23 +79,29 @@ func (c *Client) toWire(msgs []provider.Message) []map[string]any {
 		role := string(m.Role)
 		blocks := make([]map[string]any, 0, len(m.Blocks))
 		for _, b := range m.Blocks {
-			var wb wireBlock
+			var blk map[string]any
 			switch b.Type {
 			case provider.BlockToolResult:
 				// Anthropic carries tool results on a user-role message.
 				role = "user"
-				wb = wireBlock{Type: "tool_result", ToolUseID: b.ID, Content: b.Content, IsError: b.IsError}
+				blk = map[string]any{"type": "tool_result", "tool_use_id": b.ID}
+				if b.Content != "" {
+					blk["content"] = b.Content
+				}
+				if b.IsError {
+					blk["is_error"] = true
+				}
 			case provider.BlockToolUse:
-				wb = wireBlock{Type: "tool_use", ID: b.ID, Name: b.Name, Input: b.Input}
+				blk = map[string]any{"type": "tool_use", "id": b.ID, "name": b.Name}
+				if len(b.Input) > 0 {
+					blk["input"] = b.Input
+				}
 			default:
-				wb = wireBlock{Type: "text", Text: b.Text}
+				blk = map[string]any{"type": "text"}
+				if b.Text != "" {
+					blk["text"] = b.Text
+				}
 			}
-
-			// Marshal to JSON to apply omitempty, then unmarshal to map
-			// to allow cache_control injection while preserving the original wire format.
-			data, _ := json.Marshal(wb)
-			blk := make(map[string]any)
-			json.Unmarshal(data, &blk)
 
 			if c.cache && b.CacheBreak {
 				blk["cache_control"] = cacheControl
@@ -117,7 +123,10 @@ func (c *Client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 	if len(req.System) > 0 {
 		blocks := make([]map[string]any, 0, len(req.System))
 		for _, b := range req.System {
-			blk := map[string]any{"type": "text", "text": b.Text}
+			blk := map[string]any{"type": "text"}
+			if b.Text != "" {
+				blk["text"] = b.Text
+			}
 			if c.cache && b.CacheBreak {
 				blk["cache_control"] = cacheControl
 			}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -462,5 +463,56 @@ func TestToWireOmitsZeroValuedOptionalFields(t *testing.T) {
 	errorResult := toolResultContent[1].(map[string]any)
 	if isError, ok := errorResult["is_error"].(bool); !ok || !isError {
 		t.Errorf("error tool_result should have is_error=true, got: %+v", errorResult)
+	}
+}
+
+// TestInputPrecisionPreserved verifies that Input (json.RawMessage) containing
+// large integers and trailing-zero decimals are preserved exactly as-is on the wire.
+// This is critical because Input carries tool arguments that spore echoes back
+// to the API in multi-turn history. We assert on raw bytes, not decoded maps,
+// because decoding to float64 is the very step that destroys the evidence.
+func TestInputPrecisionPreserved(t *testing.T) {
+	// Input with large integer (exceeds float64 safe integer limit) and trailing-zero decimal
+	inputJSON := `{"count":9007199254740993,"amount":1.50}`
+	req := provider.Request{
+		Model:     "claude-opus-5",
+		MaxTokens: 100,
+		Messages: []provider.Message{{
+			Role: provider.RoleAssistant,
+			Blocks: []provider.Block{{
+				Type:  provider.BlockToolUse,
+				ID:    "tool_1",
+				Name:  "test",
+				Input: json.RawMessage(inputJSON),
+			}},
+		}},
+	}
+
+	var rawBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		rawBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "k", "", true, nil)
+	ch, err := c.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+
+	// Verify the exact input literal appears in the wire bytes before any decoding
+	if !bytes.Contains(rawBody, []byte(`"count":9007199254740993`)) {
+		t.Errorf("large integer lost precision: wire body=%s, want literal %q present", string(rawBody), `"count":9007199254740993`)
+	}
+	if !bytes.Contains(rawBody, []byte(`"amount":1.50`)) {
+		t.Errorf("trailing-zero decimal formatting lost: wire body=%s, want literal %q present", string(rawBody), `"amount":1.50`)
 	}
 }
