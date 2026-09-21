@@ -84,7 +84,10 @@ func (c *Client) toWire(msgs []provider.Message) []map[string]any {
 			case provider.BlockToolResult:
 				// Anthropic carries tool results on a user-role message.
 				role = "user"
-				blk = map[string]any{"type": "tool_result", "tool_use_id": b.ID}
+				blk = map[string]any{"type": "tool_result"}
+				if b.ID != "" {
+					blk["tool_use_id"] = b.ID
+				}
 				if b.Content != "" {
 					blk["content"] = b.Content
 				}
@@ -92,7 +95,13 @@ func (c *Client) toWire(msgs []provider.Message) []map[string]any {
 					blk["is_error"] = true
 				}
 			case provider.BlockToolUse:
-				blk = map[string]any{"type": "tool_use", "id": b.ID, "name": b.Name}
+				blk = map[string]any{"type": "tool_use"}
+				if b.ID != "" {
+					blk["id"] = b.ID
+				}
+				if b.Name != "" {
+					blk["name"] = b.Name
+				}
 				if len(b.Input) > 0 {
 					blk["input"] = b.Input
 				}

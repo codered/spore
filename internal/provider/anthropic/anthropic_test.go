@@ -429,6 +429,7 @@ func TestToWireOmitsZeroValuedOptionalFields(t *testing.T) {
 				Role: provider.RoleAssistant,
 				Blocks: []provider.Block{
 					{Type: provider.BlockToolUse, ID: "tool_1", Name: "test_tool", Input: nil},
+					{Type: provider.BlockToolUse, ID: "", Name: "", Input: nil},
 				},
 			},
 			{
@@ -436,6 +437,7 @@ func TestToWireOmitsZeroValuedOptionalFields(t *testing.T) {
 				Blocks: []provider.Block{
 					{Type: provider.BlockToolResult, ID: "tool_1", Content: "success"},
 					{Type: provider.BlockToolResult, ID: "tool_2", Content: "error", IsError: true},
+					{Type: provider.BlockToolResult, ID: "", Content: ""},
 				},
 			},
 		},
@@ -451,6 +453,15 @@ func TestToWireOmitsZeroValuedOptionalFields(t *testing.T) {
 		t.Errorf("tool_use with nil input should omit the input field, but it's present in: %+v", toolUseBlock)
 	}
 
+	// Check that tool_use with empty ID and Name omits both fields.
+	emptyToolUseBlock := toolUseContent[1].(map[string]any)
+	if _, hasID := emptyToolUseBlock["id"]; hasID {
+		t.Errorf("tool_use with empty ID should omit the id field, but it's present in: %+v", emptyToolUseBlock)
+	}
+	if _, hasName := emptyToolUseBlock["name"]; hasName {
+		t.Errorf("tool_use with empty Name should omit the name field, but it's present in: %+v", emptyToolUseBlock)
+	}
+
 	// Check that successful tool_result omits is_error field.
 	toolResultMsg := msgs[1].(map[string]any)
 	toolResultContent := toolResultMsg["content"].([]any)
@@ -463,6 +474,12 @@ func TestToWireOmitsZeroValuedOptionalFields(t *testing.T) {
 	errorResult := toolResultContent[1].(map[string]any)
 	if isError, ok := errorResult["is_error"].(bool); !ok || !isError {
 		t.Errorf("error tool_result should have is_error=true, got: %+v", errorResult)
+	}
+
+	// Check that tool_result with empty ID omits the tool_use_id field.
+	emptyToolResultBlock := toolResultContent[2].(map[string]any)
+	if _, hasToolUseID := emptyToolResultBlock["tool_use_id"]; hasToolUseID {
+		t.Errorf("tool_result with empty ID should omit the tool_use_id field, but it's present in: %+v", emptyToolResultBlock)
 	}
 }
 
