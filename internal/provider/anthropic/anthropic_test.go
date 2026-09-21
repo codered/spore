@@ -533,3 +533,37 @@ func TestInputPrecisionPreserved(t *testing.T) {
 		t.Errorf("trailing-zero decimal formatting lost: wire body=%s, want literal %q present", string(rawBody), `"amount":1.50`)
 	}
 }
+
+// The counters are the only ground truth that caching works: when it breaks,
+// requests keep succeeding and the bill just goes up.
+func TestStreamReadsCacheCounters(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"usage":` +
+			`{"input_tokens":7,"output_tokens":0,` +
+			`"cache_creation_input_tokens":1200,"cache_read_input_tokens":9000}}}` + "\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	ch, err := New(srv.URL, "k", "", true, nil).Stream(context.Background(), provider.Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got provider.Usage
+	for ev := range ch {
+		if ev.Usage != nil {
+			got = *ev.Usage
+		}
+	}
+
+	if got.CacheWriteTokens != 1200 {
+		t.Errorf("CacheWriteTokens = %d, want 1200", got.CacheWriteTokens)
+	}
+	if got.CacheReadTokens != 9000 {
+		t.Errorf("CacheReadTokens = %d, want 9000", got.CacheReadTokens)
+	}
+	if got.InputTokens != 7 {
+		t.Errorf("InputTokens = %d, want 7 -- it is the uncached remainder only", got.InputTokens)
+	}
+}

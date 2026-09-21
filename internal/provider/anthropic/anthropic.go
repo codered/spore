@@ -274,8 +274,10 @@ func (c *Client) parse(rc io.ReadCloser, ch chan<- provider.Event) {
 			Index   int    `json:"index"`
 			Message struct {
 				Usage struct {
-					InputTokens  int `json:"input_tokens"`
-					OutputTokens int `json:"output_tokens"`
+					InputTokens              int `json:"input_tokens"`
+					OutputTokens             int `json:"output_tokens"`
+					CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+					CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 				} `json:"usage"`
 			} `json:"message"`
 			ContentBlock wireBlock `json:"content_block"`
@@ -301,6 +303,8 @@ func (c *Client) parse(rc io.ReadCloser, ch chan<- provider.Event) {
 		switch ev.Type {
 		case "message_start":
 			usage.InputTokens = ev.Message.Usage.InputTokens
+			usage.CacheWriteTokens = ev.Message.Usage.CacheCreationInputTokens
+			usage.CacheReadTokens = ev.Message.Usage.CacheReadInputTokens
 		case "content_block_start":
 			if ev.ContentBlock.Type == "tool_use" {
 				tools[ev.Index] = &pending{id: ev.ContentBlock.ID, name: ev.ContentBlock.Name}

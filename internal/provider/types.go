@@ -63,8 +63,12 @@ type Request struct {
 }
 
 type Usage struct {
-	InputTokens  int
-	OutputTokens int
+	// InputTokens is the uncached remainder, not the prompt size: the whole
+	// prompt is InputTokens + CacheWriteTokens + CacheReadTokens.
+	InputTokens      int
+	OutputTokens     int
+	CacheWriteTokens int
+	CacheReadTokens  int
 }
 
 type EventType string
