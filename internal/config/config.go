@@ -122,6 +122,10 @@ type ProviderConfig struct {
 	WorkspaceID string  `toml:"workspace_id"`
 	PriceIn     float64 `toml:"price_in"`
 	PriceOut    float64 `toml:"price_out"`
+	// PriceCacheWrite and PriceCacheRead are USD per million tokens for
+	// cached input. Unset, they default to 1.25x and 0.10x of PriceIn.
+	PriceCacheWrite float64 `toml:"price_cache_write"`
+	PriceCacheRead  float64 `toml:"price_cache_read"`
 	// Cache turns prompt caching on for an anthropic provider. Unset means
 	// true: cheaper and faster is the right default, and an operator should
 	// not have to find a flag to get it.

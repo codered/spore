@@ -6,11 +6,30 @@ import (
 	"sync"
 )
 
-// ProviderPrice is USD per million tokens.
-type ProviderPrice struct{ In, Out float64 }
+// ProviderPrice is USD per million tokens. CacheWrite and CacheRead are
+// optional: unset, they default to the usual multipliers of In. They are
+// settable because the multipliers are not universal -- Fable 5.1 reads at
+// 0.025x -- and an operator should not wait for a spore release to price
+// their model correctly.
+type ProviderPrice struct{ In, Out, CacheWrite, CacheRead float64 }
+
+const (
+	defaultCacheWriteMultiplier = 1.25
+	defaultCacheReadMultiplier  = 0.10
+)
 
 func (p ProviderPrice) Cost(u Usage) float64 {
-	return float64(u.InputTokens)/1e6*p.In + float64(u.OutputTokens)/1e6*p.Out
+	write, read := p.CacheWrite, p.CacheRead
+	if write == 0 {
+		write = p.In * defaultCacheWriteMultiplier
+	}
+	if read == 0 {
+		read = p.In * defaultCacheReadMultiplier
+	}
+	return float64(u.InputTokens)/1e6*p.In +
+		float64(u.OutputTokens)/1e6*p.Out +
+		float64(u.CacheWriteTokens)/1e6*write +
+		float64(u.CacheReadTokens)/1e6*read
 }
 
 type entry struct {

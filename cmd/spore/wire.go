@@ -95,7 +95,10 @@ func buildRecall(cfg *config.Config, st *store.Store, log *slog.Logger) (recall.
 func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (*agent.Agent, *mcphost.Host, *mirror.Mirror, *subagent.Supervisor, error) {
 	reg := provider.NewRegistry()
 	for name, pc := range cfg.Providers {
-		price := provider.ProviderPrice{In: pc.PriceIn, Out: pc.PriceOut}
+		price := provider.ProviderPrice{
+			In: pc.PriceIn, Out: pc.PriceOut,
+			CacheWrite: pc.PriceCacheWrite, CacheRead: pc.PriceCacheRead,
+		}
 		switch pc.Kind {
 		case "anthropic":
 			ws := pc.WorkspaceID
