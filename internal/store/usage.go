@@ -6,14 +6,17 @@ import "context"
 // across every session; the numbers come from the columns AppendMessage has
 // always written.
 type UsageRow struct {
-	Model     string  `json:"model"`
-	Turns     int     `json:"turns"`
-	TokensIn  int     `json:"tokens_in"`
-	TokensOut int     `json:"tokens_out"`
-	CostUSD   float64 `json:"cost_usd"`
+	Model            string  `json:"model"`
+	Turns            int     `json:"turns"`
+	TokensIn         int     `json:"tokens_in"`
+	TokensOut        int     `json:"tokens_out"`
+	TokensCacheWrite int     `json:"tokens_cache_write"`
+	TokensCacheRead  int     `json:"tokens_cache_read"`
+	CostUSD          float64 `json:"cost_usd"`
 }
 
-const usageSelect = `SELECT model, count(*), sum(tokens_in), sum(tokens_out), sum(cost_usd)
+const usageSelect = `SELECT model, count(*), sum(tokens_in), sum(tokens_out),
+  sum(tokens_cache_write), sum(tokens_cache_read), sum(cost_usd)
   FROM messages WHERE tokens_in > 0 OR tokens_out > 0 OR cost_usd > 0`
 
 func (s *Store) SessionUsage(ctx context.Context, sessionID string) ([]UsageRow, error) {
@@ -33,7 +36,7 @@ func (s *Store) usage(ctx context.Context, query string, args ...any) ([]UsageRo
 	var out []UsageRow
 	for rows.Next() {
 		var r UsageRow
-		if err := rows.Scan(&r.Model, &r.Turns, &r.TokensIn, &r.TokensOut, &r.CostUSD); err != nil {
+		if err := rows.Scan(&r.Model, &r.Turns, &r.TokensIn, &r.TokensOut, &r.TokensCacheWrite, &r.TokensCacheRead, &r.CostUSD); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

@@ -30,14 +30,16 @@ type SessionJSON struct {
 }
 
 type MessageJSON struct {
-	Seq       int              `json:"seq"`
-	Role      string           `json:"role"`
-	Blocks    []provider.Block `json:"blocks"`
-	Model     string           `json:"model,omitempty"`
-	TokensIn  int              `json:"tokens_in,omitempty"`
-	TokensOut int              `json:"tokens_out,omitempty"`
-	CostUSD   float64          `json:"cost_usd,omitempty"`
-	CreatedAt time.Time        `json:"created_at"`
+	Seq              int              `json:"seq"`
+	Role             string           `json:"role"`
+	Blocks           []provider.Block `json:"blocks"`
+	Model            string           `json:"model,omitempty"`
+	TokensIn         int              `json:"tokens_in,omitempty"`
+	TokensOut        int              `json:"tokens_out,omitempty"`
+	TokensCacheWrite int              `json:"tokens_cache_write,omitempty"`
+	TokensCacheRead  int              `json:"tokens_cache_read,omitempty"`
+	CostUSD          float64          `json:"cost_usd,omitempty"`
+	CreatedAt        time.Time        `json:"created_at"`
 }
 
 type TranscriptJSON struct {
@@ -218,7 +220,7 @@ func (s *Server) handleShowSession(w http.ResponseWriter, r *http.Request) {
 		}
 		out.Messages = append(out.Messages, MessageJSON{
 			Seq: m.Seq, Role: m.Role, Blocks: blocks, Model: m.Model,
-			TokensIn: m.TokensIn, TokensOut: m.TokensOut, CostUSD: m.CostUSD,
+			TokensIn: m.TokensIn, TokensOut: m.TokensOut, TokensCacheWrite: m.TokensCacheWrite, TokensCacheRead: m.TokensCacheRead, CostUSD: m.CostUSD,
 			CreatedAt: m.CreatedAt,
 		})
 	}

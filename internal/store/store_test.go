@@ -897,3 +897,65 @@ func TestMigrateSessionsAddsParentID(t *testing.T) {
 		t.Errorf("migrated ParentID = %q, want empty", got.ParentID)
 	}
 }
+
+// A database written before caching existed must gain the columns on open.
+// The migration is only real if Open calls it: a migration function that
+// exists and is never called is the defect that shipped on the last change.
+func TestMessagesGainCacheTokenColumns(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	sid, err := st.CreateSession(ctx, "t", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := st.AppendMessage(ctx, Message{
+		SessionID: sid, Role: "assistant", BlocksJSON: []byte(`[]`),
+		Model: "m", TokensIn: 3, TokensOut: 4,
+		TokensCacheWrite: 100, TokensCacheRead: 900,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := st.SessionUsage(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d usage rows, want 1", len(rows))
+	}
+	if rows[0].TokensCacheWrite != 100 || rows[0].TokensCacheRead != 900 {
+		t.Fatalf("cache tokens = %d/%d, want 100/900",
+			rows[0].TokensCacheWrite, rows[0].TokensCacheRead)
+	}
+}
+
+func TestOpenAddsCacheColumnsToAnOlderDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	old, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`CREATE TABLE messages (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_id TEXT NOT NULL, seq INTEGER NOT NULL, role TEXT NOT NULL,
+		blocks TEXT NOT NULL, model TEXT NOT NULL DEFAULT '',
+		call_site TEXT NOT NULL DEFAULT '', tokens_in INTEGER NOT NULL DEFAULT 0,
+		tokens_out INTEGER NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL, UNIQUE (session_id, seq))`); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	if _, err := st.TotalUsage(context.Background()); err != nil {
+		t.Fatalf("TotalUsage on a migrated database: %v", err)
+	}
+}

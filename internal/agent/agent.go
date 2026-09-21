@@ -171,7 +171,9 @@ func (a *Agent) appendMessage(ctx context.Context, sessionID string, role provid
 	}
 	_, err = a.Store.AppendMessage(ctx, store.Message{
 		SessionID: sessionID, Role: string(role), BlocksJSON: raw,
-		Model: model, CallSite: site, TokensIn: u.InputTokens, TokensOut: u.OutputTokens, CostUSD: cost,
+		Model: model, CallSite: site, TokensIn: u.InputTokens, TokensOut: u.OutputTokens,
+		TokensCacheWrite: u.CacheWriteTokens, TokensCacheRead: u.CacheReadTokens,
+		CostUSD: cost,
 	})
 	return err
 }
