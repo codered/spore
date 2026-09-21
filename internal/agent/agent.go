@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -265,7 +266,11 @@ func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Eve
 		}
 		blocks = append(blocks, calls...)
 		cost := price.Cost(usage)
-		sporetrace.EndLLM(llmSpan, req.System, text, usage, cost)
+		var sysPrompt strings.Builder
+		for _, b := range req.System {
+			sysPrompt.WriteString(b.Text)
+		}
+		sporetrace.EndLLM(llmSpan, sysPrompt.String(), text, usage, cost)
 		pctx, cancelPersist := persistCtx(ctx)
 		err = a.appendMessage(pctx, sessionID, provider.RoleAssistant, blocks, ref, site, usage, cost)
 		cancelPersist()

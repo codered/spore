@@ -29,14 +29,14 @@ func TestAssembleOrdersSystemFactsSummaryThenTail(t *testing.T) {
 	// Use large budget to inline the facts, testing the inline rendering path.
 	req := Assemble(snap, config.ContextConfig{MaxTokens: 1000, CompactAt: 0.75, KeepRecent: 10, FactBudget: 1000})
 
-	if !strings.HasPrefix(req.System, "you are spore") {
-		t.Errorf("System does not start with the system prompt: %q", req.System)
+	if !strings.HasPrefix(systemText(req.System), "you are spore") {
+		t.Errorf("System does not start with the system prompt: %q", systemText(req.System))
 	}
 	// With FactBudget large enough, facts are inlined and their body text appears.
-	factsAt := strings.Index(req.System, "Uses Go for most projects.")
-	summaryAt := strings.Index(req.System, "earlier: the user set up spore")
+	factsAt := strings.Index(systemText(req.System), "Uses Go for most projects.")
+	summaryAt := strings.Index(systemText(req.System), "earlier: the user set up spore")
 	if factsAt < 0 || summaryAt < 0 || factsAt > summaryAt {
-		t.Errorf("facts must precede the summary; system = %q", req.System)
+		t.Errorf("facts must precede the summary; system = %q", systemText(req.System))
 	}
 	if len(req.Messages) != 2 {
 		t.Fatalf("Messages = %d, want 2", len(req.Messages))
@@ -125,12 +125,12 @@ func TestAssembleInlinesFactsUnderBudget(t *testing.T) {
 	}
 	req := Assemble(snap, config.ContextConfig{FactBudget: 1000})
 	for _, want := range []string{"### alpha", "Alpha body.", "### beta", "Beta body."} {
-		if !strings.Contains(req.System, want) {
-			t.Fatalf("system block missing %q:\n%s", want, req.System)
+		if !strings.Contains(systemText(req.System), want) {
+			t.Fatalf("system block missing %q:\n%s", want, systemText(req.System))
 		}
 	}
-	if strings.Contains(req.System, "recall_search") {
-		t.Fatalf("no overflow expected, but the overflow heading is present:\n%s", req.System)
+	if strings.Contains(systemText(req.System), "recall_search") {
+		t.Fatalf("no overflow expected, but the overflow heading is present:\n%s", systemText(req.System))
 	}
 }
 
@@ -142,23 +142,23 @@ func TestAssembleOverflowsToDescriptions(t *testing.T) {
 		Summary: "earlier events",
 	}
 	req := Assemble(snap, config.ContextConfig{FactBudget: 100})
-	if !strings.Contains(req.System, "tiny") {
-		t.Fatalf("the fact that fits was not inlined:\n%s", req.System)
+	if !strings.Contains(systemText(req.System), "tiny") {
+		t.Fatalf("the fact that fits was not inlined:\n%s", systemText(req.System))
 	}
-	if strings.Contains(req.System, big) {
+	if strings.Contains(systemText(req.System), big) {
 		t.Fatal("the oversized fact body was inlined despite the budget")
 	}
-	if !strings.Contains(req.System, "- zzz: the big one") {
-		t.Fatalf("overflow fact missing its description line:\n%s", req.System)
+	if !strings.Contains(systemText(req.System), "- zzz: the big one") {
+		t.Fatalf("overflow fact missing its description line:\n%s", systemText(req.System))
 	}
-	if !strings.Contains(req.System, "recall_search") {
-		t.Fatalf("overflow section must tell the model how to retrieve a body:\n%s", req.System)
+	if !strings.Contains(systemText(req.System), "recall_search") {
+		t.Fatalf("overflow section must tell the model how to retrieve a body:\n%s", systemText(req.System))
 	}
 	// Verify overflow facts precede the summary, just as inlined facts do.
-	overflowAt := strings.Index(req.System, "- zzz: the big one")
-	summaryAt := strings.Index(req.System, "earlier events")
+	overflowAt := strings.Index(systemText(req.System), "- zzz: the big one")
+	summaryAt := strings.Index(systemText(req.System), "earlier events")
 	if overflowAt < 0 || summaryAt < 0 || overflowAt > summaryAt {
-		t.Errorf("overflow facts must precede the summary; system = %q", req.System)
+		t.Errorf("overflow facts must precede the summary; system = %q", systemText(req.System))
 	}
 }
 
@@ -171,18 +171,18 @@ func TestAssembleKeepsInliningAfterAnOverflow(t *testing.T) {
 		fact("zzz", "d", "last small"),
 	}}
 	req := Assemble(snap, config.ContextConfig{FactBudget: 100})
-	if !strings.Contains(req.System, "last small") {
-		t.Fatalf("a later small fact was dropped by an earlier oversized one:\n%s", req.System)
+	if !strings.Contains(systemText(req.System), "last small") {
+		t.Fatalf("a later small fact was dropped by an earlier oversized one:\n%s", systemText(req.System))
 	}
 }
 
 func TestAssembleZeroBudgetSendsEverythingToOverflow(t *testing.T) {
 	snap := Snapshot{Facts: []memory.Fact{fact("aaa", "described", "body text")}}
 	req := Assemble(snap, config.ContextConfig{FactBudget: 0})
-	if strings.Contains(req.System, "body text") {
+	if strings.Contains(systemText(req.System), "body text") {
 		t.Fatal("a zero budget inlined a body")
 	}
-	if !strings.Contains(req.System, "- aaa: described") {
+	if !strings.Contains(systemText(req.System), "- aaa: described") {
 		t.Fatal("a zero budget dropped the fact entirely instead of listing it")
 	}
 }
@@ -196,15 +196,17 @@ func TestAssembleIsByteStableAcrossCalls(t *testing.T) {
 		fact("beta", "b", "B"), fact("alpha", "a", "A"), fact("gamma", "g", "G"),
 	}}
 	cfg := config.ContextConfig{FactBudget: 1000}
-	if a, b := Assemble(snap, cfg).System, Assemble(snap, cfg).System; a != b {
+	a := systemText(Assemble(snap, cfg).System)
+	b := systemText(Assemble(snap, cfg).System)
+	if a != b {
 		t.Fatalf("system block not stable:\n%q\n%q", a, b)
 	}
 }
 
 func TestAssembleNoFactsNoSection(t *testing.T) {
 	req := Assemble(Snapshot{System: "sys"}, config.ContextConfig{FactBudget: 1000})
-	if req.System != "sys" {
-		t.Fatalf("empty fact set added a section: %q", req.System)
+	if systemText(req.System) != "sys" {
+		t.Fatalf("empty fact set added a section: %q", systemText(req.System))
 	}
 }
 
@@ -221,7 +223,7 @@ func TestSnapshotTokensMatchesAssembleOutput(t *testing.T) {
 	}
 	cfg := config.ContextConfig{FactBudget: 100}
 	estimate := SnapshotTokens(snap, cfg)
-	actual := EstimateTokens(Assemble(snap, cfg).System)
+	actual := EstimateTokens(systemText(Assemble(snap, cfg).System))
 	// Allow small margin for rounding, but they should be close.
 	if estimate < actual-10 || estimate > actual+10 {
 		t.Errorf("SnapshotTokens estimate diverged from actual: estimate=%d, actual=%d", estimate, actual)
@@ -235,14 +237,14 @@ func TestAssemblePlacesEnvironmentAfterTheSystemPrompt(t *testing.T) {
 		Facts:       []memory.Fact{{Name: "n", Body: "b"}},
 	}, config.ContextConfig{FactBudget: 1000})
 
-	sysIdx := strings.Index(req.System, "you are spore")
-	envIdx := strings.Index(req.System, "Working directory: /w")
-	factIdx := strings.Index(req.System, "What you know about the user")
+	sysIdx := strings.Index(systemText(req.System), "you are spore")
+	envIdx := strings.Index(systemText(req.System), "Working directory: /w")
+	factIdx := strings.Index(systemText(req.System), "What you know about the user")
 	if sysIdx < 0 || envIdx < 0 || factIdx < 0 {
-		t.Fatalf("missing a section in system block:\n%s", req.System)
+		t.Fatalf("missing a section in system block:\n%s", systemText(req.System))
 	}
 	if sysIdx >= envIdx || envIdx >= factIdx {
-		t.Errorf("wrong section order (system %d, env %d, facts %d):\n%s", sysIdx, envIdx, factIdx, req.System)
+		t.Errorf("wrong section order (system %d, env %d, facts %d):\n%s", sysIdx, envIdx, factIdx, systemText(req.System))
 	}
 }
 
@@ -260,14 +262,14 @@ func TestSkillsSectionListsNamesAndDescriptions(t *testing.T) {
 		{Name: "release-checklist", Description: "How to cut a release", Body: "long body here"},
 	}}
 	req := Assemble(snap, config.ContextConfig{MaxTokens: 1000, SkillBudget: 500})
-	if !strings.Contains(req.System, "release-checklist") ||
-		!strings.Contains(req.System, "How to cut a release") {
-		t.Fatalf("the skills index must carry name and description:\n%s", req.System)
+	if !strings.Contains(systemText(req.System), "release-checklist") ||
+		!strings.Contains(systemText(req.System), "How to cut a release") {
+		t.Fatalf("the skills index must carry name and description:\n%s", systemText(req.System))
 	}
-	if strings.Contains(req.System, "long body here") {
+	if strings.Contains(systemText(req.System), "long body here") {
 		t.Fatal("a skill body must never be assembled; it arrives as a skill_load result")
 	}
-	if !strings.Contains(req.System, "skill_load") {
+	if !strings.Contains(systemText(req.System), "skill_load") {
 		t.Fatal("the index must tell the model how to load a skill")
 	}
 }
@@ -281,18 +283,18 @@ func TestSkillsSectionOverflowStatesTheCount(t *testing.T) {
 		})
 	}
 	req := Assemble(Snapshot{Skills: many}, config.ContextConfig{MaxTokens: 1000, SkillBudget: 200})
-	if !strings.Contains(req.System, "more skills did not fit") {
-		t.Fatalf("overflow must be stated:\n%s", req.System)
+	if !strings.Contains(systemText(req.System), "more skills did not fit") {
+		t.Fatalf("overflow must be stated:\n%s", systemText(req.System))
 	}
-	if strings.Contains(req.System, "skill-49") {
+	if strings.Contains(systemText(req.System), "skill-49") {
 		t.Fatal("the budget must actually drop skills")
 	}
 }
 
 func TestSkillsSectionEmptyWhenNoSkills(t *testing.T) {
 	req := Assemble(Snapshot{}, config.ContextConfig{MaxTokens: 1000, SkillBudget: 500})
-	if strings.Contains(req.System, "Skills") {
-		t.Fatalf("no skills means no section:\n%s", req.System)
+	if strings.Contains(systemText(req.System), "Skills") {
+		t.Fatalf("no skills means no section:\n%s", systemText(req.System))
 	}
 }
 

@@ -25,6 +25,15 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
+// systemText joins the system blocks into a single string for test assertions.
+func systemText(blocks []provider.Block) string {
+	var sb strings.Builder
+	for _, b := range blocks {
+		sb.WriteString(b.Text)
+	}
+	return sb.String()
+}
+
 // fakeTools answers every call with a fixed result and records what it saw.
 type fakeTools struct {
 	calls  []provider.Block
@@ -590,8 +599,9 @@ func TestSnapshotIncludesSkillsFromTheCache(t *testing.T) {
 		t.Fatalf("skills not loaded into the snapshot: %+v", snap.Skills)
 	}
 	req := Assemble(snap, a.Cfg.Context)
-	if !strings.Contains(req.System, "review: check a change") {
-		t.Fatalf("assembled system prompt does not contain the skills index: %q", req.System)
+	sysText := systemText(req.System)
+	if !strings.Contains(sysText, "review: check a change") {
+		t.Fatalf("assembled system prompt does not contain the skills index: %q", sysText)
 	}
 }
 
@@ -696,8 +706,9 @@ func TestSnapshotCarriesTheSkillsIndexForTheSessionRoot(t *testing.T) {
 
 	// Assert the name reaches the assembled prompt
 	reqA := Assemble(snapA, a.Cfg.Context)
-	if !strings.Contains(reqA.System, "release-checklist") {
-		t.Fatalf("rootA assembled prompt does not contain release-checklist:\n%s", reqA.System)
+	sysTextA := systemText(reqA.System)
+	if !strings.Contains(sysTextA, "release-checklist") {
+		t.Fatalf("rootA assembled prompt does not contain release-checklist:\n%s", sysTextA)
 	}
 
 	// Now test rootB: create session rooted at rootB
@@ -726,10 +737,11 @@ func TestSnapshotCarriesTheSkillsIndexForTheSessionRoot(t *testing.T) {
 
 	// Assert the rootB name reaches the assembled prompt
 	reqB := Assemble(snapB, a.Cfg.Context)
-	if !strings.Contains(reqB.System, "deploy-runbook") {
-		t.Fatalf("rootB assembled prompt does not contain deploy-runbook:\n%s", reqB.System)
+	sysTextB := systemText(reqB.System)
+	if !strings.Contains(sysTextB, "deploy-runbook") {
+		t.Fatalf("rootB assembled prompt does not contain deploy-runbook:\n%s", sysTextB)
 	}
-	if strings.Contains(reqB.System, "release-checklist") {
-		t.Fatalf("rootB assembled prompt must not contain release-checklist (workspace isolation failed):\n%s", reqB.System)
+	if strings.Contains(sysTextB, "release-checklist") {
+		t.Fatalf("rootB assembled prompt must not contain release-checklist (workspace isolation failed):\n%s", sysTextB)
 	}
 }

@@ -92,8 +92,14 @@ func (c *Client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 		"stream":     true,
 		"messages":   toWire(req.Messages),
 	}
-	if req.System != "" {
-		body["system"] = req.System
+	// Task 3 replaces this with an array of blocks carrying cache_control.
+	// Joining here keeps this task's wire output byte-identical to before.
+	var sys strings.Builder
+	for _, b := range req.System {
+		sys.WriteString(b.Text)
+	}
+	if sys.Len() > 0 {
+		body["system"] = sys.String()
 	}
 	if req.Temperature > 0 {
 		body["temperature"] = req.Temperature

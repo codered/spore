@@ -37,7 +37,7 @@ func TestStreamParsesTextToolCallAndUsage(t *testing.T) {
 	c := New(srv.URL, "sk-test", "wrkspc_test", srv.Client())
 	ch, err := c.Stream(context.Background(), provider.Request{
 		Model:     "claude-opus-5",
-		System:    "you are spore",
+		System:    []provider.Block{{Type: provider.BlockText, Text: "you are spore"}},
 		MaxTokens: 1024,
 		Messages: []provider.Message{{
 			Role:   provider.RoleUser,

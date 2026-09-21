@@ -184,7 +184,7 @@ func Assemble(snap Snapshot, cfg config.ContextConfig) provider.Request {
 	copy(msgs, snap.Messages)
 
 	return provider.Request{
-		System:    sys.String(),
+		System:    []provider.Block{{Type: provider.BlockText, Text: sys.String()}},
 		Messages:  msgs,
 		MaxTokens: 4096,
 	}
