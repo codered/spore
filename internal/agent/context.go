@@ -161,31 +161,60 @@ func skillsSection(skills []skill.Skill, budget int) string {
 	return section.String()
 }
 
-// Assemble builds the request in the spec's fixed order: system prompt,
-// environment, memory facts, skills, compaction summary, then the live message
-// tail. Facts and the summary ride in the system block so they stay pinned
-// regardless of message count. The assembled request includes every live
-// message; compaction is responsible for keeping the live tail within the
-// token budget.
+// Assemble builds the request ordered by stability rather than by topic: the
+// system prompt, the skills index, the memory facts and the compaction summary
+// all change rarely, so they sit in front of a cache breakpoint. The
+// environment section changes every turn and rides at the very end, after the
+// moving breakpoint, where it invalidates nothing.
+//
+// The environment is never stored. It is injected here and here only, so the
+// prefix one turn reads is byte-identical to what the turn before it wrote.
 func Assemble(snap Snapshot, cfg config.ContextConfig) provider.Request {
-	var sys strings.Builder
-	sys.WriteString(snap.System)
-	sys.WriteString(snap.Environment)
-	sys.WriteString(factsSection(snap.Facts, cfg.FactBudget))
-	sys.WriteString(skillsSection(snap.Skills, cfg.SkillBudget))
+	var sys []provider.Block
+	add := func(text string) {
+		if strings.TrimSpace(text) == "" {
+			return
+		}
+		sys = append(sys, provider.Block{Type: provider.BlockText, Text: text})
+	}
+	add(snap.System)
+	add(skillsSection(snap.Skills, cfg.SkillBudget))
+	add(factsSection(snap.Facts, cfg.FactBudget))
 	if snap.Summary != "" {
-		sys.WriteString("\n\n## Earlier in this conversation\n")
-		sys.WriteString(snap.Summary)
-		sys.WriteString("\n")
+		add("\n\n## Earlier in this conversation\n" + snap.Summary + "\n")
+	}
+	if len(sys) > 0 {
+		sys[len(sys)-1].CacheBreak = true
 	}
 
 	// Copy so callers cannot alias the snapshot's backing array.
 	msgs := make([]provider.Message, len(snap.Messages))
 	copy(msgs, snap.Messages)
+	msgs = markTailAndAppendEnvironment(msgs, snap.Environment)
 
-	return provider.Request{
-		System:    []provider.Block{{Type: provider.BlockText, Text: sys.String()}},
-		Messages:  msgs,
-		MaxTokens: 4096,
+	return provider.Request{System: sys, Messages: msgs, MaxTokens: 4096}
+}
+
+// markTailAndAppendEnvironment puts the moving breakpoint on the last block of
+// the conversation and the environment after it.
+//
+// It copies the final message's blocks first. copy() above duplicates the
+// Message values but not the slices inside them, so writing through
+// msgs[last].Blocks would reach into the caller's snapshot -- and Assemble is
+// documented as pure.
+func markTailAndAppendEnvironment(msgs []provider.Message, env string) []provider.Message {
+	if len(msgs) == 0 {
+		return msgs
 	}
+	last := len(msgs) - 1
+	blocks := make([]provider.Block, len(msgs[last].Blocks), len(msgs[last].Blocks)+1)
+	copy(blocks, msgs[last].Blocks)
+	if len(blocks) > 0 {
+		blocks[len(blocks)-1].CacheBreak = true
+	}
+	if strings.TrimSpace(env) != "" {
+		blocks = append(blocks, provider.Block{Type: provider.BlockText, Text: env})
+	}
+	msgs[last].Blocks = blocks
+	return msgs
 }

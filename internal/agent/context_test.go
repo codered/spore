@@ -235,16 +235,27 @@ func TestAssemblePlacesEnvironmentAfterTheSystemPrompt(t *testing.T) {
 		System:      "you are spore",
 		Environment: "\n\n## Environment\n\nWorking directory: /w\n",
 		Facts:       []memory.Fact{{Name: "n", Body: "b"}},
+		Messages:    []provider.Message{userMsg("hello")},
 	}, config.ContextConfig{FactBudget: 1000})
 
 	sysIdx := strings.Index(systemText(req.System), "you are spore")
-	envIdx := strings.Index(systemText(req.System), "Working directory: /w")
 	factIdx := strings.Index(systemText(req.System), "What you know about the user")
-	if sysIdx < 0 || envIdx < 0 || factIdx < 0 {
+	if sysIdx < 0 || factIdx < 0 {
 		t.Fatalf("missing a section in system block:\n%s", systemText(req.System))
 	}
-	if sysIdx >= envIdx || envIdx >= factIdx {
-		t.Errorf("wrong section order (system %d, env %d, facts %d):\n%s", sysIdx, envIdx, factIdx, systemText(req.System))
+	if sysIdx >= factIdx {
+		t.Errorf("wrong section order (system %d, facts %d):\n%s", sysIdx, factIdx, systemText(req.System))
+	}
+	// Environment is now at the tail of the final message, not in the system block.
+	envIdx := -1
+	for _, blk := range req.Messages[len(req.Messages)-1].Blocks {
+		if strings.Contains(blk.Text, "Working directory: /w") {
+			envIdx = strings.Index(blk.Text, "Working directory: /w")
+			break
+		}
+	}
+	if envIdx < 0 {
+		t.Fatalf("environment not found in message blocks")
 	}
 }
 
@@ -316,5 +327,115 @@ func TestBreakdownSumsToSnapshotTokens(t *testing.T) {
 	}
 	if b.System == 0 || b.Environment == 0 || b.Facts == 0 || b.Skills == 0 || b.Summary == 0 || b.Messages == 0 {
 		t.Fatalf("every part with content must be counted: %+v", b)
+	}
+}
+
+// renderPrefix is the bytes the provider would cache: every system block, then
+// every message block, stopping after the last block marked CacheBreak. Two
+// requests whose renderPrefix output matches share a cache entry.
+func renderPrefix(req provider.Request) string {
+	var b strings.Builder
+	for _, blk := range req.System {
+		b.WriteString(blk.Text)
+		if blk.CacheBreak {
+			b.WriteString("|#|")
+		}
+	}
+	for _, m := range req.Messages {
+		for _, blk := range m.Blocks {
+			b.WriteString(blk.Text)
+			if blk.CacheBreak {
+				return b.String()
+			}
+		}
+	}
+	return b.String()
+}
+
+func countBreaks(req provider.Request) int {
+	n := 0
+	for _, blk := range req.System {
+		if blk.CacheBreak {
+			n++
+		}
+	}
+	for _, m := range req.Messages {
+		for _, blk := range m.Blocks {
+			if blk.CacheBreak {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func snapWithEnv(env string) Snapshot {
+	return Snapshot{
+		System:      "SYSTEM",
+		Environment: env,
+		Summary:     "SUMMARY",
+		Messages: []provider.Message{
+			{Role: provider.RoleUser, Blocks: []provider.Block{{Type: provider.BlockText, Text: "hello"}}},
+		},
+	}
+}
+
+// The property the whole design rests on: the environment changes every turn
+// and must change nothing the provider reads from cache.
+func TestAssembleKeepsThePrefixStableAcrossEnvironments(t *testing.T) {
+	a := Assemble(snapWithEnv("files: one.go"), config.ContextConfig{})
+	b := Assemble(snapWithEnv("files: one.go two.go three.go"), config.ContextConfig{})
+
+	if renderPrefix(a) != renderPrefix(b) {
+		t.Fatalf("the cached prefix moved when the environment changed:\n a: %q\n b: %q",
+			renderPrefix(a), renderPrefix(b))
+	}
+}
+
+func TestAssembleEmitsTwoBreakpoints(t *testing.T) {
+	req := Assemble(snapWithEnv("files: one.go"), config.ContextConfig{})
+	if n := countBreaks(req); n != 2 {
+		t.Fatalf("got %d breakpoints, want 2 (system prefix and message tail)", n)
+	}
+}
+
+// The environment rides at the very end, after the moving breakpoint, so it is
+// outside every cache entry.
+func TestAssemblePutsEnvironmentLastAndUncached(t *testing.T) {
+	req := Assemble(snapWithEnv("ENVIRONMENT"), config.ContextConfig{})
+
+	for _, blk := range req.System {
+		if strings.Contains(blk.Text, "ENVIRONMENT") {
+			t.Fatal("the environment is still in the system block")
+		}
+	}
+	last := req.Messages[len(req.Messages)-1]
+	tail := last.Blocks[len(last.Blocks)-1]
+	if tail.Text != "ENVIRONMENT" {
+		t.Fatalf("last block is %q, want the environment", tail.Text)
+	}
+	if tail.CacheBreak {
+		t.Fatal("the environment block is marked as a breakpoint; it changes every turn")
+	}
+	if !last.Blocks[len(last.Blocks)-2].CacheBreak {
+		t.Fatal("the breakpoint does not sit immediately before the environment")
+	}
+}
+
+// Assemble is documented as a pure function. copy() duplicates the Message
+// values but not their Blocks arrays, so a careless append writes through into
+// the caller's snapshot -- and from there into whatever the store hands out
+// next.
+func TestAssembleDoesNotMutateTheSnapshot(t *testing.T) {
+	snap := snapWithEnv("ENVIRONMENT")
+	before := len(snap.Messages[0].Blocks)
+
+	Assemble(snap, config.ContextConfig{})
+
+	if got := len(snap.Messages[0].Blocks); got != before {
+		t.Fatalf("the snapshot's blocks grew from %d to %d", before, got)
+	}
+	if snap.Messages[0].Blocks[0].CacheBreak {
+		t.Fatal("Assemble marked a breakpoint on the caller's snapshot")
 	}
 }
