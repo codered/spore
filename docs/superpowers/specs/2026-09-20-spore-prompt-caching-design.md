@@ -146,9 +146,9 @@ type Usage struct {
 ```
 
 `InputTokens` is the remainder, not the prompt size: the total is the sum of
-all three. Nothing in spore currently reads it as a prompt size --
-`internal/agent/context.go` estimates from text -- but the field's meaning
-changes and the comment says so.
+all three. `internal/trace`'s `EndLLM` used to report it as the prompt token
+count; it now reports the sum of all three, with the cache buckets as detail
+attributes.
 
 Pricing is operator-set, per provider block:
 
