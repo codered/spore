@@ -415,3 +415,52 @@ func TestCacheDisabledEmitsNoCacheControl(t *testing.T) {
 		t.Errorf("system = %T, want an array of blocks even with caching off", body["system"])
 	}
 }
+
+// TestToWireOmitsZeroValuedOptionalFields verifies that the wire format
+// preserves omitempty semantics: zero-valued optional fields are absent.
+// This is critical because including them changes message size and token counts.
+func TestToWireOmitsZeroValuedOptionalFields(t *testing.T) {
+	body := bodyOf(t, true, provider.Request{
+		Model:     "claude-opus-5",
+		MaxTokens: 100,
+		Messages: []provider.Message{
+			{
+				Role: provider.RoleAssistant,
+				Blocks: []provider.Block{
+					{Type: provider.BlockToolUse, ID: "tool_1", Name: "test_tool", Input: nil},
+				},
+			},
+			{
+				Role: provider.RoleTool,
+				Blocks: []provider.Block{
+					{Type: provider.BlockToolResult, ID: "tool_1", Content: "success"},
+					{Type: provider.BlockToolResult, ID: "tool_2", Content: "error", IsError: true},
+				},
+			},
+		},
+	})
+
+	msgs := body["messages"].([]any)
+
+	// Check that tool_use with nil input omits the input field entirely.
+	toolUseMsg := msgs[0].(map[string]any)
+	toolUseContent := toolUseMsg["content"].([]any)
+	toolUseBlock := toolUseContent[0].(map[string]any)
+	if _, hasInput := toolUseBlock["input"]; hasInput {
+		t.Errorf("tool_use with nil input should omit the input field, but it's present in: %+v", toolUseBlock)
+	}
+
+	// Check that successful tool_result omits is_error field.
+	toolResultMsg := msgs[1].(map[string]any)
+	toolResultContent := toolResultMsg["content"].([]any)
+	successResult := toolResultContent[0].(map[string]any)
+	if _, hasIsError := successResult["is_error"]; hasIsError {
+		t.Errorf("successful tool_result should omit is_error field, but it's present in: %+v", successResult)
+	}
+
+	// Check that error tool_result includes is_error=true.
+	errorResult := toolResultContent[1].(map[string]any)
+	if isError, ok := errorResult["is_error"].(bool); !ok || !isError {
+		t.Errorf("error tool_result should have is_error=true, got: %+v", errorResult)
+	}
+}

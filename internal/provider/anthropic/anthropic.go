@@ -43,7 +43,11 @@ type Client struct {
 // New builds a client. cache turns prompt-caching breakpoints on; an operator
 // sets it false for a proxy that rejects the field, or for a workload whose
 // prompt changes from the first byte every turn and would pay the write
-// premium for nothing.
+// premium for nothing. workspaceID may be empty, in which case requests carry
+// no anthropic-workspace-id header and the API acts in the key's default
+// workspace. Identity-linked keys that span several workspaces reject that;
+// the client then falls back to the default workspace the API names in the
+// response and retries once.
 func New(baseURL, apiKey, workspaceID string, cache bool, hc *http.Client) *Client {
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
@@ -75,21 +79,28 @@ func (c *Client) toWire(msgs []provider.Message) []map[string]any {
 		role := string(m.Role)
 		blocks := make([]map[string]any, 0, len(m.Blocks))
 		for _, b := range m.Blocks {
-			var wireBlock map[string]any
+			var wb wireBlock
 			switch b.Type {
 			case provider.BlockToolResult:
 				// Anthropic carries tool results on a user-role message.
 				role = "user"
-				wireBlock = map[string]any{"type": "tool_result", "tool_use_id": b.ID, "content": b.Content, "is_error": b.IsError}
+				wb = wireBlock{Type: "tool_result", ToolUseID: b.ID, Content: b.Content, IsError: b.IsError}
 			case provider.BlockToolUse:
-				wireBlock = map[string]any{"type": "tool_use", "id": b.ID, "name": b.Name, "input": b.Input}
+				wb = wireBlock{Type: "tool_use", ID: b.ID, Name: b.Name, Input: b.Input}
 			default:
-				wireBlock = map[string]any{"type": "text", "text": b.Text}
+				wb = wireBlock{Type: "text", Text: b.Text}
 			}
+
+			// Marshal to JSON to apply omitempty, then unmarshal to map
+			// to allow cache_control injection while preserving the original wire format.
+			data, _ := json.Marshal(wb)
+			blk := make(map[string]any)
+			json.Unmarshal(data, &blk)
+
 			if c.cache && b.CacheBreak {
-				wireBlock["cache_control"] = cacheControl
+				blk["cache_control"] = cacheControl
 			}
-			blocks = append(blocks, wireBlock)
+			blocks = append(blocks, blk)
 		}
 		out = append(out, map[string]any{"role": role, "content": blocks})
 	}
