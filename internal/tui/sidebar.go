@@ -178,6 +178,14 @@ func sessionRow(c *cache, r row, width int, selected bool) string {
 	prefix := lead + glyph + " " + short(r.id) + " "
 	room := width - lipgloss.Width(prefix) - len(tag) - 1
 	line := prefix + clip(oneLine(title), room)
+	// Ensure the line before the tag fits within width constraints
+	budget := width
+	if tag != "" {
+		budget = width - len(tag) - 1
+	}
+	if lipgloss.Width(line) > budget {
+		line = ansi.Truncate(line, budget, "…")
+	}
 	if tag != "" {
 		pad := max(1, width-lipgloss.Width(line)-len(tag))
 		line += strings.Repeat(" ", pad) + styMuted.Render(tag)

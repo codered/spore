@@ -176,19 +176,15 @@ func firstLine(s string) string {
 	return clip(s, 60)
 }
 
-// clip shortens s to at most n runes, marking the cut.
+// clip shortens s to at most n display cells, marking the cut.
 func clip(s string, n int) string {
 	if n < 1 {
 		return ""
 	}
-	r := []rune(s)
-	if len(r) <= n {
+	if ansi.StringWidth(s) <= n {
 		return s
 	}
-	if n == 1 {
-		return "…"
-	}
-	return string(r[:n-1]) + "…"
+	return ansi.Truncate(s, n, "…")
 }
 
 // oneLine collapses any run of whitespace, newlines included, to one space.

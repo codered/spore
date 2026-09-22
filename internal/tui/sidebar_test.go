@@ -96,3 +96,29 @@ func TestASessionRowShowsItsStateIDTitleAndSource(t *testing.T) {
 		}
 	}
 }
+
+func TestSidebarRowsStayWithinWidthForWideTitlesAndDeepNesting(t *testing.T) {
+	// Build a chain: root chat session plus 6 nested sub-agents
+	root := daemon.SessionJSON{ID: "root", Title: "修复测试 🚀🚀🚀 flaky test with a long title", Workspace: "/a", Source: "chat"}
+	sessions := []daemon.SessionJSON{root}
+	parent := "root"
+	for i := 1; i <= 6; i++ {
+		id := fmt.Sprintf("child%d", i)
+		sessions = append(sessions, daemon.SessionJSON{
+			ID:        id,
+			Title:     "修复测试 🚀🚀🚀 flaky test with a long title",
+			Workspace: "/a",
+			Source:    "subagent",
+			ParentID:  parent,
+		})
+		parent = id
+	}
+	c := seed(sessions...)
+	deepestID := "child6"
+	output := ansi.Strip(renderSidebar(c, c.rows(false, "", deepestID), deepestID, 30, 20))
+	for i, line := range strings.Split(output, "\n") {
+		if w := ansi.StringWidth(line); w > 30 {
+			t.Errorf("line %d is %d cells wide, exceeds 30-cell budget: %q", i, w, line)
+		}
+	}
+}
