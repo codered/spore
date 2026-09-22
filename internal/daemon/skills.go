@@ -16,6 +16,9 @@ type SkillJSON struct {
 	Description string `json:"description"`
 	BodyTokens  int    `json:"body_tokens"`
 	Loaded      bool   `json:"loaded"`
+	// Body is the skill's full text, present only when the request asks for
+	// it with ?body=1: the listing stays small by default.
+	Body string `json:"body,omitempty"`
 }
 
 // SkillsJSON is the /skills response. Errors are the per-file load errors
@@ -83,13 +86,18 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	out := SkillsJSON{Skills: []SkillJSON{}, Errors: []string{}}
 	dir := s.cfg.SkillsDir(sess.Workspace)
 	if s.agent != nil && s.agent.Skills != nil {
+		withBody := r.URL.Query().Get("body") == "1"
 		for _, sk := range s.agent.Skills.Skills(dir) {
-			out.Skills = append(out.Skills, SkillJSON{
+			j := SkillJSON{
 				Name:        sk.Name,
 				Description: sk.Description,
 				BodyTokens:  agent.EstimateTokens(sk.Body),
 				Loaded:      loaded[sk.Name],
-			})
+			}
+			if withBody {
+				j.Body = sk.Body
+			}
+			out.Skills = append(out.Skills, j)
 		}
 		for _, e := range s.agent.Skills.Errors(dir) {
 			out.Errors = append(out.Errors, e.Error())

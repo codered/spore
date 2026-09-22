@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/codered/spore/internal/daemon"
 	"github.com/codered/spore/internal/policy"
@@ -115,4 +117,48 @@ func (b tuiBackend) Slash(ctx context.Context, id, cmd string) (string, error) {
 		return formatAgents(list), nil
 	}
 	return "", fmt.Errorf("unknown command: %s", cmd)
+}
+
+var _ tui.Views = tuiBackend{}
+
+// viewErr maps a missing route to tui.ErrOlderDaemon. The daemon's mux answers
+// an unknown route with a plain-text 404, which client.do reports as
+// "<METHOD> <path>: 404 Not Found"; a known route's own 404 (an unknown
+// session) carries a JSON error message instead, and passes through.
+func viewErr(err error) error {
+	if err != nil && strings.HasSuffix(err.Error(), ": 404 Not Found") {
+		return tui.ErrOlderDaemon
+	}
+	return err
+}
+
+func (b tuiBackend) Skills(ctx context.Context, sessionID string) (daemon.SkillsJSON, error) {
+	var out daemon.SkillsJSON
+	err := b.c.do(ctx, "GET", "/api/sessions/"+sessionID+"/skills?body=1", nil, &out)
+	return out, viewErr(err)
+}
+
+func (b tuiBackend) Agents(ctx context.Context, sessionID string) (daemon.AgentsJSON, error) {
+	list, err := b.c.listAgents(ctx, sessionID)
+	return list, viewErr(err)
+}
+
+func (b tuiBackend) Jobs(ctx context.Context) ([]daemon.JobJSON, error) {
+	var out []daemon.JobJSON
+	err := b.c.do(ctx, "GET", "/api/jobs", nil, &out)
+	return out, viewErr(err)
+}
+
+func (b tuiBackend) Usage(ctx context.Context, sessionID string) (daemon.UsageJSON, error) {
+	var out daemon.UsageJSON
+	path := "/api/usage"
+	if sessionID != "" {
+		path += "?session=" + sessionID
+	}
+	err := b.c.do(ctx, "GET", path, nil, &out)
+	return out, viewErr(err)
+}
+
+func (b tuiBackend) CancelJob(ctx context.Context, id int64) error {
+	return viewErr(b.c.do(ctx, "DELETE", "/api/jobs/"+strconv.FormatInt(id, 10), nil, nil))
 }

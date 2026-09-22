@@ -122,6 +122,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/jobs", s.handleListJobs)
 	mux.HandleFunc("POST /api/jobs", s.handleCreateJob)
 	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleCancelJob)
+	mux.HandleFunc("GET /api/usage", s.handleUsage)
 	mux.HandleFunc("GET /static/{file}", s.handleStatic)
 	mux.HandleFunc("GET /", s.handleIndex)
 	return mux

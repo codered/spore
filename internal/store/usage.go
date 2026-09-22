@@ -1,6 +1,9 @@
 package store
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // UsageRow is one model's consumption. /usage reports these per session and
 // across every session; the numbers come from the columns AppendMessage has
@@ -51,4 +54,37 @@ func (s *Store) LastSeq(ctx context.Context, sessionID string) (int, error) {
 	err := s.db.QueryRowContext(ctx,
 		`SELECT coalesce(max(seq), 0) FROM messages WHERE session_id = ?`, sessionID).Scan(&seq)
 	return seq, err
+}
+
+// DailyUsageRow is one model's consumption on one UTC day.
+type DailyUsageRow struct {
+	Day string `json:"day"` // YYYY-MM-DD, UTC
+	UsageRow
+}
+
+// DailyUsage totals usage per UTC day and model for messages created at or
+// after since, newest day first. created_at is a fixed-width UTC timestamp, so
+// its first ten characters are the day and string comparison orders it.
+func (s *Store) DailyUsage(ctx context.Context, since time.Time) ([]DailyUsageRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT substr(created_at, 1, 10), model, count(*), sum(tokens_in), sum(tokens_out),
+		   sum(tokens_cache_write), sum(tokens_cache_read), sum(cost_usd)
+		 FROM messages
+		 WHERE (tokens_in > 0 OR tokens_out > 0 OR cost_usd > 0) AND created_at >= ?
+		 GROUP BY 1, 2 ORDER BY 1 DESC, 2`,
+		since.UTC().Format(timeFormat))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []DailyUsageRow
+	for rows.Next() {
+		var r DailyUsageRow
+		if err := rows.Scan(&r.Day, &r.Model, &r.Turns, &r.TokensIn, &r.TokensOut,
+			&r.TokensCacheWrite, &r.TokensCacheRead, &r.CostUSD); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

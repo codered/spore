@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -149,5 +151,65 @@ func TestTheTUIDrivesARealDaemonThroughSendStreamStopAndResend(t *testing.T) {
 
 	if got := d.m.ExitSummary(); !strings.Contains(got, "resume: spore chat "+sid) || !strings.Contains(got, "after the stop") {
 		t.Fatalf("exit summary = %q", got)
+	}
+}
+
+func TestTheAdapterReadsTheViewsFromARealDaemon(t *testing.T) {
+	ws := t.TempDir()
+	c := e2eDaemon(t, ws, provider.ScriptTurn{Text: "hi there", Usage: provider.Usage{InputTokens: 10, OutputTokens: 2}})
+	ctx := context.Background()
+	sid, err := c.createSession(ctx, "chat", ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	be := tuiBackend{c: c}
+	if err := be.Send(ctx, sid, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	// The turn runs in the background; its usage lands when the reply is stored.
+	var u daemon.UsageJSON
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		if u, err = be.Usage(ctx, sid); err != nil {
+			t.Fatal(err)
+		}
+		if len(u.Session) == 1 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(u.Session) != 1 || u.Session[0].Model != "script/fake" || u.Session[0].TokensIn != 10 {
+		t.Fatalf("session usage = %+v, want one script/fake row with 10 in", u.Session)
+	}
+	if len(u.Days) != 1 || u.Days[0].Turns != 1 {
+		t.Fatalf("days = %+v, want today's one turn", u.Days)
+	}
+	if _, err := be.Skills(ctx, sid); err != nil {
+		t.Fatalf("skills: %v", err)
+	}
+	if _, err := be.Agents(ctx, sid); err != nil {
+		t.Fatalf("agents: %v", err)
+	}
+	var job daemon.JobJSON
+	if err := c.do(ctx, "POST", "/api/jobs", map[string]string{"spec": "0 9 * * *", "prompt": "morning briefing"}, &job); err != nil {
+		t.Fatal(err)
+	}
+	if err := be.CancelJob(ctx, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := be.Jobs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].ID != job.ID || jobs[0].Enabled {
+		t.Fatalf("jobs = %+v, want the one job, disabled", jobs)
+	}
+}
+
+func TestAViewAgainstADaemonWithoutTheRouteSaysSo(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(ts.Close)
+	be := tuiBackend{c: newClient(strings.TrimPrefix(ts.URL, "http://"))}
+	if _, err := be.Usage(context.Background(), ""); !errors.Is(err, tui.ErrOlderDaemon) {
+		t.Fatalf("err = %v, want tui.ErrOlderDaemon", err)
 	}
 }
