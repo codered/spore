@@ -29,6 +29,7 @@ import (
 	"github.com/codered/spore/internal/tool"
 	"github.com/codered/spore/internal/tool/fs"
 	"github.com/codered/spore/internal/tool/mem"
+	personatool "github.com/codered/spore/internal/tool/persona"
 	"github.com/codered/spore/internal/tool/schedule"
 	"github.com/codered/spore/internal/tool/shell"
 	"github.com/codered/spore/internal/tool/skill"
@@ -52,6 +53,7 @@ func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recall
 	tools = append(tools, schedule.New(st)...)
 	tools = append(tools, mem.NewRecallSearch(recallBackend), mem.NewMemory(facts, st))
 	tools = append(tools, skill.New(cfg, skillsCache)...)
+	tools = append(tools, personatool.New(cfg)...)
 	tools = append(tools, subagenttool.New(sup)...)
 	for _, t := range tools {
 		if err := reg.Register(t); err != nil {

@@ -322,6 +322,9 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 var nonLearnable = map[string]bool{
 	"skill_install": true,
 	"memory":        true,
+	// agent_note for the same reason one step down: a standing instruction
+	// written once shapes every later turn in that workspace.
+	"agent_note": true,
 }
 
 func PatternFor(c Call) (string, bool) {

@@ -26,7 +26,13 @@ type Snapshot struct {
 	// Self describes spore's own layout on this machine: where skills,
 	// facts, the database and the config actually live. It is stable for
 	// the life of a session, so it rides in the cached prefix.
-	Self     string
+	Self string
+	// Soul is soul.md: personality, global, the user's alone. Agent is
+	// agent.md: standing instructions for this one workspace. Neither is a
+	// fact -- they carry no frontmatter and are not indexed -- and both are
+	// empty when the file does not exist, which renders no section at all.
+	Soul     string
+	Agent    string
 	Summary  string
 	Messages []provider.Message
 }
@@ -184,6 +190,12 @@ func selfSection(cfg *config.Config, workspace string) string {
 	b.WriteString("\n\n## Where spore keeps its files on this machine\n\n")
 	fmt.Fprintf(&b, "- Skills: %s -- one directory per skill, each holding a SKILL.md with a name and description in its frontmatter. Write one with skill_install, or the user can add the files by hand.\n", skills)
 	fmt.Fprintf(&b, "- Memory facts: %s -- one markdown file per fact, written with the memory tool.\n", cfg.MemoryDir())
+	fmt.Fprintf(&b, "- Your personality: %s -- how you speak and what you value. This one is the user's to edit; you cannot write it.\n", cfg.SoulPath())
+	// A rootless session has no agent.md. Naming a path that cannot exist
+	// would invite the model to describe writing one.
+	if p := cfg.AgentPath(workspace); p != "" {
+		fmt.Fprintf(&b, "- Standing instructions for this workspace: %s -- what the user has said to always or never do here, added with agent_note.\n", p)
+	}
 	fmt.Fprintf(&b, "- Database: %s -- sessions, messages and the recall index. It is a binary file: search it with recall_search, never by reading it.\n", cfg.DBPath())
 	if cfg.Path != "" {
 		fmt.Fprintf(&b, "- Config: %s\n", cfg.Path)
@@ -192,7 +204,10 @@ func selfSection(cfg *config.Config, workspace string) string {
 	// Knowing the path is not knowing that the user may simply ask. Without
 	// this the model answers "your skills go in <dir>" when what the user
 	// wanted was a skill written for them.
-	b.WriteString("\nThe user can ask you to do these things directly: \"write me a skill for X\" is skill_install, and \"remember that X\" is memory. Each asks for their approval before it writes.\n")
+	b.WriteString("\nThe user can ask you to do these things directly: \"write me a skill for X\" is skill_install, \"from now on in this project, always X\" is agent_note, and \"remember that X\" is memory. Each asks for their approval before it writes.\n")
+	// The asymmetry is the point: three of these are things spore does on
+	// request, and the fourth is a file it only reads.
+	b.WriteString("\nsoul.md is the user's, not yours: you cannot write it. When they ask you to change how you behave in general rather than in one project, tell them the path and what to add, and let them make the edit.\n")
 	// skill_install takes a body, not a location, so installing from a file
 	// or a URL is a two-step the model has to be told about. The last
 	// sentence is the load-bearing one: a path outside the workspace is in
@@ -200,6 +215,26 @@ func selfSection(cfg *config.Config, workspace string) string {
 	// answer is what the user can do instead of a refusal.
 	b.WriteString("\nskill_install takes the skill's text, not a location. To install one from a file or a URL, read it first -- web_fetch for a URL, fs_read for a file in the workspace -- and pass what you read to skill_install. A file outside the workspace cannot be read at all, whoever approves it: say so and offer to install it if the user moves it into the workspace or starts a session rooted where it lives.\n")
 	return b.String()
+}
+
+// soulSection renders soul.md. It is identity, so it goes with identity:
+// directly under the system prompt, which is the operational half of the
+// same thing.
+func soulSection(body string) string {
+	if strings.TrimSpace(body) == "" {
+		return ""
+	}
+	return "\n\n## Who you are\n\n" + strings.TrimRight(body, "\n") + "\n"
+}
+
+// agentSection renders agent.md. It goes last in the stable prefix: it is the
+// most situational thing in it, so it sits closest to the conversation it
+// governs.
+func agentSection(body string) string {
+	if strings.TrimSpace(body) == "" {
+		return ""
+	}
+	return "\n\n## Working in this project\n\n" + strings.TrimRight(body, "\n") + "\n"
 }
 
 // Assemble builds the request ordered by stability rather than by topic: the
@@ -219,9 +254,11 @@ func Assemble(snap Snapshot, cfg config.ContextConfig) provider.Request {
 		sys = append(sys, provider.Block{Type: provider.BlockText, Text: text})
 	}
 	add(snap.System)
+	add(soulSection(snap.Soul))
 	add(snap.Self)
 	add(skillsSection(snap.Skills, cfg.SkillBudget))
 	add(factsSection(snap.Facts, cfg.FactBudget))
+	add(agentSection(snap.Agent))
 	if snap.Summary != "" {
 		add("\n\n## Earlier in this conversation\n" + snap.Summary + "\n")
 	}
