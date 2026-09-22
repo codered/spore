@@ -332,6 +332,15 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 		m.help = false
 		return nil
 	}
+	// A multiplexer that holds a lone Esc to see whether a sequence follows
+	// (tmux's escape-time) delivers Esc and the next key as one read, which
+	// arrives as alt+<key>. Read it as vim does: Esc, then the key. alt+enter
+	// is not a rune key, so it stays the INSERT newline.
+	if k.Alt && k.Type == tea.KeyRunes && (m.mode == modeInsert || m.mode == modeNormal) {
+		m.mode = modeNormal
+		m.input.Blur()
+		return m.keyNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: k.Runes})
+	}
 	switch m.mode {
 	case modeInsert:
 		return m.keyInsert(k)

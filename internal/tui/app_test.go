@@ -274,6 +274,33 @@ func TestASendRefusedByARunningTurnIsQueuedNotDuplicated(t *testing.T) {
 	}
 }
 
+// A multiplexer that holds a lone Esc (tmux's escape-time) delivers Esc and
+// the next key as one read, which Bubble Tea parses as alt+<key>. It must act
+// as Esc followed by the key, or esc-then-n does nothing.
+func TestEscAndAKeyInOneReadActAsEscThenTheKey(t *testing.T) {
+	fb := &fakeBackend{created: "fresh"}
+	m := newTestModel(t, fb, "s1")
+	run(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n"), Alt: true})
+	if m.selected != "fresh" {
+		t.Fatalf("alt+n from INSERT selected %q, want the new session", m.selected)
+	}
+
+	fb2 := &fakeBackend{sessions: []daemon.SessionJSON{
+		{ID: "aaaa", Title: "first", Source: "chat", Workspace: "/w", UpdatedAt: t0},
+		{ID: "bbbb", Title: "second", Source: "chat", Workspace: "/w", UpdatedAt: t0.Add(-1)},
+	}}
+	m2 := newTestModel(t, fb2, "aaaa")
+	run(m2, sessionsMsg{list: fb2.sessions})
+	run(m2, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j"), Alt: true})
+	if m2.mode != modeNormal || m2.selected != "bbbb" {
+		t.Fatalf("alt+j from INSERT: mode=%s selected=%q, want NORMAL on bbbb", m2.mode, m2.selected)
+	}
+	run(m2, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k"), Alt: true})
+	if m2.selected != "aaaa" {
+		t.Fatalf("alt+k in NORMAL selected %q, want aaaa", m2.selected)
+	}
+}
+
 func TestNewCommandCreatesAndSelectsTheSession(t *testing.T) {
 	fb := &fakeBackend{created: "fresh"}
 	m := newTestModel(t, fb, "s1")
