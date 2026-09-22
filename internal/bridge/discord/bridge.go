@@ -232,6 +232,10 @@ func (b *Bridge) handleMessage(in Inbound) {
 
 	if content == "/new" {
 		b.handleNew(in)
+		// /new answers immediately and starts no turn, so the goroutine that
+		// settles an ordinary prompt's acknowledgement never runs for it.
+		// Settle here or the eyes stay on a command that is already done.
+		b.settle(in)
 		return
 	}
 
@@ -401,11 +405,8 @@ func (b *Bridge) startTurn(sessionID, replyChannel string, in Inbound, text stri
 		// that started it, and so must the goroutine rendering it.
 		r.Consume(b.ctx, events)
 		// Consume returns when the turn ends, so this is the one place that
-		// knows the prompt has been answered: swap the eyes for a check. The
-		// check goes on first — if only one of the two calls can get through,
-		// "answered" is the more useful thing to be left on screen.
-		b.react(in.ChannelID, in.MessageID, emojiDone)
-		b.unreact(in.ChannelID, in.MessageID, emojiEyes)
+		// knows the prompt has been answered.
+		b.settle(in)
 	}()
 
 	if err := b.turns.StartTurn(sessionID, text, bridgeName, policy.ProfileRemote); err != nil {
@@ -522,6 +523,18 @@ func (b *Bridge) showDetails(i Interaction) {
 	if err := b.client.Respond(b.ctx, i.ID, i.Token, content); err != nil {
 		slog.Warn("discord details response", "err", err)
 	}
+}
+
+// settle marks a message as dealt with: the check goes on, the eyes come
+// off. The order matters — if only one of the two calls can get through,
+// "answered" is the more useful thing to be left on screen than nothing.
+//
+// Only the paths that actually finished call this. A turn that could not be
+// started, or a session that could not be resolved, deliberately leaves the
+// eyes in place: they are then the truth, not a stale indicator.
+func (b *Bridge) settle(in Inbound) {
+	b.react(in.ChannelID, in.MessageID, emojiDone)
+	b.unreact(in.ChannelID, in.MessageID, emojiEyes)
 }
 
 // react and unreact are logged best-effort reaction calls. A reaction is an

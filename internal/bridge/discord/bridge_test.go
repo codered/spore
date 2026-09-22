@@ -741,3 +741,33 @@ func currentContentOf(f *fakeClient, channelID, messageID string) string {
 	}
 	return out
 }
+
+func TestSlashNewSettlesItsOwnAcknowledgement(t *testing.T) {
+	// /new never starts a turn, so the goroutine that normally trades the
+	// eyes for a check never runs for it. Without its own settle the eyes
+	// sit on the message forever, reading as "still working" on a command
+	// that finished immediately.
+	b, f, _, _ := newTestBridge(t)
+	defer b.Close()
+	if err := b.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	f.deliver(Inbound{MessageID: "d1", UserID: "U", ChannelID: "DM1", Content: "/new"})
+
+	waitFor(t, func() bool {
+		var done, eyesGone bool
+		for _, r := range f.allReacts() {
+			if r.MessageID != "d1" {
+				continue
+			}
+			if r.Emoji == emojiDone && !r.Removed {
+				done = true
+			}
+			if r.Emoji == emojiEyes && r.Removed {
+				eyesGone = true
+			}
+		}
+		return done && eyesGone
+	})
+}
