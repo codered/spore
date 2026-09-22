@@ -83,8 +83,15 @@ func (s *Server) Attach(a *agent.Agent, g *policy.Guard) {
 }
 
 // AttachSubagents supplies the sub-agent supervisor. It arrives with the
-// agent, after New, for the same reason Attach exists.
-func (s *Server) AttachSubagents(sup *subagent.Supervisor) { s.subagents = sup }
+// agent, after New, for the same reason Attach exists. Attaching is also what
+// makes children visible: the server observes the supervisor and publishes
+// each child onto the hub.
+func (s *Server) AttachSubagents(sup *subagent.Supervisor) {
+	s.subagents = sup
+	if sup != nil {
+		sup.SetObserver(childPublisher{s})
+	}
+}
 
 // Subagents is the supervisor the daemon serves /agents from.
 func (s *Server) Subagents() *subagent.Supervisor { return s.subagents }
