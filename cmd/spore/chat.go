@@ -195,7 +195,7 @@ func chatPlain(ctx context.Context, cfg *config.Config, c *client, sessionID str
 					fmt.Fprintf(os.Stderr, "approval for %s arrived but the queue is full; answer at http://%s/#%s\n",
 						ev.Tool, cfg.Daemon.Addr, sessionID)
 				}
-			case daemon.WireTurnDone, daemon.WireError:
+			case daemon.WireTurnDone, daemon.WireError, daemon.WireStopped:
 				select {
 				case turnDone <- struct{}{}:
 				default:

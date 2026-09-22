@@ -205,6 +205,17 @@ function handleEvent(ev) {
       setStatus(ev.error, true);
       liveMessage = null;
       break;
+    case "stopped": {
+      const target = liveMessage || messageNode("assistant");
+      const f = document.createElement("div");
+      f.className = "footer";
+      f.textContent = "stopped";
+      target.appendChild(f);
+      liveMessage = null;
+      setStatus("");
+      loadSessions();
+      break;
+    }
     case "approval":
       renderApproval(ev);
       break;

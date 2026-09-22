@@ -136,7 +136,7 @@ func (r *renderer) Consume(ctx context.Context, events <-chan daemon.WireEvent) 
 				return
 			}
 			r.handleEvent(ctx, ev)
-			if r.stopAfterTurn && (ev.Type == daemon.WireTurnDone || ev.Type == daemon.WireError) {
+			if r.stopAfterTurn && (ev.Type == daemon.WireTurnDone || ev.Type == daemon.WireError || ev.Type == daemon.WireStopped) {
 				return
 			}
 		case <-tickChan:
@@ -215,7 +215,7 @@ func (r *renderer) handleEvent(ctx context.Context, ev daemon.WireEvent) {
 			r.flush(ctx)
 		}
 
-	case daemon.WireTurnDone:
+	case daemon.WireTurnDone, daemon.WireStopped:
 		r.flush(ctx)
 		// Reset for next turn so each turn starts fresh
 		r.msgID = ""

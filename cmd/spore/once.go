@@ -32,6 +32,8 @@ func printEvent(ev daemon.WireEvent, showCost bool) {
 		fmt.Printf("\n\n[%s · %d in / %d out%s]\n", ev.Model, ev.TokensIn, ev.TokensOut, cost)
 	case daemon.WireError:
 		fmt.Fprintf(os.Stderr, "\nturn failed: %s\n", ev.Error)
+	case daemon.WireStopped:
+		fmt.Fprintln(os.Stderr, "\nstopped")
 	}
 }
 
@@ -86,7 +88,7 @@ func cmdOnce(ctx context.Context, cfg *config.Config, prompt, workspaceFlag stri
 			switch ev.Type {
 			case daemon.WireApproval:
 				approve(streamCtx, c, ap, sessionID, ev)
-			case daemon.WireTurnDone, daemon.WireError:
+			case daemon.WireTurnDone, daemon.WireError, daemon.WireStopped:
 				return errTurnFinished
 			}
 			return nil
