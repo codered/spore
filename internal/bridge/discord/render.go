@@ -36,11 +36,20 @@ type renderer struct {
 	channelID string
 	throttle  time.Duration
 
-	// buf is the text not yet on screen; msgID is the message it belongs to,
-	// empty when the next flush must Send rather than Edit.
+	// buf is the text the model has written that has not been converted yet;
+	// out is what conversion produced and the screen has not received. They
+	// are separate so every byte passes through dial exactly once: text that
+	// a failed Send leaves waiting in out must not be converted again.
+	// msgID is the message out belongs to, empty when the next flush must
+	// Send rather than Edit.
 	buf      strings.Builder
+	out      strings.Builder
 	msgID    string
 	onScreen int // characters already committed to msgID
+
+	// dial rewrites the model's markdown into the dialect Discord renders.
+	// It is per renderer because it carries stream state across flushes.
+	dial dialect
 
 	// currentContent tracks the full content of the current message, used when
 	// editing to send the complete updated message.
@@ -131,7 +140,7 @@ func (r *renderer) Consume(ctx context.Context, events <-chan daemon.WireEvent) 
 				return
 			}
 		case <-tickChan:
-			r.flush(ctx)
+			r.flushPartial(ctx)
 		case <-ctx.Done():
 			return
 		}
@@ -146,8 +155,11 @@ func (r *renderer) handleEvent(ctx context.Context, ev daemon.WireEvent) {
 		// With throttle=0, tests don't wait on a clock; flush on every event
 		// so the test loop runs to completion immediately. If buffered text would
 		// exceed the message limit, split now to stay under Discord's 2000-char cap.
-		if r.throttle <= 0 || r.onScreen+r.buf.Len() >= messageLimit {
-			r.flush(ctx)
+		//
+		// Mid-turn this is always the partial flush: a table that is still
+		// arriving has to be held back rather than half rewritten.
+		if r.throttle <= 0 || r.onScreen+r.out.Len()+r.buf.Len() >= messageLimit {
+			r.flushPartial(ctx)
 		}
 
 	case daemon.WireToolCall:
@@ -296,11 +308,45 @@ func (r *renderer) resetActivity() {
 	clear(r.byUseID)
 }
 
-// flush puts the buffered text on screen, splitting at the message limit.
+// flush puts everything written so far on screen, converting it to Discord's
+// dialect first. It is the end-of-turn form: nothing is held back, so a turn
+// that stops inside a table still shows its rows.
+func (r *renderer) flush(ctx context.Context) {
+	r.convert(true)
+	r.drain(ctx)
+}
+
+// flushPartial is the mid-turn form. It withholds the tail of a construct
+// that is still arriving — a table whose rows have not stopped coming — so
+// the screen never receives half a rewrite, which no later edit could repair.
+func (r *renderer) flushPartial(ctx context.Context) {
+	r.convert(false)
+	r.drain(ctx)
+}
+
+// convert moves what it can from buf into out, rewriting it on the way.
+func (r *renderer) convert(final bool) {
+	if r.buf.Len() == 0 {
+		if final {
+			r.dial.convert("", true)
+		}
+		return
+	}
+	src := r.buf.String()
+	take := src
+	if !final {
+		take = src[:len(src)-r.dial.hold(src)]
+	}
+	r.buf.Reset()
+	r.buf.WriteString(src[len(take):])
+	r.out.WriteString(r.dial.convert(take, final))
+}
+
+// drain puts the converted text on screen, splitting at the message limit.
 // Splitting prefers the last newline in the overflowing chunk so a code block
 // or paragraph is not cut mid-line when there is a reasonable place to cut.
-func (r *renderer) flush(ctx context.Context) {
-	for r.buf.Len() > 0 {
+func (r *renderer) drain(ctx context.Context) {
+	for r.out.Len() > 0 {
 		room := messageLimit
 		sending := r.msgID == ""
 		if !sending {
@@ -310,19 +356,19 @@ func (r *renderer) flush(ctx context.Context) {
 			// compute room conservatively — splitting earlier if needed to stay safe.
 			room = messageLimit - r.currentContent.Len()
 		}
-		text := r.buf.String()
+		text := r.out.String()
 		if len(text) <= room {
 			ok := r.write(ctx, text, nil)
 			if sending && !ok {
 				// A failed Send never reached Discord, so unlike a failed Edit
 				// nothing captured this text anywhere else (currentContent for
 				// an unsent message is not self-healing — the next Send just
-				// overwrites it). Leave buf intact so the same text is retried
+				// overwrites it). Leave out intact so the same text is retried
 				// as a new Send on the next flush, and stop here rather than
 				// spinning on the same failure within this call.
 				return
 			}
-			r.buf.Reset()
+			r.out.Reset()
 			return
 		}
 		head, tail := splitAt(text, room)
@@ -330,7 +376,7 @@ func (r *renderer) flush(ctx context.Context) {
 		if !ok {
 			if sending {
 				// A failed Send never reached Discord, so nothing captured
-				// this text anywhere else. buf still holds the whole,
+				// this text anywhere else. out still holds the whole,
 				// untouched text (head+tail) — retry it whole on the next
 				// flush.
 				return
@@ -341,20 +387,20 @@ func (r *renderer) flush(ctx context.Context) {
 			// pick up head the next time an edit to it succeeds. Do NOT
 			// widen this to "retry head+tail whole" the way the Send case
 			// does — head is already accounted for in currentContent, and
-			// requeuing it into buf would send it a second time once a
+			// requeuing it into out would send it a second time once a
 			// later edit succeeds, duplicating it on screen. So keep msgID
 			// and currentContent exactly as they are (do not treat this
 			// message as closed) and only requeue tail, the part nothing
 			// has captured yet.
-			r.buf.Reset()
-			r.buf.WriteString(tail)
+			r.out.Reset()
+			r.out.WriteString(tail)
 			return
 		}
 		// Whatever did not fit belongs to a new message.
 		r.msgID, r.onScreen = "", 0
 		r.currentContent.Reset()
-		r.buf.Reset()
-		r.buf.WriteString(tail)
+		r.out.Reset()
+		r.out.WriteString(tail)
 	}
 }
 

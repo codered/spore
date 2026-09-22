@@ -324,3 +324,60 @@ func TestRendererKeepsTextWhenAnEditFailsDuringASplit(t *testing.T) {
 		}
 	}
 }
+
+func TestRendererRewritesATableArrivingAcrossDeltas(t *testing.T) {
+	// The model writes a table one row at a time. Discord has no table
+	// syntax, so what reaches the screen must be a fenced block — and it
+	// must be one block, not a half-rewritten one per delta.
+	f := newFakeClient()
+	r := newRenderer(f, "C1", 0)
+
+	drain(t, r,
+		daemon.WireEvent{Type: daemon.WireText, Text: "Week ahead:\n\n"},
+		daemon.WireEvent{Type: daemon.WireText, Text: "| Day | High |"},
+		daemon.WireEvent{Type: daemon.WireText, Text: "\n|---|---|\n"},
+		daemon.WireEvent{Type: daemon.WireText, Text: "| Mon | 71° |\n| Tue | 73° |\n"},
+		daemon.WireEvent{Type: daemon.WireText, Text: "\nNo rain.\n"},
+		daemon.WireEvent{Type: daemon.WireTurnDone},
+	)
+
+	var all strings.Builder
+	for _, c := range f.finalContents("C1") {
+		all.WriteString(c)
+	}
+	got := all.String()
+	if strings.Contains(got, "|") {
+		t.Fatalf("a raw table row reached Discord:\n%s", got)
+	}
+	if strings.Count(got, "```") != 2 {
+		t.Fatalf("want exactly one fenced block, got:\n%s", got)
+	}
+	if !strings.Contains(got, "Week ahead:") || !strings.Contains(got, "No rain.") {
+		t.Fatalf("prose around the table was lost:\n%s", got)
+	}
+	for _, day := range []string{"Mon", "Tue"} {
+		if !strings.Contains(got, day) {
+			t.Fatalf("row %q was lost:\n%s", day, got)
+		}
+	}
+}
+
+func TestRendererEmitsAHeldTableWhenTheTurnEndsInsideIt(t *testing.T) {
+	// A turn that stops mid-table must still put the rows on screen. Held
+	// text that is never released is text the user never sees.
+	f := newFakeClient()
+	r := newRenderer(f, "C1", 0)
+
+	drain(t, r,
+		daemon.WireEvent{Type: daemon.WireText, Text: "| Day | High |\n|---|---|\n| Mon | 71° |"},
+		daemon.WireEvent{Type: daemon.WireTurnDone},
+	)
+
+	var all strings.Builder
+	for _, c := range f.finalContents("C1") {
+		all.WriteString(c)
+	}
+	if got := all.String(); !strings.Contains(got, "Mon") || !strings.Contains(got, "71°") {
+		t.Fatalf("held table rows never reached the screen: %q", got)
+	}
+}
