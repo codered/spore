@@ -28,6 +28,14 @@ type fakeBackend struct {
 	created     string
 	sessions    []daemon.SessionJSON
 	transcripts map[string]daemon.TranscriptJSON
+
+	skills        daemon.SkillsJSON
+	agents        daemon.AgentsJSON
+	jobs          []daemon.JobJSON
+	usage         daemon.UsageJSON
+	viewErr       error
+	fetches       int
+	cancelledJobs []int64
 }
 
 func (f *fakeBackend) Sessions(context.Context) ([]daemon.SessionJSON, error) { return f.sessions, nil }
@@ -67,6 +75,33 @@ func (f *fakeBackend) CancelAgent(_ context.Context, parent, child string) error
 func (f *fakeBackend) NewSession(context.Context, string) (string, error) { return f.created, nil }
 func (f *fakeBackend) Slash(_ context.Context, _, cmd string) (string, error) {
 	return "did " + cmd, nil
+}
+func (f *fakeBackend) fetched() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fetches++
+}
+func (f *fakeBackend) Skills(context.Context, string) (daemon.SkillsJSON, error) {
+	f.fetched()
+	return f.skills, f.viewErr
+}
+func (f *fakeBackend) Agents(context.Context, string) (daemon.AgentsJSON, error) {
+	f.fetched()
+	return f.agents, f.viewErr
+}
+func (f *fakeBackend) Jobs(context.Context) ([]daemon.JobJSON, error) {
+	f.fetched()
+	return f.jobs, f.viewErr
+}
+func (f *fakeBackend) Usage(context.Context, string) (daemon.UsageJSON, error) {
+	f.fetched()
+	return f.usage, f.viewErr
+}
+func (f *fakeBackend) CancelJob(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cancelledJobs = append(f.cancelledJobs, id)
+	return nil
 }
 
 func newTestModel(t *testing.T, fb *fakeBackend, selected string) *Model {
