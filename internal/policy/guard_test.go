@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -633,5 +634,62 @@ func TestOtherDeniesKeepTheDoNotRetryWording(t *testing.T) {
 	got := g.Run(ctx, toolCall("shell_exec", "c1", `{"command":"sudo id"}`))
 	if !strings.Contains(got.Content, "Do not retry this call; choose another approach.") {
 		t.Errorf("content = %q, want the unchanged wording", got.Content)
+	}
+}
+
+// TestAgentNoteIsNeverLearnable checks that PatternFor never returns a
+// pattern scope for agent_note, even when its arguments look path-shaped. A
+// file of standing instructions shapes every later turn in this workspace,
+// exactly as a skill shapes every later turn everywhere, so each write is
+// approved on its own. The path-shaped argument is the point: agent_note
+// takes no path today, and resting the property on that accident is how it
+// gets lost to a later argument rename.
+func TestAgentNoteIsNeverLearnable(t *testing.T) {
+	pattern, learnable := PatternFor(Call{
+		Tool: "agent_note",
+		Args: json.RawMessage(`{"path":"/tmp/foo"}`),
+	})
+	if learnable {
+		t.Fatal("agent_note must never offer a pattern scope, even with a path-shaped argument")
+	}
+	if pattern != "" {
+		t.Fatalf("expected empty pattern for agent_note, got %q", pattern)
+	}
+}
+
+// TestAgentNoteDeniedUnderRemote checks that the remote profile denies
+// agent_note outright: a Discord user must not be able to rewrite the
+// operator's standing instructions.
+//
+// The config is built through config.Load rather than config.Default so the
+// baseline deny is in force. A policy test built on Default silently loses
+// the assertion it exists to make.
+func TestAgentNoteDeniedUnderRemote(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	// Deliberately minimal: everything policy-shaped comes from the shipped
+	// defaults, so this asserts what spore actually ships rather than what
+	// the test just wrote into a file.
+	if err := os.WriteFile(path, []byte(`
+default_model = "anthropic/claude-sonnet-5"
+[policy]
+workspace = "`+dir+`"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng, err := NewEngine(cfg.Policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := eng.Evaluate(
+		Session{ID: "s", Profile: ProfileRemote, Workspace: dir},
+		Call{Tool: "agent_note", Args: json.RawMessage(`{"text":"x"}`)},
+	)
+	if res.Decision != DecisionDeny {
+		t.Fatalf("remote profile decision for agent_note = %q, want deny", res.Decision)
 	}
 }

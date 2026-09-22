@@ -466,7 +466,7 @@ func Default() *Config {
 			ApprovalTimeout: "5m",
 			MaxOutput:       30_000,
 			Allow:           []string{"fs_read", "fs_list", "fs_glob", "fs_grep", "web_*", "schedule_list", "recall_search", "skill_load"},
-			Ask:             []string{"fs_write", "fs_edit", "shell_exec", "schedule_create", "schedule_cancel", "mcp__*", "memory", "skill_install"},
+			Ask:             []string{"fs_write", "fs_edit", "shell_exec", "schedule_create", "schedule_cancel", "mcp__*", "memory", "skill_install", "agent_note"},
 			// The remote profile denies MCP outright: a Discord user is not
 			// the operator who declared the server, and an MCP server is
 			// reached through credentials that operator supplied. It denies
@@ -477,7 +477,7 @@ func Default() *Config {
 			// deliberately NOT part of baselineDeny, which is reserved for the
 			// rules no approval may ever talk past.
 			Profiles: map[string]ProfilePolicy{
-				"remote": {Deny: []string{"mcp__*", "memory", "skill_install"}},
+				"remote": {Deny: []string{"mcp__*", "memory", "skill_install", "agent_note"}},
 			},
 		},
 		Web:       WebConfig{SearchProvider: "brave", UserAgent: "spore/0.1"},
@@ -749,6 +749,25 @@ func (c *Config) DBPath() string { return filepath.Join(c.DataDir, "spore.db") }
 // MemoryDir is where the fact files live: one markdown file per fact, owned
 // by the files rather than the database.
 func (c *Config) MemoryDir() string { return filepath.Join(c.DataDir, "memory") }
+
+// SoulPath is the global personality file. It sits beside the other data
+// files because it is the user's, not any one workspace's.
+func (c *Config) SoulPath() string { return filepath.Join(c.DataDir, "soul.md") }
+
+// AgentPath is the standing instructions for one workspace, and is empty when
+// the session has none.
+//
+// It is deliberately not governed by Skills.Scope. Skills have a scope
+// setting because a skill is a library that might reasonably be shared or
+// kept globally; standing instructions for this project are meaningless
+// anywhere else, so there is no second place this could live and no setting
+// to get wrong.
+func (c *Config) AgentPath(workspace string) string {
+	if workspace == "" {
+		return ""
+	}
+	return filepath.Join(workspace, ".spore", "agent.md")
+}
 
 // ValidateDaemonAddr rejects any daemon address that is not on the loopback
 // interface. Binding elsewhere would put an unauthenticated agent that can

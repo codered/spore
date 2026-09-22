@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/memory"
+	"github.com/codered/spore/internal/persona"
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/router"
@@ -118,6 +120,22 @@ func (a *Agent) Snapshot(ctx context.Context, sessionID string) (Snapshot, error
 	// so the layout is resolved per turn from the same root the environment
 	// section uses.
 	snap.Self = selfSection(a.Cfg, policy.WorkspaceFrom(ctx))
+	// The persona files are read per turn rather than cached: they are a
+	// couple of kilobytes, this method already reads SQLite, and reading
+	// them here means there is no staleness to reason about when the user
+	// edits one mid-session. A read error is logged and dropped -- a
+	// misconfigured soul.md must not fail every turn.
+	if body, err := persona.Load(a.Cfg.SoulPath()); err != nil {
+		slog.Warn("read soul.md", "path", a.Cfg.SoulPath(), "err", err)
+	} else {
+		snap.Soul = body
+	}
+	agentPath := a.Cfg.AgentPath(policy.WorkspaceFrom(ctx))
+	if body, err := persona.Load(agentPath); err != nil {
+		slog.Warn("read agent.md", "path", agentPath, "err", err)
+	} else {
+		snap.Agent = body
+	}
 	if a.Env != nil {
 		// The root comes from the turn context, not from the agent: one agent
 		// serves every session, and each is rooted somewhere of its own.

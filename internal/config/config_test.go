@@ -729,3 +729,39 @@ local_paths = true
 		}
 	}
 }
+
+func TestSoulPathSitsBesideTheOtherDataFiles(t *testing.T) {
+	c := Default()
+	c.DataDir = "/home/u/.spore"
+	if got, want := c.SoulPath(), "/home/u/.spore/soul.md"; got != want {
+		t.Fatalf("SoulPath() = %q, want %q", got, want)
+	}
+}
+
+func TestAgentPathIsWorkspaceLocal(t *testing.T) {
+	c := Default()
+	c.DataDir = "/home/u/.spore"
+	if got, want := c.AgentPath("/home/u/work"), "/home/u/work/.spore/agent.md"; got != want {
+		t.Fatalf("AgentPath() = %q, want %q", got, want)
+	}
+}
+
+func TestAgentPathIgnoresSkillScope(t *testing.T) {
+	// Skills have a scope setting because a skill is a library that might be
+	// shared. Standing instructions for this project are meaningless
+	// anywhere else, so agent.md has no second place it could live.
+	c := Default()
+	c.DataDir = "/home/u/.spore"
+	c.Skills.Scope = SkillsGlobal
+	global := c.AgentPath("/home/u/work")
+	c.Skills.Scope = SkillsWorkspace
+	if ws := c.AgentPath("/home/u/work"); ws != global {
+		t.Fatalf("AgentPath moved with the skill scope: %q vs %q", ws, global)
+	}
+}
+
+func TestAgentPathIsEmptyWithoutAWorkspace(t *testing.T) {
+	if got := Default().AgentPath(""); got != "" {
+		t.Fatalf("AgentPath(\"\") = %q, want empty", got)
+	}
+}

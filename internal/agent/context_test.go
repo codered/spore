@@ -556,3 +556,104 @@ func TestSelfSectionExplainsInstallingFromALocation(t *testing.T) {
 		}
 	}
 }
+
+func TestAssembleRendersSoulAndAgent(t *testing.T) {
+	snap := Snapshot{
+		System: "You are spore.",
+		Soul:   "Be blunt with me.",
+		Agent:  "Always run make lint before pushing.",
+	}
+	got := systemText(Assemble(snap, config.Default().Context).System)
+	for _, want := range []string{"Who you are", "Be blunt with me.", "Working in this project", "Always run make lint before pushing."} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("assembled prompt is missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestSoulSitsUnderTheSystemPromptAndAgentSitsLast(t *testing.T) {
+	// soul.md is identity and belongs with identity. agent.md is the most
+	// situational thing in the prefix, so it sits closest to the
+	// conversation it governs.
+	cfg := config.Default()
+	cfg.DataDir = "/home/u/.spore"
+	snap := Snapshot{
+		System: "SYSTEM-MARKER",
+		Soul:   "SOUL-MARKER",
+		Self:   selfSection(cfg, ""),
+		Facts:  []memory.Fact{{Name: "f", Description: "d", Body: "FACT-MARKER"}},
+		Agent:  "AGENT-MARKER",
+	}
+	got := systemText(Assemble(snap, cfg.Context).System)
+
+	order := []string{"SYSTEM-MARKER", "SOUL-MARKER", "/home/u/.spore/skills", "FACT-MARKER", "AGENT-MARKER"}
+	last := -1
+	for _, m := range order {
+		i := strings.Index(got, m)
+		if i < 0 {
+			t.Fatalf("%q missing from the prompt:\n%s", m, got)
+		}
+		if i < last {
+			t.Fatalf("%q is out of order in the prefix:\n%s", m, got)
+		}
+		last = i
+	}
+}
+
+func TestAbsentSoulAndAgentRenderNothing(t *testing.T) {
+	// A machine with neither file must produce exactly today's prompt.
+	got := systemText(Assemble(Snapshot{System: "You are spore."}, config.Default().Context).System)
+	for _, unwanted := range []string{"Who you are", "Working in this project"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("an absent file still rendered %q:\n%s", unwanted, got)
+		}
+	}
+}
+
+func TestSoulAndAgentRideInTheCachedPrefix(t *testing.T) {
+	snap := Snapshot{
+		System:   "You are spore.",
+		Soul:     "SOUL-MARKER",
+		Agent:    "AGENT-MARKER",
+		Messages: []provider.Message{{Role: "user", Blocks: []provider.Block{{Type: provider.BlockText, Text: "hi"}}}},
+	}
+	req := Assemble(snap, config.Default().Context)
+	for _, m := range []string{"SOUL-MARKER", "AGENT-MARKER"} {
+		if !strings.Contains(systemText(req.System), m) {
+			t.Fatalf("%q is not a system block, so it is outside the cached prefix", m)
+		}
+	}
+}
+
+func TestSelfSectionNamesTheSoulAndAgentFiles(t *testing.T) {
+	cfg := config.Default()
+	cfg.DataDir = "/home/u/.spore"
+	got := selfSection(cfg, "/home/u/work")
+	for _, want := range []string{"/home/u/.spore/soul.md", "/home/u/work/.spore/agent.md", "agent_note"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("self section does not mention %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestSelfSectionSaysSoulIsNotSporesToWrite(t *testing.T) {
+	// soul.md has no tool. Without being told, the model either attempts a
+	// write nothing offers or refuses a request it could have satisfied by
+	// pointing at the path.
+	cfg := config.Default()
+	cfg.DataDir = "/home/u/.spore"
+	got := selfSection(cfg, "/home/u/work")
+	if !strings.Contains(got, "cannot write it") {
+		t.Fatalf("self section does not say soul.md is the user's to edit:\n%s", got)
+	}
+}
+
+func TestSelfSectionOmitsAgentPathWithoutAWorkspace(t *testing.T) {
+	// A rootless session has no agent.md, and naming a path that does not
+	// exist invites the model to describe one that can never be written.
+	cfg := config.Default()
+	cfg.DataDir = "/home/u/.spore"
+	if got := selfSection(cfg, ""); strings.Contains(got, "agent.md") {
+		t.Fatalf("a rootless session was told about agent.md:\n%s", got)
+	}
+}
