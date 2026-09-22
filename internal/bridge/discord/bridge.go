@@ -35,7 +35,7 @@ type Turns interface {
 // interface for the same reason Turns is: the bridge is tested without a
 // daemon.
 type Sessions interface {
-	CreateSession(ctx context.Context, title, requested string, profile policy.Profile) (string, error)
+	CreateSession(ctx context.Context, title, requested, source string, profile policy.Profile) (string, error)
 }
 
 // Options are the bridge's collaborators. Guard may be nil — a bridge built
@@ -267,7 +267,7 @@ func (b *Bridge) handleNew(in Inbound) {
 		return
 	}
 
-	sessionID, err := b.sessions.CreateSession(b.ctx, "", "", policy.ProfileRemote)
+	sessionID, err := b.sessions.CreateSession(b.ctx, "", "", store.SourceDiscord, policy.ProfileRemote)
 	if err != nil {
 		slog.Warn("discord /new: create session", "err", err)
 		return
@@ -308,7 +308,7 @@ func (b *Bridge) resolveSession(in Inbound) (sessionID, replyChannel string, err
 		return sid, in.ChannelID, nil
 	}
 
-	sid, err := b.sessions.CreateSession(b.ctx, "", "", policy.ProfileRemote)
+	sid, err := b.sessions.CreateSession(b.ctx, "", "", store.SourceDiscord, policy.ProfileRemote)
 	if err != nil {
 		return "", "", err
 	}

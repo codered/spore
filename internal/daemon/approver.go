@@ -213,6 +213,33 @@ func (s *Server) pendingApprovalEvents(ctx context.Context, sessionID string) []
 	return out
 }
 
+// allPendingApprovalEvents is pendingApprovalEvents across every session.
+// Each approval is tagged with the root session it is answered through, and
+// with Origin when a sub-agent asked.
+func (s *Server) allPendingApprovalEvents(ctx context.Context) []WireEvent {
+	pending, err := s.store.PendingCallsAll(ctx)
+	if err != nil {
+		return nil
+	}
+	out := make([]WireEvent, 0, len(pending))
+	for _, p := range pending {
+		root := p.SessionID
+		if anc, err := s.store.SessionAncestors(ctx, p.SessionID); err == nil && len(anc) > 0 {
+			root = anc[len(anc)-1]
+		}
+		pattern, _ := policy.PatternFor(policy.Call{Tool: p.Tool, Args: p.ArgsJSON})
+		ev := WireEvent{
+			Type: WireApproval, Session: root, PendingID: p.ID, Tool: p.Tool,
+			Args: string(p.ArgsJSON), Rule: p.Rule, Pattern: pattern,
+		}
+		if p.SessionID != root {
+			ev.Origin = p.SessionID
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
 func (s *Server) handleListApprovals(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if _, ok := s.findSession(w, r, id); !ok {

@@ -87,7 +87,7 @@ func (s *Server) StartJob(ctx context.Context, job store.Job) (string, error) {
 	}
 	// A job has no directory of its own, so it gets a session directory --
 	// the same treatment as the web UI and the bridge.
-	sessionID, err := s.CreateSession(ctx, title, "", policy.ProfileLocal)
+	sessionID, err := s.CreateSession(ctx, title, "", store.SourceJob, policy.ProfileLocal)
 	if err != nil {
 		return "", err
 	}

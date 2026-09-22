@@ -19,14 +19,27 @@ import (
 	"github.com/codered/spore/internal/workspace"
 )
 
+// Session states as the listing reports them. Blocked wins over working: a
+// session waiting on a human is the one that needs attention.
+const (
+	SessionIdle    = "idle"
+	SessionWorking = "working"
+	SessionBlocked = "blocked"
+)
+
 type SessionJSON struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
 	// Workspace is where the session is rooted. Clients show it so a human
 	// can see which directory a detached session is operating on.
 	Workspace string    `json:"workspace"`
+	Source    string    `json:"source"`
+	ParentID  string    `json:"parent_id,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// State and Pending are filled by the listing only.
+	State   string `json:"state,omitempty"`
+	Pending int    `json:"pending,omitempty"`
 }
 
 type MessageJSON struct {
@@ -53,26 +66,72 @@ type TranscriptJSON struct {
 
 func toSessionJSON(s store.Session) SessionJSON {
 	return SessionJSON{ID: s.ID, Title: s.Title, Workspace: s.Workspace,
+		Source: s.Source, ParentID: s.ParentID,
 		CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt}
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	sessions, err := s.store.ListSessions(r.Context(), 200, false)
+	children := r.URL.Query().Get("children") == "1"
+	sessions, err := s.store.ListSessions(r.Context(), 200, children)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list sessions: %v", err)
 		return
 	}
+	pending := s.pendingCounts(r.Context())
 	out := make([]SessionJSON, 0, len(sessions))
 	for _, sess := range sessions {
-		out = append(out, toSessionJSON(sess))
+		j := toSessionJSON(sess)
+		j.Pending = pending[sess.ID]
+		j.State = s.sessionState(r.Context(), sess, j.Pending)
+		out = append(out, j)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// pendingCounts counts unanswered approvals per session, crediting each to
+// the session that asked and to every ancestor: a child's approval is
+// answered through its root, so the root is blocked by it too.
+func (s *Server) pendingCounts(ctx context.Context) map[string]int {
+	counts := map[string]int{}
+	pending, err := s.store.PendingCallsAll(ctx)
+	if err != nil {
+		return counts
+	}
+	for _, p := range pending {
+		counts[p.SessionID]++
+		anc, err := s.store.SessionAncestors(ctx, p.SessionID)
+		if err != nil {
+			continue
+		}
+		for _, a := range anc {
+			counts[a]++
+		}
+	}
+	return counts
+}
+
+// sessionState is blocked when a human is being waited on, working when a
+// turn is in flight -- in the hub for a top-level session, in its run row for
+// a sub-agent, whose turns never pass through the hub -- and idle otherwise.
+func (s *Server) sessionState(ctx context.Context, sess store.Session, pending int) string {
+	if pending > 0 {
+		return SessionBlocked
+	}
+	if s.hub.Running(sess.ID) {
+		return SessionWorking
+	}
+	if sess.ParentID != "" {
+		if run, ok, err := s.store.SubagentRun(ctx, sess.ID); err == nil && ok && run.State == store.RunRunning {
+			return SessionWorking
+		}
+	}
+	return SessionIdle
 }
 
 // CreateSession is the one place a session's root is decided: the HTTP
 // handler, the scheduler and the bridge all come through here, so the
 // ceiling is checked once rather than in three places that can drift.
-func (s *Server) CreateSession(ctx context.Context, title, requested string, profile policy.Profile) (string, error) {
+func (s *Server) CreateSession(ctx context.Context, title, requested, source string, profile policy.Profile) (string, error) {
 	root, err := workspace.Root(workspace.Request{
 		Requested:  requested,
 		Ceiling:    s.cfg.Policy.Workspace,
@@ -82,7 +141,18 @@ func (s *Server) CreateSession(ctx context.Context, title, requested string, pro
 	if err != nil {
 		return "", err
 	}
-	return s.store.CreateSession(ctx, title, root)
+	id, err := s.store.CreateSessionFrom(ctx, title, root, source)
+	if err != nil {
+		return "", err
+	}
+	// Announce it on the global feed. The workspace is read back because an
+	// empty root is allocated by the store.
+	ws := root
+	if sess, ok, err := s.store.Session(ctx, id); err == nil && ok {
+		ws = sess.Workspace
+	}
+	s.hub.Publish(id, WireEvent{Type: WireSession, Title: title, Workspace: ws, Source: source})
+	return id, nil
 }
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -101,7 +171,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	// able to name its own trust level. A remote caller (the bridge) reaches
 	// CreateSession directly with policy.ProfileRemote instead of through
 	// this handler.
-	id, err := s.CreateSession(r.Context(), strings.TrimSpace(body.Title), strings.TrimSpace(body.Workspace), policy.ProfileLocal)
+	id, err := s.CreateSession(r.Context(), strings.TrimSpace(body.Title), strings.TrimSpace(body.Workspace), store.SourceChat, policy.ProfileLocal)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "create session: %v", err)
 		return

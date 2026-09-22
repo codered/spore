@@ -177,8 +177,8 @@ func testDiscordConfig() config.DiscordConfig {
 // ignores both and just opens a row.
 type fakeSessions struct{ store *store.Store }
 
-func (f *fakeSessions) CreateSession(ctx context.Context, title, requested string, profile policy.Profile) (string, error) {
-	return f.store.CreateSession(ctx, title, requested)
+func (f *fakeSessions) CreateSession(ctx context.Context, title, requested, source string, profile policy.Profile) (string, error) {
+	return f.store.CreateSessionFrom(ctx, title, requested, source)
 }
 
 // bridgeWithStore wires a bridge over the given client and store, with a
@@ -259,6 +259,9 @@ func TestAMessageInAChannelOpensAThreadAndASession(t *testing.T) {
 	// it that way.
 	if got := turns.lastStart(); got.profile != policy.ProfileRemote {
 		t.Fatalf("turn profile = %q, want %q", got.profile, policy.ProfileRemote)
+	}
+	if sess, _, _ := st.Session(context.Background(), sid); sess.Source != store.SourceDiscord {
+		t.Fatalf("thread session source = %q, want %q", sess.Source, store.SourceDiscord)
 	}
 }
 
@@ -380,6 +383,10 @@ func TestSlashNewStartsAFreshDMSession(t *testing.T) {
 	}
 	if turns.startCount() != 2 {
 		t.Fatalf("started %d turns, want 2 (/new is not a prompt)", turns.startCount())
+	}
+	fresh, _, _ := st.SessionForExternal(context.Background(), bridgeName, "DM1")
+	if sess, _, _ := st.Session(context.Background(), fresh); sess.Source != store.SourceDiscord {
+		t.Fatalf("/new session source = %q, want %q", sess.Source, store.SourceDiscord)
 	}
 }
 
