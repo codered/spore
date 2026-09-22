@@ -540,3 +540,19 @@ func TestSelfSectionSaysWhatTheUserCanAskFor(t *testing.T) {
 		}
 	}
 }
+
+func TestSelfSectionExplainsInstallingFromALocation(t *testing.T) {
+	// skill_install takes a body, not a path or a URL, so "install the skill
+	// at <url>" is a two-step the model has to know about. And a path outside
+	// the workspace is in baselineDeny, which no approval can talk past: the
+	// useful answer there is what the user can do instead, not a refusal.
+	cfg := config.Default()
+	cfg.DataDir = "/home/u/.spore"
+
+	got := selfSection(cfg, "")
+	for _, want := range []string{"web_fetch", "fs_read", "outside the workspace"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("self section never mentions %q:\n%s", want, got)
+		}
+	}
+}

@@ -193,6 +193,12 @@ func selfSection(cfg *config.Config, workspace string) string {
 	// this the model answers "your skills go in <dir>" when what the user
 	// wanted was a skill written for them.
 	b.WriteString("\nThe user can ask you to do these things directly: \"write me a skill for X\" is skill_install, and \"remember that X\" is memory. Each asks for their approval before it writes.\n")
+	// skill_install takes a body, not a location, so installing from a file
+	// or a URL is a two-step the model has to be told about. The last
+	// sentence is the load-bearing one: a path outside the workspace is in
+	// baselineDeny, which no approval can talk past, so the only useful
+	// answer is what the user can do instead of a refusal.
+	b.WriteString("\nskill_install takes the skill's text, not a location. To install one from a file or a URL, read it first -- web_fetch for a URL, fs_read for a file in the workspace -- and pass what you read to skill_install. A file outside the workspace cannot be read at all, whoever approves it: say so and offer to install it if the user moves it into the workspace or starts a session rooted where it lives.\n")
 	return b.String()
 }
 
