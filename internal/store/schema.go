@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   title      TEXT NOT NULL DEFAULT '',
   workspace  TEXT NOT NULL DEFAULT '',
   parent_id  TEXT NOT NULL DEFAULT '',
+  source     TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
