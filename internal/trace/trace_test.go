@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/codered/spore/internal/config"
@@ -190,9 +191,13 @@ func TestErrorPathEndsLLMSpan(t *testing.T) {
 }
 
 func TestInitEnabledAgainstLocalCollector(t *testing.T) {
-	// Stand up a local httptest server that accepts OTLP trace POSTs
+	// Stand up a local httptest server that accepts OTLP trace POSTs and
+	// counts them: accepting the connection is not the contract, delivering
+	// the span is.
+	var posts atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
+			posts.Add(1)
 			w.WriteHeader(http.StatusOK)
 		}
 	}))
@@ -216,8 +221,11 @@ func TestInitEnabledAgainstLocalCollector(t *testing.T) {
 	ctx, turn := StartTurn(ctx, "test-session", "test-client")
 	turn.End()
 
-	// Shutdown must succeed
+	// Shutdown must succeed, and flush what the batcher is holding.
 	if err := shutdown(ctx); err != nil {
 		t.Errorf("shutdown: %v", err)
+	}
+	if posts.Load() == 0 {
+		t.Error("the span never reached the collector")
 	}
 }

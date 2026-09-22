@@ -75,8 +75,22 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("init tracing: %w", err)
 	}
-	go func() { _ = shutdown(ctx) }()
+	// Deferred, not fired now: shutdown tears the provider down and drops
+	// whatever the batch processor is holding, so calling it before the
+	// command runs leaves every span unexported however the config reads.
+	defer func() { _ = shutdown(ctx) }()
 
+	return dispatchFn(ctx, cfg, args)
+}
+
+// dispatchFn is the seam the wiring tests replace, so a test can observe what
+// the command sees -- a live tracer provider, among other things -- without
+// running a real command.
+var dispatchFn = dispatch
+
+// dispatch runs one command. Everything shared by every command (config,
+// tracing) is set up by run before this is called.
+func dispatch(ctx context.Context, cfg *config.Config, args []string) error {
 	switch args[0] {
 	case "once":
 		rest, ws, err := takeWorkspaceFlag(args[1:])
