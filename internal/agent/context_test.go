@@ -657,3 +657,53 @@ func TestSelfSectionOmitsAgentPathWithoutAWorkspace(t *testing.T) {
 		t.Fatalf("a rootless session was told about agent.md:\n%s", got)
 	}
 }
+
+func TestSoulSectionDoesNotDoubleTheHeading(t *testing.T) {
+	// A user writing a markdown file naturally titles it. Prepending our own
+	// heading then stacks two of them, and a file that guessed the same
+	// title stacks the same words twice.
+	body := "## Who you are\n\nYou're the friend who knows a lot of things.\n"
+	got := soulSection(body)
+	if n := strings.Count(got, "## Who you are"); n != 1 {
+		t.Fatalf("heading appears %d times, want 1:\n%s", n, got)
+	}
+	if !strings.Contains(got, "friend who knows") {
+		t.Fatalf("body was lost:\n%s", got)
+	}
+}
+
+func TestSoulSectionUsesTheFilesOwnTitleWhateverItSays(t *testing.T) {
+	// The rule is "a file that titles itself keeps its title", not "a file
+	// that happens to match ours". Any leading heading counts.
+	got := soulSection("# My rules\n\nBe blunt.\n")
+	if strings.Contains(got, "## Who you are") {
+		t.Fatalf("our heading was added above the file's own:\n%s", got)
+	}
+	if !strings.Contains(got, "# My rules") {
+		t.Fatalf("the file's own title was lost:\n%s", got)
+	}
+}
+
+func TestSoulSectionStillTitlesAnUntitledFile(t *testing.T) {
+	got := soulSection("Be blunt. Skip the preamble.\n")
+	if !strings.Contains(got, "## Who you are") {
+		t.Fatalf("an untitled file got no heading, so the block is unlabelled:\n%s", got)
+	}
+}
+
+func TestAgentSectionDoesNotDoubleTheHeading(t *testing.T) {
+	got := agentSection("## Working in this project\n\n- Always run make lint.\n")
+	if n := strings.Count(got, "## Working in this project"); n != 1 {
+		t.Fatalf("heading appears %d times, want 1:\n%s", n, got)
+	}
+	if !strings.Contains(got, "make lint") {
+		t.Fatalf("body was lost:\n%s", got)
+	}
+}
+
+func TestAgentSectionStillTitlesAnUntitledFile(t *testing.T) {
+	got := agentSection("- Always run make lint.\n")
+	if !strings.Contains(got, "## Working in this project") {
+		t.Fatalf("an untitled file got no heading:\n%s", got)
+	}
+}
