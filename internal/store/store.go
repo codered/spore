@@ -42,17 +42,19 @@ type Session struct {
 }
 
 type Message struct {
-	ID         int64
-	SessionID  string
-	Seq        int
-	Role       string
-	BlocksJSON []byte
-	Model      string
-	CallSite   string
-	TokensIn   int
-	TokensOut  int
-	CostUSD    float64
-	CreatedAt  time.Time
+	ID               int64
+	SessionID        string
+	Seq              int
+	Role             string
+	BlocksJSON       []byte
+	Model            string
+	CallSite         string
+	TokensIn         int
+	TokensOut        int
+	TokensCacheWrite int
+	TokensCacheRead  int
+	CostUSD          float64
+	CreatedAt        time.Time
 }
 
 // Fixed-width so the text column sorts chronologically; still parses as
@@ -145,6 +147,42 @@ func migrateSessions(db *sql.DB) error {
 	return nil
 }
 
+// migrateMessages adds the cache token columns when they are missing. They are
+// not in schemaSQL: messages ships in databases written before caching
+// existed, and CREATE TABLE IF NOT EXISTS leaves those alone. Keeping the
+// columns in one place means a fresh database and an upgraded one cannot
+// disagree about them.
+func migrateMessages(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(messages)`)
+	if err != nil {
+		return fmt.Errorf("inspect messages table: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	have := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		have[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, col := range []string{"tokens_cache_write", "tokens_cache_read"} {
+		if have[col] {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE messages ADD COLUMN ` + col + ` INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add messages.%s: %w", col, err)
+		}
+	}
+	return nil
+}
+
 func Open(path string) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -169,6 +207,10 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schemaSQL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
+	}
+	if err := migrateMessages(db); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 	// This one runs after the schema rather than before it, unlike the two
 	// above: recall_sync is created by schemaSQL on a fresh database, so the
@@ -370,10 +412,10 @@ func (s *Store) AppendMessage(ctx context.Context, m Message) (int64, error) {
 	}
 	now := time.Now().UTC().Format(timeFormat)
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO messages (session_id, seq, role, blocks, model, call_site, tokens_in, tokens_out, cost_usd, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO messages (session_id, seq, role, blocks, model, call_site, tokens_in, tokens_out, tokens_cache_write, tokens_cache_read, cost_usd, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.SessionID, next, m.Role, string(m.BlocksJSON), m.Model, m.CallSite,
-		m.TokensIn, m.TokensOut, m.CostUSD, now)
+		m.TokensIn, m.TokensOut, m.TokensCacheWrite, m.TokensCacheRead, m.CostUSD, now)
 	if err != nil {
 		return 0, fmt.Errorf("append message: %w", err)
 	}
@@ -396,7 +438,7 @@ func (s *Store) AppendMessage(ctx context.Context, m Message) (int64, error) {
 
 func (s *Store) Messages(ctx context.Context, sessionID string) ([]Message, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, seq, role, blocks, model, call_site, tokens_in, tokens_out, cost_usd, created_at
+		`SELECT id, session_id, seq, role, blocks, model, call_site, tokens_in, tokens_out, tokens_cache_write, tokens_cache_read, cost_usd, created_at
 		 FROM messages WHERE session_id = ? ORDER BY seq`, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("read messages: %w", err)
@@ -407,7 +449,7 @@ func (s *Store) Messages(ctx context.Context, sessionID string) ([]Message, erro
 		var m Message
 		var blocks, created string
 		if err := rows.Scan(&m.ID, &m.SessionID, &m.Seq, &m.Role, &blocks, &m.Model,
-			&m.CallSite, &m.TokensIn, &m.TokensOut, &m.CostUSD, &created); err != nil {
+			&m.CallSite, &m.TokensIn, &m.TokensOut, &m.TokensCacheWrite, &m.TokensCacheRead, &m.CostUSD, &created); err != nil {
 			return nil, err
 		}
 		m.BlocksJSON = []byte(blocks)

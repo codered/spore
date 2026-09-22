@@ -31,7 +31,7 @@ func TestStreamParsesFragmentedToolCallAndUsage(t *testing.T) {
 	c := New(srv.URL, "sk-test", srv.Client())
 	ch, err := c.Stream(context.Background(), provider.Request{
 		Model:     "qwen3:8b",
-		System:    "you are spore",
+		System:    []provider.Block{{Type: provider.BlockText, Text: "you are spore"}},
 		MaxTokens: 512,
 		Messages: []provider.Message{{
 			Role:   provider.RoleUser,
@@ -263,6 +263,26 @@ func TestToWireSendsToolResultAsToolMessage(t *testing.T) {
 	}
 	if toolMsg["content"] != "tool result output" {
 		t.Errorf("tool message content = %v, want 'tool result output'", toolMsg["content"])
+	}
+}
+
+// Several system blocks become one system message. OpenAI-compatible
+// endpoints have no client-side cache control and no notion of system
+// blocks, so the join is the whole translation.
+func TestToWireJoinsSystemBlocks(t *testing.T) {
+	out := toWire([]provider.Block{
+		{Type: provider.BlockText, Text: "alpha"},
+		{Type: provider.BlockText, Text: "beta", CacheBreak: true},
+	}, nil)
+
+	if len(out) != 1 {
+		t.Fatalf("got %d messages, want one system message: %v", len(out), out)
+	}
+	if out[0]["role"] != "system" {
+		t.Errorf("role = %v, want system", out[0]["role"])
+	}
+	if out[0]["content"] != "alphabeta" {
+		t.Errorf("content = %q, want the blocks joined with no separator", out[0]["content"])
 	}
 }
 

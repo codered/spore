@@ -21,10 +21,17 @@ const (
 	workspaceHeader = "anthropic-workspace-id"
 )
 
+// cacheControl is the marker the API reads. The 5-minute TTL is the default
+// and spore does not offer the 1-hour one: a read refreshes the entry's timer
+// for free, so turns less than five minutes apart keep it warm indefinitely,
+// while the 1-hour TTL doubles the write premium.
+var cacheControl = map[string]any{"type": "ephemeral"}
+
 type Client struct {
 	baseURL     string
 	apiKey      string
 	workspaceID string
+	cache       bool
 	hc          *http.Client
 
 	// mu guards learnedWS, the default workspace the API reported for this
@@ -33,19 +40,22 @@ type Client struct {
 	learnedWS string
 }
 
-// New builds a client. workspaceID may be empty, in which case requests carry
+// New builds a client. cache turns prompt-caching breakpoints on; an operator
+// sets it false for a proxy that rejects the field, or for a workload whose
+// prompt changes from the first byte every turn and would pay the write
+// premium for nothing. workspaceID may be empty, in which case requests carry
 // no anthropic-workspace-id header and the API acts in the key's default
 // workspace. Identity-linked keys that span several workspaces reject that;
 // the client then falls back to the default workspace the API names in the
 // response and retries once.
-func New(baseURL, apiKey, workspaceID string, hc *http.Client) *Client {
+func New(baseURL, apiKey, workspaceID string, cache bool, hc *http.Client) *Client {
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
 	if hc == nil {
 		hc = &http.Client{Timeout: 10 * time.Minute}
 	}
-	return &Client{baseURL: strings.TrimSuffix(baseURL, "/"), apiKey: apiKey, workspaceID: workspaceID, hc: hc}
+	return &Client{baseURL: strings.TrimSuffix(baseURL, "/"), apiKey: apiKey, workspaceID: workspaceID, cache: cache, hc: hc}
 }
 
 func (c *Client) Name() string { return "anthropic" }
@@ -63,22 +73,49 @@ type wireBlock struct {
 	ToolUseID string `json:"tool_use_id,omitempty"`
 }
 
-func toWire(msgs []provider.Message) []map[string]any {
+func (c *Client) toWire(msgs []provider.Message) []map[string]any {
 	out := make([]map[string]any, 0, len(msgs))
 	for _, m := range msgs {
 		role := string(m.Role)
-		blocks := make([]wireBlock, 0, len(m.Blocks))
+		blocks := make([]map[string]any, 0, len(m.Blocks))
 		for _, b := range m.Blocks {
+			var blk map[string]any
 			switch b.Type {
 			case provider.BlockToolResult:
 				// Anthropic carries tool results on a user-role message.
 				role = "user"
-				blocks = append(blocks, wireBlock{Type: "tool_result", ToolUseID: b.ID, Content: b.Content, IsError: b.IsError})
+				blk = map[string]any{"type": "tool_result"}
+				if b.ID != "" {
+					blk["tool_use_id"] = b.ID
+				}
+				if b.Content != "" {
+					blk["content"] = b.Content
+				}
+				if b.IsError {
+					blk["is_error"] = true
+				}
 			case provider.BlockToolUse:
-				blocks = append(blocks, wireBlock{Type: "tool_use", ID: b.ID, Name: b.Name, Input: b.Input})
+				blk = map[string]any{"type": "tool_use"}
+				if b.ID != "" {
+					blk["id"] = b.ID
+				}
+				if b.Name != "" {
+					blk["name"] = b.Name
+				}
+				if len(b.Input) > 0 {
+					blk["input"] = b.Input
+				}
 			default:
-				blocks = append(blocks, wireBlock{Type: "text", Text: b.Text})
+				blk = map[string]any{"type": "text"}
+				if b.Text != "" {
+					blk["text"] = b.Text
+				}
 			}
+
+			if c.cache && b.CacheBreak {
+				blk["cache_control"] = cacheControl
+			}
+			blocks = append(blocks, blk)
 		}
 		out = append(out, map[string]any{"role": role, "content": blocks})
 	}
@@ -90,10 +127,21 @@ func (c *Client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 		"model":      req.Model,
 		"max_tokens": req.MaxTokens,
 		"stream":     true,
-		"messages":   toWire(req.Messages),
+		"messages":   c.toWire(req.Messages),
 	}
-	if req.System != "" {
-		body["system"] = req.System
+	if len(req.System) > 0 {
+		blocks := make([]map[string]any, 0, len(req.System))
+		for _, b := range req.System {
+			blk := map[string]any{"type": "text"}
+			if b.Text != "" {
+				blk["text"] = b.Text
+			}
+			if c.cache && b.CacheBreak {
+				blk["cache_control"] = cacheControl
+			}
+			blocks = append(blocks, blk)
+		}
+		body["system"] = blocks
 	}
 	if req.Temperature > 0 {
 		body["temperature"] = req.Temperature
@@ -226,8 +274,10 @@ func (c *Client) parse(rc io.ReadCloser, ch chan<- provider.Event) {
 			Index   int    `json:"index"`
 			Message struct {
 				Usage struct {
-					InputTokens  int `json:"input_tokens"`
-					OutputTokens int `json:"output_tokens"`
+					InputTokens              int `json:"input_tokens"`
+					OutputTokens             int `json:"output_tokens"`
+					CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+					CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 				} `json:"usage"`
 			} `json:"message"`
 			ContentBlock wireBlock `json:"content_block"`
@@ -253,6 +303,8 @@ func (c *Client) parse(rc io.ReadCloser, ch chan<- provider.Event) {
 		switch ev.Type {
 		case "message_start":
 			usage.InputTokens = ev.Message.Usage.InputTokens
+			usage.CacheWriteTokens = ev.Message.Usage.CacheCreationInputTokens
+			usage.CacheReadTokens = ev.Message.Usage.CacheReadInputTokens
 		case "content_block_start":
 			if ev.ContentBlock.Type == "tool_use" {
 				tools[ev.Index] = &pending{id: ev.ContentBlock.ID, name: ev.ContentBlock.Name}

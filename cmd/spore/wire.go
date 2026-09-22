@@ -95,14 +95,17 @@ func buildRecall(cfg *config.Config, st *store.Store, log *slog.Logger) (recall.
 func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (*agent.Agent, *mcphost.Host, *mirror.Mirror, *subagent.Supervisor, error) {
 	reg := provider.NewRegistry()
 	for name, pc := range cfg.Providers {
-		price := provider.ProviderPrice{In: pc.PriceIn, Out: pc.PriceOut}
+		price := provider.ProviderPrice{
+			In: pc.PriceIn, Out: pc.PriceOut,
+			CacheWrite: pc.PriceCacheWrite, CacheRead: pc.PriceCacheRead,
+		}
 		switch pc.Kind {
 		case "anthropic":
 			ws := pc.WorkspaceID
 			if ws == "" {
 				ws = os.Getenv("ANTHROPIC_WORKSPACE_ID")
 			}
-			reg.Register(name, anthropic.New(pc.BaseURL, pc.APIKey, ws, nil), price)
+			reg.Register(name, anthropic.New(pc.BaseURL, pc.APIKey, ws, pc.CacheEnabled(), nil), price)
 		case "openai", "openai-compatible":
 			if pc.BaseURL == "" {
 				return nil, nil, nil, nil, fmt.Errorf("provider %q: base_url is required for kind %q", name, pc.Kind)

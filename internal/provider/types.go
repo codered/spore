@@ -33,6 +33,11 @@ type Block struct {
 	Content   string          `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
 	Truncated bool            `json:"truncated,omitempty"`
+	// CacheBreak asks the provider to place a cache breakpoint after this
+	// block. It is never persisted: where a breakpoint goes is a fact about
+	// one request, not a property of a stored message, and a breakpoint
+	// baked into stored history would itself change the prefix on replay.
+	CacheBreak bool `json:"-"`
 }
 
 type Message struct {
@@ -47,8 +52,10 @@ type ToolSpec struct {
 }
 
 type Request struct {
-	Model       string
-	System      string
+	Model string
+	// System is ordered by stability, most stable first, so a cache
+	// breakpoint on a later block has an unchanging prefix in front of it.
+	System      []Block
 	Messages    []Message
 	Tools       []ToolSpec
 	MaxTokens   int
@@ -56,8 +63,12 @@ type Request struct {
 }
 
 type Usage struct {
-	InputTokens  int
-	OutputTokens int
+	// InputTokens is the uncached remainder, not the prompt size: the whole
+	// prompt is InputTokens + CacheWriteTokens + CacheReadTokens.
+	InputTokens      int
+	OutputTokens     int
+	CacheWriteTokens int
+	CacheReadTokens  int
 }
 
 type EventType string

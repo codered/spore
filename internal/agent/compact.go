@@ -98,7 +98,7 @@ func (a *Agent) Compact(ctx context.Context, sessionID string) (folded, before, 
 	_, span := sporetrace.StartLLM(ctx, router.SiteCompaction, ref)
 	ch, err := p.Stream(ctx, provider.Request{
 		Model:     model,
-		System:    compactionPrompt,
+		System:    []provider.Block{{Type: provider.BlockText, Text: compactionPrompt}},
 		MaxTokens: 1024,
 		Messages: []provider.Message{{
 			Role:   provider.RoleUser,

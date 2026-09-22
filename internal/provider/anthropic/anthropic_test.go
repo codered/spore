@@ -1,8 +1,10 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -34,10 +36,10 @@ func TestStreamParsesTextToolCallAndUsage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", "wrkspc_test", srv.Client())
+	c := New(srv.URL, "sk-test", "wrkspc_test", true, srv.Client())
 	ch, err := c.Stream(context.Background(), provider.Request{
 		Model:     "claude-opus-5",
-		System:    "you are spore",
+		System:    []provider.Block{{Type: provider.BlockText, Text: "you are spore"}},
 		MaxTokens: 1024,
 		Messages: []provider.Message{{
 			Role:   provider.RoleUser,
@@ -77,8 +79,15 @@ func TestStreamParsesTextToolCallAndUsage(t *testing.T) {
 	if usage.InputTokens != 112 || usage.OutputTokens != 37 {
 		t.Errorf("usage = %+v", usage)
 	}
-	if gotBody["system"] != "you are spore" || gotBody["stream"] != true {
-		t.Errorf("request body = %+v", gotBody)
+	systemBlocks, ok := gotBody["system"].([]any)
+	if !ok || len(systemBlocks) != 1 {
+		t.Errorf("system blocks = %+v, want array with 1 block", gotBody["system"])
+	}
+	if blockText, ok := systemBlocks[0].(map[string]any)["text"].(string); !ok || blockText != "you are spore" {
+		t.Errorf("system block text = %+v, want 'you are spore'", systemBlocks[0])
+	}
+	if gotBody["stream"] != true {
+		t.Errorf("stream = %+v, want true", gotBody["stream"])
 	}
 }
 
@@ -89,7 +98,7 @@ func TestStreamSurfacesHTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", "wrkspc_test", srv.Client())
+	c := New(srv.URL, "sk-test", "wrkspc_test", true, srv.Client())
 	_, err := c.Stream(context.Background(), provider.Request{Model: "nope", MaxTokens: 16})
 	if err == nil {
 		t.Fatal("Stream succeeded on a 400; want error")
@@ -107,7 +116,7 @@ func TestStreamTruncatedWithoutMessageStopIsAnError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", "wrkspc_test", srv.Client())
+	c := New(srv.URL, "sk-test", "wrkspc_test", true, srv.Client())
 	ch, err := c.Stream(context.Background(), provider.Request{Model: "claude-opus-5", MaxTokens: 1024})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -139,7 +148,7 @@ func TestStreamSurfacesUpstreamErrorEvent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", "wrkspc_test", srv.Client())
+	c := New(srv.URL, "sk-test", "wrkspc_test", true, srv.Client())
 	ch, err := c.Stream(context.Background(), provider.Request{Model: "claude-opus-5", MaxTokens: 1024})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -205,7 +214,7 @@ func TestToWireSendsToolResultAsUserRole(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", "wrkspc_test", srv.Client())
+	c := New(srv.URL, "sk-test", "wrkspc_test", true, srv.Client())
 	ch, err := c.Stream(context.Background(), provider.Request{
 		Model:     "claude-opus-5",
 		MaxTokens: 1024,
@@ -247,7 +256,7 @@ func TestStreamOmitsWorkspaceHeaderThenAdoptsTheDefault(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", "", srv.Client())
+	c := New(srv.URL, "sk-test", "", true, srv.Client())
 	for i := 0; i < 2; i++ {
 		ch, err := c.Stream(context.Background(), provider.Request{Model: "claude-opus-5", MaxTokens: 16})
 		if err != nil {
@@ -285,7 +294,7 @@ func TestStreamRetriesWithDefaultWorkspaceOn400(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", "", srv.Client())
+	c := New(srv.URL, "sk-test", "", true, srv.Client())
 	ch, err := c.Stream(context.Background(), provider.Request{Model: "claude-opus-5", MaxTokens: 16})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -307,12 +316,254 @@ func TestStreamWorkspaceErrorIsActionable(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "sk-test", "", srv.Client())
+	c := New(srv.URL, "sk-test", "", true, srv.Client())
 	_, err := c.Stream(context.Background(), provider.Request{Model: "claude-opus-5", MaxTokens: 16})
 	if err == nil {
 		t.Fatal("Stream succeeded on a 400; want error")
 	}
 	if !strings.Contains(err.Error(), "workspace_id") {
 		t.Errorf("error = %q, want it to name workspace_id", err)
+	}
+}
+
+// bodyOf runs one Stream against a recording server and returns the decoded
+// request body. The wire format is the contract with the API, so it is
+// asserted on the bytes rather than on an intermediate struct.
+func bodyOf(t *testing.T, cache bool, req provider.Request) map[string]any {
+	t.Helper()
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New(srv.URL, "k", "", cache, nil)
+	ch, err := c.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+	return got
+}
+
+func cachedRequest() provider.Request {
+	return provider.Request{
+		Model:     "claude-opus-5",
+		MaxTokens: 100,
+		System: []provider.Block{
+			{Type: provider.BlockText, Text: "stable"},
+			{Type: provider.BlockText, Text: "summary", CacheBreak: true},
+		},
+		Messages: []provider.Message{{Role: provider.RoleUser, Blocks: []provider.Block{
+			{Type: provider.BlockText, Text: "hello", CacheBreak: true},
+			{Type: provider.BlockText, Text: "env"},
+		}}},
+	}
+}
+
+func TestSystemIsBlocksWithCacheControlOnTheMarkedOne(t *testing.T) {
+	body := bodyOf(t, true, cachedRequest())
+
+	blocks, ok := body["system"].([]any)
+	if !ok {
+		t.Fatalf("system = %T, want an array of blocks", body["system"])
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("got %d system blocks, want 2", len(blocks))
+	}
+	if _, marked := blocks[0].(map[string]any)["cache_control"]; marked {
+		t.Error("the first system block carries cache_control; only the last should")
+	}
+	cc, marked := blocks[1].(map[string]any)["cache_control"].(map[string]any)
+	if !marked {
+		t.Fatal("the last system block carries no cache_control")
+	}
+	if cc["type"] != "ephemeral" {
+		t.Errorf("cache_control type = %v, want ephemeral", cc["type"])
+	}
+}
+
+func TestMessageBreakpointRendersAndTheEnvironmentDoesNot(t *testing.T) {
+	body := bodyOf(t, true, cachedRequest())
+
+	msgs := body["messages"].([]any)
+	content := msgs[0].(map[string]any)["content"].([]any)
+	if _, marked := content[0].(map[string]any)["cache_control"]; !marked {
+		t.Error("the marked message block carries no cache_control")
+	}
+	if _, marked := content[1].(map[string]any)["cache_control"]; marked {
+		t.Error("the environment block carries cache_control; it changes every turn")
+	}
+}
+
+// The escape hatch exists for a proxy that rejects the field.
+func TestCacheDisabledEmitsNoCacheControl(t *testing.T) {
+	body := bodyOf(t, false, cachedRequest())
+
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("cache_control")) {
+		t.Fatalf("cache_control was sent with caching off: %s", raw)
+	}
+	if _, ok := body["system"].([]any); !ok {
+		t.Errorf("system = %T, want an array of blocks even with caching off", body["system"])
+	}
+}
+
+// TestToWireOmitsZeroValuedOptionalFields verifies that the wire format
+// preserves omitempty semantics: zero-valued optional fields are absent.
+// This is critical because including them changes message size and token counts.
+func TestToWireOmitsZeroValuedOptionalFields(t *testing.T) {
+	body := bodyOf(t, true, provider.Request{
+		Model:     "claude-opus-5",
+		MaxTokens: 100,
+		Messages: []provider.Message{
+			{
+				Role: provider.RoleAssistant,
+				Blocks: []provider.Block{
+					{Type: provider.BlockToolUse, ID: "tool_1", Name: "test_tool", Input: nil},
+					{Type: provider.BlockToolUse, ID: "", Name: "", Input: nil},
+				},
+			},
+			{
+				Role: provider.RoleTool,
+				Blocks: []provider.Block{
+					{Type: provider.BlockToolResult, ID: "tool_1", Content: "success"},
+					{Type: provider.BlockToolResult, ID: "tool_2", Content: "error", IsError: true},
+					{Type: provider.BlockToolResult, ID: "", Content: ""},
+				},
+			},
+		},
+	})
+
+	msgs := body["messages"].([]any)
+
+	// Check that tool_use with nil input omits the input field entirely.
+	toolUseMsg := msgs[0].(map[string]any)
+	toolUseContent := toolUseMsg["content"].([]any)
+	toolUseBlock := toolUseContent[0].(map[string]any)
+	if _, hasInput := toolUseBlock["input"]; hasInput {
+		t.Errorf("tool_use with nil input should omit the input field, but it's present in: %+v", toolUseBlock)
+	}
+
+	// Check that tool_use with empty ID and Name omits both fields.
+	emptyToolUseBlock := toolUseContent[1].(map[string]any)
+	if _, hasID := emptyToolUseBlock["id"]; hasID {
+		t.Errorf("tool_use with empty ID should omit the id field, but it's present in: %+v", emptyToolUseBlock)
+	}
+	if _, hasName := emptyToolUseBlock["name"]; hasName {
+		t.Errorf("tool_use with empty Name should omit the name field, but it's present in: %+v", emptyToolUseBlock)
+	}
+
+	// Check that successful tool_result omits is_error field.
+	toolResultMsg := msgs[1].(map[string]any)
+	toolResultContent := toolResultMsg["content"].([]any)
+	successResult := toolResultContent[0].(map[string]any)
+	if _, hasIsError := successResult["is_error"]; hasIsError {
+		t.Errorf("successful tool_result should omit is_error field, but it's present in: %+v", successResult)
+	}
+
+	// Check that error tool_result includes is_error=true.
+	errorResult := toolResultContent[1].(map[string]any)
+	if isError, ok := errorResult["is_error"].(bool); !ok || !isError {
+		t.Errorf("error tool_result should have is_error=true, got: %+v", errorResult)
+	}
+
+	// Check that tool_result with empty ID omits the tool_use_id field.
+	emptyToolResultBlock := toolResultContent[2].(map[string]any)
+	if _, hasToolUseID := emptyToolResultBlock["tool_use_id"]; hasToolUseID {
+		t.Errorf("tool_result with empty ID should omit the tool_use_id field, but it's present in: %+v", emptyToolResultBlock)
+	}
+}
+
+// TestInputPrecisionPreserved verifies that Input (json.RawMessage) containing
+// large integers and trailing-zero decimals are preserved exactly as-is on the wire.
+// This is critical because Input carries tool arguments that spore echoes back
+// to the API in multi-turn history. We assert on raw bytes, not decoded maps,
+// because decoding to float64 is the very step that destroys the evidence.
+func TestInputPrecisionPreserved(t *testing.T) {
+	// Input with large integer (exceeds float64 safe integer limit) and trailing-zero decimal
+	inputJSON := `{"count":9007199254740993,"amount":1.50}`
+	req := provider.Request{
+		Model:     "claude-opus-5",
+		MaxTokens: 100,
+		Messages: []provider.Message{{
+			Role: provider.RoleAssistant,
+			Blocks: []provider.Block{{
+				Type:  provider.BlockToolUse,
+				ID:    "tool_1",
+				Name:  "test",
+				Input: json.RawMessage(inputJSON),
+			}},
+		}},
+	}
+
+	var rawBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		rawBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "k", "", true, nil)
+	ch, err := c.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+
+	// Verify the exact input literal appears in the wire bytes before any decoding
+	if !bytes.Contains(rawBody, []byte(`"count":9007199254740993`)) {
+		t.Errorf("large integer lost precision: wire body=%s, want literal %q present", string(rawBody), `"count":9007199254740993`)
+	}
+	if !bytes.Contains(rawBody, []byte(`"amount":1.50`)) {
+		t.Errorf("trailing-zero decimal formatting lost: wire body=%s, want literal %q present", string(rawBody), `"amount":1.50`)
+	}
+}
+
+// The counters are the only ground truth that caching works: when it breaks,
+// requests keep succeeding and the bill just goes up.
+func TestStreamReadsCacheCounters(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"usage":` +
+			`{"input_tokens":7,"output_tokens":0,` +
+			`"cache_creation_input_tokens":1200,"cache_read_input_tokens":9000}}}` + "\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	ch, err := New(srv.URL, "k", "", true, nil).Stream(context.Background(), provider.Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got provider.Usage
+	for ev := range ch {
+		if ev.Usage != nil {
+			got = *ev.Usage
+		}
+	}
+
+	if got.CacheWriteTokens != 1200 {
+		t.Errorf("CacheWriteTokens = %d, want 1200", got.CacheWriteTokens)
+	}
+	if got.CacheReadTokens != 9000 {
+		t.Errorf("CacheReadTokens = %d, want 9000", got.CacheReadTokens)
+	}
+	if got.InputTokens != 7 {
+		t.Errorf("InputTokens = %d, want 7 -- it is the uncached remainder only", got.InputTokens)
 	}
 }

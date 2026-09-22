@@ -56,9 +56,9 @@ func TestScriptReplaysTurnsInOrder(t *testing.T) {
 
 func TestScriptRecordsRequests(t *testing.T) {
 	s := NewScript(ScriptTurn{Text: "ok"})
-	ch, _ := s.Stream(context.Background(), Request{Model: "fake", System: "sys"})
+	ch, _ := s.Stream(context.Background(), Request{Model: "fake", System: []Block{{Type: BlockText, Text: "sys"}}})
 	drain(t, ch)
-	if got := s.Requests(); len(got) != 1 || got[0].System != "sys" {
+	if got := s.Requests(); len(got) != 1 || len(got[0].System) != 1 || got[0].System[0].Text != "sys" {
 		t.Fatalf("Requests() = %+v", got)
 	}
 }

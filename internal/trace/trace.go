@@ -25,6 +25,8 @@ const (
 	attrModelName        = "llm.model_name"
 	attrTokensIn         = "llm.token_count.prompt"
 	attrTokensOut        = "llm.token_count.completion"
+	attrTokensCacheRead  = "llm.token_count.prompt_details.cache_read"
+	attrTokensCacheWrite = "llm.token_count.prompt_details.cache_write"
 	attrInput            = "input.value"
 	attrOutput           = "output.value"
 	attrToolName         = "tool.name"
@@ -91,9 +93,17 @@ func StartLLM(ctx context.Context, callSite, modelRef string) (context.Context, 
 
 // EndLLM records usage and, unless redacting, the prompt and completion.
 func EndLLM(span Span, prompt, completion string, u provider.Usage, cost float64) {
+	// attrTokensIn must carry the total prompt token count: the sum of uncached
+	// (InputTokens) and both cache buckets. InputTokens is only the uncached
+	// remainder since the caching change, so the attribute's name would be
+	// violated if we set it to InputTokens alone. The breakdown is available in
+	// the detail attributes.
+	totalPromptTokens := u.InputTokens + u.CacheWriteTokens + u.CacheReadTokens
 	span.SetAttributes(
-		attribute.Int(attrTokensIn, u.InputTokens),
+		attribute.Int(attrTokensIn, totalPromptTokens),
 		attribute.Int(attrTokensOut, u.OutputTokens),
+		attribute.Int(attrTokensCacheRead, u.CacheReadTokens),
+		attribute.Int(attrTokensCacheWrite, u.CacheWriteTokens),
 		attribute.Float64(attrCostUSD, cost),
 	)
 	if !redact.Load() {

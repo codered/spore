@@ -799,6 +799,8 @@ func (m *chatUI) renderUsage(data map[string]any, showCost bool) tea.Cmd {
 	msgs := data["messages"]
 	tokensIn := 0
 	tokensOut := 0
+	cacheRead := 0
+	cacheWrite := 0
 	cost := 0.0
 	count := 0
 	if msgs != nil {
@@ -807,6 +809,8 @@ func (m *chatUI) renderUsage(data map[string]any, showCost bool) tea.Cmd {
 				if msg, ok := raw.(map[string]any); ok {
 					inVal := 0
 					outVal := 0
+					cacheReadVal := 0
+					cacheWriteVal := 0
 					costVal := 0.0
 					if v := msg["tokens_in"]; v != nil {
 						inVal = castInt(v)
@@ -814,11 +818,19 @@ func (m *chatUI) renderUsage(data map[string]any, showCost bool) tea.Cmd {
 					if v := msg["tokens_out"]; v != nil {
 						outVal = castInt(v)
 					}
+					if v := msg["tokens_cache_read"]; v != nil {
+						cacheReadVal = castInt(v)
+					}
+					if v := msg["tokens_cache_write"]; v != nil {
+						cacheWriteVal = castInt(v)
+					}
 					if v := msg["cost_usd"]; v != nil {
 						costVal = castFloat(v)
 					}
 					tokensIn += inVal
 					tokensOut += outVal
+					cacheRead += cacheReadVal
+					cacheWrite += cacheWriteVal
 					cost += costVal
 					count++
 				}
@@ -830,6 +842,15 @@ func (m *chatUI) renderUsage(data map[string]any, showCost bool) tea.Cmd {
 	b.WriteString("    turns: " + strconv.Itoa(count) + "\n")
 	b.WriteString("    tokens in: " + strconv.Itoa(tokensIn) + "\n")
 	b.WriteString("    tokens out: " + strconv.Itoa(tokensOut) + "\n")
+	if cacheRead+cacheWrite > 0 {
+		total := tokensIn + cacheRead + cacheWrite
+		share := 0
+		if total > 0 {
+			share = cacheRead * 100 / total
+		}
+		b.WriteString("    cache: " + strconv.Itoa(cacheRead) + " read, " +
+			strconv.Itoa(cacheWrite) + " written (" + strconv.Itoa(share) + "% of input)\n")
+	}
 	if showCost {
 		b.WriteString("    cost: $" + fmt.Sprintf("%.4f", cost) + "\n")
 	}

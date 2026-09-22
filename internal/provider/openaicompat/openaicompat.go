@@ -34,10 +34,14 @@ func (c *Client) Name() string { return "openaicompat" }
 
 // toWire flattens spore messages into OpenAI's shape: assistant tool calls
 // become `tool_calls`, and each tool result becomes its own `tool` message.
-func toWire(system string, msgs []provider.Message) []map[string]any {
+func toWire(system []provider.Block, msgs []provider.Message) []map[string]any {
 	out := []map[string]any{}
-	if system != "" {
-		out = append(out, map[string]any{"role": "system", "content": system})
+	var sys strings.Builder
+	for _, b := range system {
+		sys.WriteString(b.Text)
+	}
+	if sys.Len() > 0 {
+		out = append(out, map[string]any{"role": "system", "content": sys.String()})
 	}
 	for _, m := range msgs {
 		var text strings.Builder

@@ -93,6 +93,57 @@ func TestRedactDropsPromptAndCompletionButKeepsCounts(t *testing.T) {
 	}
 }
 
+func TestEndLLMReportsFullPromptCountWithCacheDetails(t *testing.T) {
+	sr := recorder(t)
+	SetRedact(false)
+
+	_, llm := StartLLM(context.Background(), "chat", "anthropic/claude-opus-5")
+	EndLLM(llm, "prompt", "completion", provider.Usage{
+		InputTokens:      7,
+		OutputTokens:     3,
+		CacheWriteTokens: 1200,
+		CacheReadTokens:  9000,
+	}, 0.05)
+
+	a := attrs(sr.Ended()[0].Attributes())
+	if a["llm.token_count.prompt"] != "10207" {
+		t.Errorf("llm.token_count.prompt = %s, want 10207 (sum of 7 + 1200 + 9000)", a["llm.token_count.prompt"])
+	}
+	if a["llm.token_count.completion"] != "3" {
+		t.Errorf("llm.token_count.completion = %s, want 3", a["llm.token_count.completion"])
+	}
+	if a["llm.token_count.prompt_details.cache_read"] != "9000" {
+		t.Errorf("llm.token_count.prompt_details.cache_read = %s, want 9000", a["llm.token_count.prompt_details.cache_read"])
+	}
+	if a["llm.token_count.prompt_details.cache_write"] != "1200" {
+		t.Errorf("llm.token_count.prompt_details.cache_write = %s, want 1200", a["llm.token_count.prompt_details.cache_write"])
+	}
+}
+
+func TestEndLLMIncludesCacheDetailsWhenZero(t *testing.T) {
+	sr := recorder(t)
+	SetRedact(false)
+
+	_, llm := StartLLM(context.Background(), "chat", "anthropic/claude-opus-5")
+	EndLLM(llm, "prompt", "completion", provider.Usage{
+		InputTokens:      100,
+		OutputTokens:     20,
+		CacheWriteTokens: 0,
+		CacheReadTokens:  0,
+	}, 0.01)
+
+	a := attrs(sr.Ended()[0].Attributes())
+	if a["llm.token_count.prompt"] != "100" {
+		t.Errorf("llm.token_count.prompt = %s, want 100", a["llm.token_count.prompt"])
+	}
+	if a["llm.token_count.prompt_details.cache_read"] != "0" {
+		t.Errorf("llm.token_count.prompt_details.cache_read = %s, want 0", a["llm.token_count.prompt_details.cache_read"])
+	}
+	if a["llm.token_count.prompt_details.cache_write"] != "0" {
+		t.Errorf("llm.token_count.prompt_details.cache_write = %s, want 0", a["llm.token_count.prompt_details.cache_write"])
+	}
+}
+
 func TestInitDisabledIsANoOpWithUsableShutdown(t *testing.T) {
 	shutdown, err := Init(context.Background(), config.TraceConfig{Enabled: false})
 	if err != nil {
