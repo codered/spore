@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/codered/spore/internal/agent"
 	"github.com/codered/spore/internal/config"
@@ -13,20 +16,25 @@ import (
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/router"
 	"github.com/codered/spore/internal/store"
+	"github.com/codered/spore/internal/tui"
 )
 
 // e2eDaemon is a real daemon over a real store, with only the model scripted.
-func e2eDaemon(t *testing.T, tmpDir string, turns ...provider.ScriptTurn) *client {
+// workspace becomes policy.workspace, the ceiling every session root must lie
+// within (internal/workspace.Root): config.Default's ceiling is the real
+// $HOME, which does not contain a t.TempDir() session root, so the caller's
+// workspace must be threaded in here rather than left at the default.
+func e2eDaemon(t *testing.T, workspace string, turns ...provider.ScriptTurn) *client {
 	t.Helper()
-	st, err := store.Open(filepath.Join(tmpDir, "spore.db"))
+	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
 	cfg := config.Default()
 	cfg.DefaultModel = "script/fake"
-	cfg.DataDir = filepath.Join(tmpDir, ".spore")
-	cfg.Policy.Workspace = tmpDir
+	cfg.DataDir = t.TempDir()
+	cfg.Policy.Workspace = workspace
 	preg := provider.NewRegistry()
 	preg.Register("script", provider.NewScript(turns...), provider.ProviderPrice{In: 1, Out: 2})
 	rt, err := router.New(nil, cfg.DefaultModel)
@@ -40,62 +48,106 @@ func e2eDaemon(t *testing.T, tmpDir string, turns ...provider.ScriptTurn) *clien
 	return newClient(strings.TrimPrefix(ts.URL, "http://"))
 }
 
+// driver runs the model the way the Bubble Tea runtime would: Update is
+// called from a single goroutine (this one), and any command it returns runs
+// in its own goroutine whose result msg -- if any -- is fed back through
+// msgs, exactly as tea.Program.handleCommands does. It must not run a
+// command to completion in-line: bubbles/textarea's cursor keeps returning a
+// fresh BlinkCmd (a 530ms timer) for as long as the input has focus, which
+// is every normal keystroke, so a driver that recurses on each command's
+// result before moving on would never return -- it would still be draining
+// an unending blink chain when the test's 5s deadline in until() expired.
+// The real runtime survives that because handleCommands never waits on the
+// goroutines it starts; this driver does the same.
+type driver struct {
+	t    *testing.T
+	m    *tui.Model
+	msgs chan tea.Msg
+}
+
+func (d *driver) apply(msg tea.Msg) {
+	_, cmd := d.m.Update(msg)
+	d.runCmd(cmd)
+}
+
+func (d *driver) runCmd(cmd tea.Cmd) {
+	if cmd == nil {
+		return
+	}
+	go func() {
+		msg := cmd()
+		if msg == nil {
+			return
+		}
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			for _, c := range batch {
+				d.runCmd(c)
+			}
+			return
+		}
+		d.msgs <- msg
+	}()
+}
+
+// until applies pump messages until the screen contains want.
+func (d *driver) until(want string) {
+	d.t.Helper()
+	deadline := time.After(5 * time.Second)
+	for !strings.Contains(d.m.View(), want) {
+		select {
+		case msg := <-d.msgs:
+			d.apply(msg)
+		case <-deadline:
+			d.t.Fatalf("the screen never showed %q:\n%s", want, d.m.View())
+		}
+	}
+}
+
+func (d *driver) typeLine(s string) {
+	for _, r := range s {
+		d.apply(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	d.apply(tea.KeyMsg{Type: tea.KeyEnter})
+}
+
+func (d *driver) key(k tea.KeyType) { d.apply(tea.KeyMsg{Type: k}) }
+
 func TestTheTUIDrivesARealDaemonThroughSendStreamStopAndResend(t *testing.T) {
-	// This test verifies the tuiBackend can interact with a real daemon.
-	// We test the backend methods directly rather than the full Bubble Tea loop
-	// which has complex event flow requirements.
-	tmpDir := t.TempDir()
-	c := e2eDaemon(t, tmpDir)
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold) })
+	ws := t.TempDir()
+	c := e2eDaemon(t, ws,
+		provider.ScriptTurn{Text: "first reply"},
+		provider.ScriptTurn{Text: "partial", Hold: hold},
+		provider.ScriptTurn{Text: "after the stop"},
+	)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	be := tuiBackend{c: c, showCost: false}
-
-	// Test NewSession
-	sid, err := be.NewSession(ctx, tmpDir)
+	sid, err := c.createSession(ctx, "chat", ws)
 	if err != nil {
-		t.Fatalf("NewSession failed: %v", err)
-	}
-	if sid == "" {
-		t.Fatal("NewSession returned empty ID")
+		t.Fatal(err)
 	}
 
-	// Test Send
-	if err := be.Send(ctx, sid, "hello"); err != nil {
-		t.Fatalf("Send failed: %v", err)
-	}
+	be := tuiBackend{c: c}
+	d := &driver{t: t, m: tui.New(ctx, be, sid, tui.Options{}), msgs: make(chan tea.Msg, 256)}
+	d.apply(tea.WindowSizeMsg{Width: 120, Height: 40})
+	go tui.Pump(ctx, be, func(msg tea.Msg) { d.msgs <- msg })
+	d.apply(<-d.msgs) // connected
 
-	// Test Transcript
-	trans, err := be.Transcript(ctx, sid)
-	if err != nil {
-		t.Fatalf("Transcript failed: %v", err)
-	}
-	if trans.Session.ID != sid {
-		t.Fatalf("Transcript ID mismatch: got %q, want %q", trans.Session.ID, sid)
-	}
+	d.typeLine("hello")
+	d.until("first reply")
 
-	// Test Slash commands
-	if _, err := be.Slash(ctx, sid, "clear"); err != nil {
-		t.Fatalf("Slash clear failed: %v", err)
-	}
+	d.typeLine("again")
+	d.until("partial")
+	d.key(tea.KeyEsc) // INSERT -> NORMAL
+	d.key(tea.KeyEsc) // stop
+	d.until("stopped")
 
-	if _, err := be.Slash(ctx, sid, "compact"); err != nil {
-		t.Fatalf("Slash compact failed: %v", err)
-	}
+	d.apply(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	d.typeLine("once more")
+	d.until("after the stop")
 
-	result, err := be.Slash(ctx, sid, "context")
-	if err != nil {
-		t.Fatalf("Slash context failed: %v", err)
-	}
-	if !strings.Contains(result, "context snapshot") {
-		t.Fatalf("context result missing expected text: %q", result)
-	}
-
-	result, err = be.Slash(ctx, sid, "usage")
-	if err != nil {
-		t.Fatalf("Slash usage failed: %v", err)
-	}
-	if !strings.Contains(result, "usage") {
-		t.Fatalf("usage result missing expected text: %q", result)
+	if got := d.m.ExitSummary(); !strings.Contains(got, "resume: spore chat "+sid) || !strings.Contains(got, "after the stop") {
+		t.Fatalf("exit summary = %q", got)
 	}
 }
