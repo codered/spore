@@ -95,13 +95,17 @@ func (m *Model) View() string {
 		return "terminal too small"
 	}
 	body := m.mainView()
-	if m.sidebarOn() {
+	if m.sidebarOn() && m.table == nil {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, m.sidebarView(), body)
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), m.ruleView(), body, m.statusView())
 }
 
 func (m *Model) mainView() string {
+	if m.table != nil && !m.help {
+		h := m.bodyHeight()
+		return lipgloss.NewStyle().Width(m.width).Height(h).MaxHeight(h).Render(m.table.render(m.width, h))
+	}
 	w, h := m.mainWidth(), m.bodyHeight()
 	box := lipgloss.NewStyle().Width(w).Height(h).MaxHeight(h)
 	if m.help {
@@ -179,13 +183,19 @@ func (m *Model) overlayHeight() int {
 // statusView is the mode badge and the keys that work here, with the few
 // signals that need the user now on the right.
 func (m *Model) statusView() string {
+	if m.mode == modeConfirm && m.table != nil && m.confirm != nil {
+		return fitRow(styMode.Render(" "+m.mode.String()+" ")+" "+styWarn.Render(m.confirm.prompt), "", m.width)
+	}
 	left := styMode.Render(" "+m.mode.String()+" ") + " " + m.keyHints()
 	var right []string
 	if m.unseen {
 		right = append(right, styAccent.Render("↓ new"))
 	}
-	if m.mode == modeNormal && m.cache.State(m.selected) != daemon.SessionIdle {
+	if m.mode == modeNormal && m.table == nil && m.cache.State(m.selected) != daemon.SessionIdle {
 		right = append(right, hint("esc", "stop"))
+	}
+	if m.viewErr != "" {
+		right = append(right, styDanger.Render(m.viewErr))
 	}
 	return fitRow(left, strings.Join(right, styMuted.Render(" · ")), m.width)
 }

@@ -213,3 +213,67 @@ func TestAViewAgainstADaemonWithoutTheRouteSaysSo(t *testing.T) {
 		t.Fatalf("err = %v, want tui.ErrOlderDaemon", err)
 	}
 }
+
+// press sends one key the way the driver sends runes.
+func (d *driver) press(k string) {
+	switch k {
+	case "esc":
+		d.key(tea.KeyEsc)
+	case "enter":
+		d.key(tea.KeyEnter)
+	default:
+		d.apply(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)})
+	}
+}
+
+func TestTheTUIOpensViewsAgainstARealDaemonAndCancelsAJob(t *testing.T) {
+	ws := t.TempDir()
+	c := e2eDaemon(t, ws, provider.ScriptTurn{Text: "hi there", Usage: provider.Usage{InputTokens: 10, OutputTokens: 2}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sid, err := c.createSession(ctx, "chat", ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var job struct {
+		ID int64 `json:"id"`
+	}
+	if err := c.do(ctx, "POST", "/api/jobs", map[string]string{"spec": "0 9 * * *", "prompt": "morning briefing"}, &job); err != nil {
+		t.Fatal(err)
+	}
+
+	be := tuiBackend{c: c}
+	d := &driver{t: t, m: tui.New(ctx, be, sid, tui.Options{}), msgs: make(chan tea.Msg, 256)}
+	d.apply(tea.WindowSizeMsg{Width: 120, Height: 40})
+	go tui.Pump(ctx, be, func(msg tea.Msg) { d.msgs <- msg })
+	d.apply(<-d.msgs) // connected
+
+	d.typeLine("hello")
+	d.until("hi there")
+
+	d.press("esc")
+	d.press("U")
+	d.until("usage(")
+	d.until("this session") // only the usage view renders this; the header already shows the model
+
+	d.press("esc")
+	d.until("─ chat")
+
+	d.press("J")
+	d.until("morning briefing")
+	d.press("x")
+	d.until("y/n")
+	d.press("y")
+	d.until("disabled")
+
+	var jobs []struct {
+		ID      int64 `json:"id"`
+		Enabled bool  `json:"enabled"`
+	}
+	if err := c.do(ctx, "GET", "/api/jobs", nil, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].ID != job.ID || jobs[0].Enabled {
+		t.Fatalf("jobs = %+v, want the job disabled", jobs)
+	}
+}

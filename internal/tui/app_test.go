@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,6 +15,7 @@ import (
 	"github.com/codered/spore/internal/daemon"
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/provider"
+	"github.com/codered/spore/internal/subagent"
 )
 
 // fakeBackend records every call the model makes.
@@ -110,6 +112,8 @@ func newTestModel(t *testing.T, fb *fakeBackend, selected string) *Model {
 	// A blinking cursor schedules a timer per keystroke; hold it still.
 	m.input.Cursor.SetMode(cursor.CursorStatic)
 	m.line.Cursor.SetMode(cursor.CursorStatic)
+	// A real refresh tick sleeps two seconds; tests drive ticks by hand.
+	m.viewTick = func(int) tea.Cmd { return nil }
 	// Initialize with a default session if none provided
 	if selected != "" && len(fb.sessions) == 0 {
 		fb.sessions = []daemon.SessionJSON{{ID: selected, Source: "chat", Workspace: "/tmp"}}
@@ -424,5 +428,144 @@ func TestJAndKMoveTheSelection(t *testing.T) {
 	press(m, "k")
 	if m.selected != "aaaa" {
 		t.Fatalf("after k selected = %q, want aaaa", m.selected)
+	}
+}
+
+func TestAHotkeyOpensItsViewOnlyInNormal(t *testing.T) {
+	fb := &fakeBackend{skills: daemon.SkillsJSON{Skills: []daemon.SkillJSON{{Name: "debug"}}}}
+	m := newTestModel(t, fb, "s1")
+	typeText(m, "S")
+	if m.table != nil || m.input.Value() != "S" {
+		t.Fatalf("S in INSERT opened a view (table=%v, input=%q)", m.table != nil, m.input.Value())
+	}
+	press(m, "esc", "S")
+	if m.table == nil || m.table.res.Name() != "skills" {
+		t.Fatal("S in NORMAL did not open skills")
+	}
+	if !strings.Contains(m.View(), "skills(1)") || !strings.Contains(m.View(), "debug") {
+		t.Fatalf("view:\n%s", m.View())
+	}
+}
+
+func TestAltHotkeyFromInsertOpensTheView(t *testing.T) {
+	m := newTestModel(t, &fakeBackend{}, "s1")
+	run(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("J"), Alt: true})
+	if m.table == nil || m.table.res.Name() != "jobs" {
+		t.Fatal("alt+J from INSERT did not open jobs")
+	}
+}
+
+func TestEscClosesTheInnermostLayerFirst(t *testing.T) {
+	fb := &fakeBackend{skills: daemon.SkillsJSON{Skills: []daemon.SkillJSON{{Name: "debug"}, {Name: "deploy"}}}}
+	m := newTestModel(t, fb, "s1")
+	feed(m, wev("s1", daemon.WireTurnStarted))
+	press(m, "esc", "S", "enter")
+	if m.table.detail == nil {
+		t.Fatal("enter did not open the detail pane")
+	}
+	press(m, "esc")
+	if m.table == nil || m.table.detail != nil {
+		t.Fatal("esc must close the detail pane and keep the view")
+	}
+	press(m, "/")
+	typeText(m, "dep")
+	press(m, "enter")
+	if m.table.filter != "dep" {
+		t.Fatalf("filter = %q", m.table.filter)
+	}
+	press(m, "esc")
+	if m.table == nil || m.table.filter != "" {
+		t.Fatal("esc must clear the filter and keep the view")
+	}
+	press(m, "esc")
+	if m.table != nil {
+		t.Fatal("esc must close the view")
+	}
+	if len(fb.stopped) != 0 {
+		t.Fatalf("closing layers stopped the turn: %v", fb.stopped)
+	}
+	press(m, "esc")
+	if len(fb.stopped) != 1 {
+		t.Fatal("esc on the chat screen must still stop the running turn")
+	}
+}
+
+func TestColonCommandsOpenViewsAndChatReturns(t *testing.T) {
+	m := newTestModel(t, &fakeBackend{}, "s1")
+	press(m, "esc", ":")
+	typeText(m, "usage")
+	press(m, "enter")
+	if m.table == nil || m.table.res.Name() != "usage" {
+		t.Fatal(":usage did not open the usage view")
+	}
+	press(m, ":")
+	typeText(m, "chat")
+	press(m, "enter")
+	if m.table != nil {
+		t.Fatal(":chat did not return to the chat screen")
+	}
+}
+
+func TestAConfirmedActionRunsOnlyOnYesAndRefreshes(t *testing.T) {
+	fb := &fakeBackend{jobs: []daemon.JobJSON{{ID: 7, Kind: "cron", Spec: "0 9 * * *", Prompt: "morning", Enabled: true, NextRun: fixedNow().Add(time.Hour)}}}
+	m := newTestModel(t, fb, "s1")
+	press(m, "esc", "J", "x")
+	if m.mode != modeConfirm || !strings.Contains(m.View(), "cancel job 7? y/n") {
+		t.Fatalf("mode=%s, want the confirmation in the status bar:\n%s", m.mode, m.View())
+	}
+	press(m, "n")
+	if len(fb.cancelledJobs) != 0 {
+		t.Fatal("n ran the action")
+	}
+	before := fb.fetches
+	press(m, "x", "y")
+	if len(fb.cancelledJobs) != 1 || fb.cancelledJobs[0] != 7 {
+		t.Fatalf("cancelled = %v, want [7]", fb.cancelledJobs)
+	}
+	if fb.fetches <= before {
+		t.Fatal("the view did not refresh after the action")
+	}
+}
+
+func TestEnterOnAnAgentSelectsTheChildSession(t *testing.T) {
+	fb := &fakeBackend{agents: daemon.AgentsJSON{Agents: []subagent.Status{{ID: "kid1", State: "done", Started: fixedNow()}}}}
+	m := newTestModel(t, fb, "s1")
+	press(m, "esc", "A", "enter")
+	if m.table != nil || m.selected != "kid1" {
+		t.Fatalf("table=%v selected=%q, want the chat screen on kid1", m.table != nil, m.selected)
+	}
+}
+
+func TestAViewRefetchesOnItsTickAndIgnoresStaleTicks(t *testing.T) {
+	fb := &fakeBackend{}
+	m := newTestModel(t, fb, "s1")
+	press(m, "esc", "J")
+	gen, before := m.viewGen, fb.fetches
+	run(m, viewTickMsg{gen: gen})
+	if fb.fetches != before+1 {
+		t.Fatalf("fetches = %d, want %d after a tick", fb.fetches, before+1)
+	}
+	press(m, "esc")
+	run(m, viewTickMsg{gen: gen})
+	if fb.fetches != before+1 {
+		t.Fatal("a tick for a closed view fetched")
+	}
+}
+
+func TestRowsForAViewThatIsNoLongerOpenAreDropped(t *testing.T) {
+	m := newTestModel(t, &fakeBackend{}, "s1")
+	press(m, "esc", "S")
+	run(m, viewRowsMsg{name: "jobs", rows: things([]string{"x"})})
+	if len(m.table.rows) != 0 {
+		t.Fatal("rows for another view were installed")
+	}
+}
+
+func TestSlashUsageInInsertStillPrintsText(t *testing.T) {
+	m := newTestModel(t, &fakeBackend{}, "s1")
+	typeText(m, "/usage")
+	press(m, "enter")
+	if m.table != nil || !strings.Contains(m.View(), "did usage") {
+		t.Fatal("/usage typed into the input must print the report, not open the view")
 	}
 }

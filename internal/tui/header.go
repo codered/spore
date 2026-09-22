@@ -112,7 +112,11 @@ func fitRow(left, right string, width int) string {
 
 // ruleView is the line between header and body, naming what the body shows.
 func (m *Model) ruleView() string {
-	head := "─ chat "
+	title := "chat"
+	if m.table != nil {
+		title = m.table.title()
+	}
+	head := "─ " + title + " "
 	return styMuted.Render(ansi.Truncate(head+strings.Repeat("─", max(0, m.width-lipgloss.Width(head))), m.width, ""))
 }
 
@@ -127,6 +131,20 @@ func (m *Model) keyHints() string {
 		return hint("enter", "keep") + "  " + hint("esc", "clear")
 	case modeConfirm:
 		return ""
+	}
+	if m.table != nil {
+		esc := "back"
+		switch {
+		case m.table.detail != nil:
+			esc = "close"
+		case m.table.filter != "":
+			esc = "clear"
+		}
+		parts := []string{hint("enter", "open"), hint("/", "filter"), hint("s", "sort")}
+		for _, a := range m.table.res.Actions() {
+			parts = append(parts, hint(a.Key, a.Label))
+		}
+		return strings.Join(append(parts, hint("esc", esc)), "  ")
 	}
 	return hint("i", "type") + "  " + hint("j/k", "session") + "  " + hint("n", "new") + "  " + hint("?", "help")
 }

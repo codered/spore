@@ -38,6 +38,8 @@ const (
 	minWidth       = 60
 	minHeight      = 15
 	inputMaxHeight = 8
+	// refreshEvery is how often an open view refetches.
+	refreshEvery = 2 * time.Second
 )
 
 // Messages. Everything that changes the model arrives as one of these, so
@@ -72,6 +74,13 @@ type (
 		id  string
 		err error
 	}
+	viewRowsMsg struct {
+		name, session string
+		rows          []Row
+		err           error
+	}
+	viewTickMsg   struct{ gen int }
+	actionDoneMsg struct{ err error }
 )
 
 // Options configure a Model.
@@ -82,7 +91,7 @@ type Options struct {
 }
 
 // commandNames are the `:` commands, for completion.
-var commandNames = []string{"agents", "clear", "compact", "context", "new", "q", "quit", "sessions", "skills", "usage"}
+var commandNames = []string{"agents", "chat", "clear", "compact", "context", "jobs", "new", "q", "quit", "sessions", "skills", "usage"}
 
 type confirmState struct {
 	prompt string
@@ -122,6 +131,15 @@ type Model struct {
 	help         bool
 	confirm      *confirmState
 	reconnecting bool
+	// views serves the resource views; nil when the backend cannot.
+	views Views
+	// table is the open view; nil means the chat screen.
+	table *table
+	// viewGen increments whenever a view opens or closes, so a tick from an
+	// earlier view is ignored.
+	viewGen  int
+	viewErr  string
+	viewTick func(gen int) tea.Cmd
 
 	history []string
 	histIdx int
@@ -164,6 +182,12 @@ func New(ctx context.Context, be Backend, sessionID string, opts Options) *Model
 	}
 	if sessionID != "" {
 		c.get(sessionID)
+	}
+	if v, ok := be.(Views); ok {
+		m.views = v
+	}
+	m.viewTick = func(gen int) tea.Cmd {
+		return tea.Tick(refreshEvery, func(time.Time) tea.Msg { return viewTickMsg{gen: gen} })
 	}
 	m.mode = modeInsert
 	m.input.Focus()
@@ -280,6 +304,25 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		cmd := m.selectSession(msg.id)
 		return tea.Batch(cmd, m.enterInsert(), m.loadSessions())
 
+	case viewRowsMsg:
+		if m.table != nil && m.table.res.Name() == msg.name && m.table.session == msg.session {
+			m.table.setRows(msg.rows, msg.err)
+		}
+		return nil
+
+	case viewTickMsg:
+		if m.table == nil || msg.gen != m.viewGen {
+			return nil
+		}
+		return tea.Batch(m.fetchView(), m.viewTick(msg.gen))
+
+	case actionDoneMsg:
+		m.viewErr = ""
+		if msg.err != nil {
+			m.viewErr = msg.err.Error()
+		}
+		return m.fetchView()
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -339,7 +382,11 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 	if k.Alt && k.Type == tea.KeyRunes && (m.mode == modeInsert || m.mode == modeNormal) {
 		m.mode = modeNormal
 		m.input.Blur()
-		return m.keyNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: k.Runes})
+		plain := tea.KeyMsg{Type: tea.KeyRunes, Runes: k.Runes}
+		if m.table != nil {
+			return m.keyView(plain)
+		}
+		return m.keyNormal(plain)
 	}
 	switch m.mode {
 	case modeInsert:
@@ -350,6 +397,9 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 		return m.keyFilter(k)
 	case modeConfirm:
 		return m.keyConfirm(k)
+	}
+	if m.table != nil {
+		return m.keyView(k)
 	}
 	return m.keyNormal(k)
 }
@@ -415,6 +465,10 @@ func (m *Model) keyNormal(k tea.KeyMsg) tea.Cmd {
 	case "ctrl+b":
 		on := !m.sidebarOn()
 		m.sidebarPref = &on
+	default:
+		if r, ok := resourceByHotkey(k.String()); ok {
+			return m.openView(r)
+		}
 	}
 	return nil
 }
@@ -441,7 +495,7 @@ func (m *Model) keyInsert(k tea.KeyMsg) tea.Cmd {
 		m.histIdx = len(m.history)
 		m.draft = ""
 		if strings.HasPrefix(text, "/") {
-			return m.command(strings.TrimPrefix(text, "/"))
+			return m.slashLine(strings.TrimPrefix(text, "/"))
 		}
 		return m.submit(m.selected, text)
 	case "up":
@@ -522,9 +576,16 @@ func complete(v string) string {
 }
 
 func (m *Model) keyFilter(k tea.KeyMsg) tea.Cmd {
+	set := func(v string) {
+		if m.table != nil {
+			m.table.setFilter(v)
+		} else {
+			m.filter = v
+		}
+	}
 	switch k.String() {
 	case "esc":
-		m.filter = ""
+		set("")
 		m.mode = modeNormal
 		m.line.Blur()
 		return nil
@@ -535,7 +596,7 @@ func (m *Model) keyFilter(k tea.KeyMsg) tea.Cmd {
 	}
 	var cmd tea.Cmd
 	m.line, cmd = m.line.Update(k)
-	m.filter = m.line.Value()
+	set(m.line.Value())
 	return cmd
 }
 
@@ -549,7 +610,7 @@ func (m *Model) keyConfirm(k tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-// command runs a `:` command, or a slash command typed into the input.
+// command runs a `:` command. A view's name opens that view.
 func (m *Model) command(line string) tea.Cmd {
 	fields := strings.Fields(line)
 	if len(fields) == 0 {
@@ -568,11 +629,31 @@ func (m *Model) command(line string) tea.Cmd {
 	case "sessions":
 		m.showAll = len(args) > 0 && args[0] == "all"
 		return nil
-	case "clear", "compact", "context", "usage", "skills", "agents":
+	case "chat":
+		m.closeView()
+		return nil
+	case "clear", "compact", "context":
 		return m.slash(name)
+	}
+	if r, ok := resourceByName(name); ok {
+		return m.openView(r)
 	}
 	m.errorf("unknown command: %s", name)
 	return nil
+}
+
+// slashLine runs a /command typed into the input. /usage, /skills and
+// /agents keep printing the text report they print on every other surface.
+func (m *Model) slashLine(line string) tea.Cmd {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return nil
+	}
+	switch fields[0] {
+	case "clear", "compact", "context", "usage", "skills", "agents":
+		return m.slash(fields[0])
+	}
+	return m.command(line)
 }
 
 func (m *Model) slash(name string) tea.Cmd {
@@ -689,6 +770,134 @@ func (m *Model) newSession(workspace string) tea.Cmd {
 		id, err := be.NewSession(ctx, workspace)
 		return newSessionMsg{id: id, err: err}
 	}
+}
+
+// openView replaces the body with a resource's table. A scoped view is for
+// the selected session.
+func (m *Model) openView(r Resource) tea.Cmd {
+	if m.views == nil {
+		m.errorf("views need the daemon")
+		return nil
+	}
+	m.mode = modeNormal
+	m.input.Blur()
+	m.table = newTable(r, m.selected)
+	m.viewErr = ""
+	m.viewGen++
+	return tea.Batch(m.fetchView(), m.viewTick(m.viewGen))
+}
+
+func (m *Model) closeView() {
+	m.table = nil
+	m.viewErr = ""
+	m.viewGen++
+}
+
+func (m *Model) fetchView() tea.Cmd {
+	t := m.table
+	if t == nil || m.views == nil {
+		return nil
+	}
+	res, session, v, ctx := t.res, t.session, m.views, m.ctx
+	return func() tea.Msg {
+		rows, err := res.Fetch(ctx, v, session)
+		return viewRowsMsg{name: res.Name(), session: session, rows: rows, err: err}
+	}
+}
+
+// keyView handles a key while a view is open, innermost layer first: the
+// detail pane, then the view itself.
+func (m *Model) keyView(k tea.KeyMsg) tea.Cmd {
+	t := m.table
+	s := k.String()
+	if t.detail != nil {
+		switch s {
+		case "esc", "q", "enter", "d":
+			t.detail = nil
+			return nil
+		}
+		var cmd tea.Cmd
+		*t.detail, cmd = t.detail.Update(k)
+		return cmd
+	}
+	switch s {
+	case "esc":
+		if t.filter != "" {
+			t.setFilter("")
+			return nil
+		}
+		m.closeView()
+	case "j", "down":
+		t.move(1)
+	case "k", "up":
+		t.move(-1)
+	case "g":
+		t.moveTo(false)
+	case "G":
+		t.moveTo(true)
+	case "ctrl+d":
+		t.move(m.bodyHeight() / 2)
+	case "ctrl+u":
+		t.move(-m.bodyHeight() / 2)
+	case "/":
+		m.mode = modeFilter
+		m.line.SetValue(t.filter)
+		m.line.CursorEnd()
+		return m.line.Focus()
+	case "s":
+		t.cycleSort()
+	case "enter", "d":
+		r, ok := t.selected()
+		if !ok {
+			return nil
+		}
+		if o, isOpener := t.res.(opener); isOpener && s == "enter" {
+			if id := o.Open(r); id != "" {
+				m.closeView()
+				return m.selectSession(id)
+			}
+		}
+		t.openDetail(m.width, m.bodyHeight())
+	case "ctrl+r":
+		return m.fetchView()
+	case ":":
+		m.mode = modeCommand
+		m.line.SetValue("")
+		return m.line.Focus()
+	case "?":
+		m.help = true
+	case "q":
+		return tea.Quit
+	default:
+		if r, ok := resourceByHotkey(s); ok {
+			return m.openView(r)
+		}
+		return m.runAction(s)
+	}
+	return nil
+}
+
+// runAction runs the selected row's action for key, asking first when the
+// action has a confirmation.
+func (m *Model) runAction(key string) tea.Cmd {
+	r, ok := m.table.selected()
+	if !ok {
+		return nil
+	}
+	for _, a := range m.table.res.Actions() {
+		if a.Key != key || (a.Applies != nil && !a.Applies(r)) {
+			continue
+		}
+		v, ctx := m.views, m.ctx
+		run := func() tea.Msg { return actionDoneMsg{err: a.Run(ctx, v, r)} }
+		if a.Confirm == nil {
+			return run
+		}
+		m.confirm = &confirmState{prompt: a.Confirm(r) + " y/n", yes: run}
+		m.mode = modeConfirm
+		return nil
+	}
+	return nil
 }
 
 func (m *Model) selectable() []string {

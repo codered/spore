@@ -1,0 +1,24 @@
+spore · a1b2 fix flaky test · chat · /work/spore                          <n> new  <:> cmd  <?> help
+                                                                   <S> skills  <A> agents  <U> usage
+                                                                                  <J> jobs  <q> quit
+─ jobs(1) ──────────────────────────────────────────────────────────────────────────────────────────
+  ID  KIND   SCHEDULE      NEXT RUN   LAST RUN   PROMPT                                             
+   7  cron   0 9 * * *     in 2h      never      morning briefing                                   
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+ CONFIRM  cancel job 7? y/n                                                                         

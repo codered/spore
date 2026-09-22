@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/codered/spore/internal/daemon"
 	"github.com/codered/spore/internal/provider"
+	"github.com/codered/spore/internal/store"
 )
 
 // TestMain (in block_test.go) pins the markdown style, so these screens do
@@ -106,4 +108,51 @@ func TestGoldenApprovalOverlay(t *testing.T) {
 
 func TestGoldenTooSmall(t *testing.T) {
 	golden(t, "too-small", scene(t, 50, 10).View())
+}
+
+func viewScene(t *testing.T) (*Model, *fakeBackend) {
+	t.Helper()
+	fb := &fakeBackend{
+		skills: daemon.SkillsJSON{
+			Skills: []daemon.SkillJSON{
+				{Name: "debug", Description: "systematic debugging", BodyTokens: 1200, Loaded: true, Body: "# debug\n\nFind the root cause first."},
+				{Name: "deploy", Description: "ship to fly.io", BodyTokens: 800},
+			},
+			Errors: []string{`gamma: unknown frontmatter key "bad"`},
+		},
+		usage: daemon.UsageJSON{
+			Session: []store.UsageRow{{Model: "sonnet-5", Turns: 4, TokensIn: 1200, TokensOut: 300, TokensCacheRead: 36800, CostUSD: 0.12}},
+			Days: []store.DailyUsageRow{
+				{Day: "2026-09-22", UsageRow: store.UsageRow{Model: "sonnet-5", Turns: 40, TokensIn: 12000, TokensOut: 3000, TokensCacheRead: 300000, CostUSD: 1.4}},
+				{Day: "2026-09-21", UsageRow: store.UsageRow{Model: "haiku-4-5", Turns: 12, TokensIn: 4000, TokensOut: 900, CostUSD: 0.03}},
+			},
+		},
+		jobs: []daemon.JobJSON{{ID: 7, Kind: "cron", Spec: "0 9 * * *", Prompt: "morning briefing", Enabled: true, NextRun: fixedNow().Add(2 * time.Hour)}},
+	}
+	m := newTestModel(t, fb, "a1b2c3")
+	run(m, tea.WindowSizeMsg{Width: 100, Height: 24})
+	run(m, sessionsMsg{list: []daemon.SessionJSON{{ID: "a1b2c3", Title: "fix flaky test", Workspace: "/work/spore", Source: "chat"}}})
+	return m, fb
+}
+
+func TestGoldenViews(t *testing.T) {
+	m, _ := viewScene(t)
+	press(m, "esc", "S")
+	golden(t, "view-skills-100", m.View())
+	press(m, "enter")
+	golden(t, "view-skills-detail-100", m.View())
+
+	m, _ = viewScene(t)
+	press(m, "esc", "U")
+	golden(t, "view-usage-100", m.View())
+
+	m, _ = viewScene(t)
+	press(m, "esc", "J", "x")
+	golden(t, "view-jobs-confirm-100", m.View())
+
+	m, fb := viewScene(t)
+	press(m, "esc", "S")
+	fb.viewErr = errors.New("connection refused")
+	press(m, "ctrl+r")
+	golden(t, "view-stale-100", m.View())
 }
