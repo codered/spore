@@ -93,10 +93,25 @@ type installTool struct {
 
 func (installTool) Name() string { return "skill_install" }
 
-func (installTool) Description() string {
-	return "Install a skill: write a markdown document of instructions into the user's skills " +
-		"directory, where it is listed in every future conversation and can be loaded with " +
-		"skill_load. Install one only when the user asks for it."
+// Description names the directory rather than alluding to it. A model that
+// cannot say where skills go answers "where do I install skills?" by
+// searching the filesystem, which finds config keys and database noise.
+//
+// Under workspace scope the path depends on the session's root, which is not
+// known here -- Description takes no context -- so the shape is described
+// instead of a path that would be wrong for most sessions.
+func (t installTool) Description() string {
+	where := "the user's skills directory"
+	if t.cfg != nil {
+		if t.cfg.Skills.Scope == config.SkillsWorkspace {
+			where = "the .spore/skills directory under the session's own workspace"
+		} else if dir := t.cfg.SkillsDir(""); dir != "" {
+			where = dir
+		}
+	}
+	return "Install a skill: write a markdown document of instructions into " + where +
+		", as <name>/SKILL.md, where it is listed in every future conversation and can be " +
+		"loaded with skill_load. Install one only when the user asks for it."
 }
 
 func (installTool) Schema() json.RawMessage {

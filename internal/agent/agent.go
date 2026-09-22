@@ -114,6 +114,10 @@ func (a *Agent) Snapshot(ctx context.Context, sessionID string) (Snapshot, error
 		return Snapshot{}, err
 	}
 	snap := Snapshot{System: a.Cfg.SystemPrompt, Summary: summary}
+	// The skills directory follows the session's root under workspace scope,
+	// so the layout is resolved per turn from the same root the environment
+	// section uses.
+	snap.Self = selfSection(a.Cfg, policy.WorkspaceFrom(ctx))
 	if a.Env != nil {
 		// The root comes from the turn context, not from the agent: one agent
 		// serves every session, and each is rooted somewhere of its own.

@@ -746,6 +746,10 @@ func (c *Config) WeaviateURL() string {
 // DBPath is the SQLite file backing every session.
 func (c *Config) DBPath() string { return filepath.Join(c.DataDir, "spore.db") }
 
+// MemoryDir is where the fact files live: one markdown file per fact, owned
+// by the files rather than the database.
+func (c *Config) MemoryDir() string { return filepath.Join(c.DataDir, "memory") }
+
 // ValidateDaemonAddr rejects any daemon address that is not on the loopback
 // interface. Binding elsewhere would put an unauthenticated agent that can
 // run shell commands on the network. Exported because the daemon re-checks

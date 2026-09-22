@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/codered/spore/internal/agent"
@@ -122,7 +121,7 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 
 	// The fact cache is loaded once here; the memory tool reloads it after
 	// each write, which is the only way the set changes while spore runs.
-	factsDir := filepath.Join(cfg.DataDir, "memory")
+	factsDir := cfg.MemoryDir()
 	facts := memory.NewCache(factsDir)
 	dirUnreadable := false
 	for _, err := range facts.Reload() {

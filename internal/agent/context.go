@@ -22,7 +22,11 @@ type Snapshot struct {
 	Facts       []memory.Fact
 	// Skills is the index of loadable skills: names and descriptions only.
 	// Bodies enter the prompt as skill_load tool results, never here.
-	Skills   []skill.Skill
+	Skills []skill.Skill
+	// Self describes spore's own layout on this machine: where skills,
+	// facts, the database and the config actually live. It is stable for
+	// the life of a session, so it rides in the cached prefix.
+	Self     string
 	Summary  string
 	Messages []provider.Message
 }
@@ -161,6 +165,43 @@ func skillsSection(skills []skill.Skill, budget int) string {
 	return section.String()
 }
 
+// selfSection tells the model where spore keeps its own files. Without it a
+// question as ordinary as "where do skills go?" sends the model grepping
+// config.toml and the SQLite database, because the skills index renders
+// nothing at all when no skills are installed yet -- which is exactly when
+// the user is most likely to ask.
+//
+// workspace is the session's root, which matters only under workspace skill
+// scope, where the skills directory moves per session.
+func selfSection(cfg *config.Config, workspace string) string {
+	skills := cfg.SkillsDir(workspace)
+	if skills == "" {
+		// Workspace scope with no root of its own: there is no directory to
+		// name, and naming the global one would be a lie.
+		skills = "(this session has no workspace, so no skills directory)"
+	}
+	var b strings.Builder
+	b.WriteString("\n\n## Where spore keeps its files on this machine\n\n")
+	fmt.Fprintf(&b, "- Skills: %s -- one directory per skill, each holding a SKILL.md with a name and description in its frontmatter. Write one with skill_install, or the user can add the files by hand.\n", skills)
+	fmt.Fprintf(&b, "- Memory facts: %s -- one markdown file per fact, written with the memory tool.\n", cfg.MemoryDir())
+	fmt.Fprintf(&b, "- Database: %s -- sessions, messages and the recall index. It is a binary file: search it with recall_search, never by reading it.\n", cfg.DBPath())
+	if cfg.Path != "" {
+		fmt.Fprintf(&b, "- Config: %s\n", cfg.Path)
+	}
+	b.WriteString("\nAnswer questions about where things live from this list rather than searching the filesystem for them.\n")
+	// Knowing the path is not knowing that the user may simply ask. Without
+	// this the model answers "your skills go in <dir>" when what the user
+	// wanted was a skill written for them.
+	b.WriteString("\nThe user can ask you to do these things directly: \"write me a skill for X\" is skill_install, and \"remember that X\" is memory. Each asks for their approval before it writes.\n")
+	// skill_install takes a body, not a location, so installing from a file
+	// or a URL is a two-step the model has to be told about. The last
+	// sentence is the load-bearing one: a path outside the workspace is in
+	// baselineDeny, which no approval can talk past, so the only useful
+	// answer is what the user can do instead of a refusal.
+	b.WriteString("\nskill_install takes the skill's text, not a location. To install one from a file or a URL, read it first -- web_fetch for a URL, fs_read for a file in the workspace -- and pass what you read to skill_install. A file outside the workspace cannot be read at all, whoever approves it: say so and offer to install it if the user moves it into the workspace or starts a session rooted where it lives.\n")
+	return b.String()
+}
+
 // Assemble builds the request ordered by stability rather than by topic: the
 // system prompt, the skills index, the memory facts and the compaction summary
 // all change rarely, so they sit in front of a cache breakpoint. The
@@ -178,6 +219,7 @@ func Assemble(snap Snapshot, cfg config.ContextConfig) provider.Request {
 		sys = append(sys, provider.Block{Type: provider.BlockText, Text: text})
 	}
 	add(snap.System)
+	add(snap.Self)
 	add(skillsSection(snap.Skills, cfg.SkillBudget))
 	add(factsSection(snap.Facts, cfg.FactBudget))
 	if snap.Summary != "" {
