@@ -18,9 +18,14 @@ type flakyEvents struct {
 	emu   sync.Mutex
 	calls int
 	chans []chan daemon.WireEvent
+	// ends closes the matching stream; each is safe to call more than once.
+	ends []func()
 }
 
-func (f *flakyEvents) Events(context.Context) (<-chan daemon.WireEvent, error) {
+// Events keeps the Backend contract: the channel closes when the stream ends
+// for any reason, including ctx ending. Without that, Pump would sit in its
+// read loop after the test cancels, and could never be waited for.
+func (f *flakyEvents) Events(ctx context.Context) (<-chan daemon.WireEvent, error) {
 	f.emu.Lock()
 	defer f.emu.Unlock()
 	f.calls++
@@ -28,7 +33,14 @@ func (f *flakyEvents) Events(context.Context) (<-chan daemon.WireEvent, error) {
 		return nil, errors.New("daemon down")
 	}
 	ch := make(chan daemon.WireEvent, 1)
+	var once sync.Once
+	end := func() { once.Do(func() { close(ch) }) }
+	go func() {
+		<-ctx.Done()
+		end()
+	}()
 	f.chans = append(f.chans, ch)
+	f.ends = append(f.ends, end)
 	return ch, nil
 }
 
@@ -51,20 +63,34 @@ func TestPumpReconnectsAfterTheFeedCloses(t *testing.T) {
 	f := &flakyEvents{}
 	msgs := make(chan tea.Msg, 16)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go Pump(ctx, f, func(m tea.Msg) { msgs <- m })
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		Pump(ctx, f, func(m tea.Msg) {
+			select {
+			case msgs <- m:
+			case <-ctx.Done():
+			}
+		})
+	}()
+	// Pump reads the backoff variables. It must have returned before the
+	// deferred restore above writes them, or the two race.
+	defer func() {
+		cancel()
+		<-done
+	}()
 
 	if _, ok := next(t, msgs).(connectedMsg); !ok {
 		t.Fatal("first message is not connectedMsg")
 	}
 	f.emu.Lock()
-	first := f.chans[0]
+	first, endFirst := f.chans[0], f.ends[0]
 	f.emu.Unlock()
 	first <- daemon.WireEvent{Session: "s", Type: daemon.WireText}
 	if ev, ok := next(t, msgs).(eventMsg); !ok || ev.ev.Session != "s" {
 		t.Fatal("the event was not forwarded")
 	}
-	close(first)
+	endFirst()
 
 	if _, ok := next(t, msgs).(streamLostMsg); !ok {
 		t.Fatal("a closed feed was not reported")
