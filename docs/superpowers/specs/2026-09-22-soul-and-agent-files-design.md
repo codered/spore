@@ -112,6 +112,26 @@ the third is a file spore reads and the user owns, and a model that does not
 know the difference will either attempt a write that no tool offers or refuse a
 request it could have satisfied by pointing at a path.
 
+The same paragraph says how to install a skill from somewhere:
+
+```
+skill_install takes the skill's text, not a location. To install one from
+a file or a URL, read it first -- web_fetch for a URL, fs_read for a file
+in the workspace -- and pass what you read to skill_install. A file outside
+the workspace cannot be read at all, whoever approves it: say so and offer
+to install it if the user moves it into the workspace or starts a session
+rooted where it lives.
+```
+
+`skill_install` takes `name`, `description` and `body`: there is no path or
+URL argument, so installing from a location is a two-step the model has to know
+about rather than infer. The closing sentence is the load-bearing one.
+`fs_*(path outside workspace)` is in `baselineDeny`, which is always in force
+and which `Guard.Run` never escalates to a human, so a skill sitting outside
+the session's workspace is refused outright and no approval can talk past it.
+Left unexplained that reads as an arbitrary failure; the prompt gives the way
+around it instead.
+
 This extends the self section added by the prompt self-knowledge change, which
 must land first.
 
