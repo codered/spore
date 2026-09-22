@@ -540,3 +540,44 @@ func TestConcurrentChannelMessagesEachOpenTheirOwnThread(t *testing.T) {
 		t.Fatalf("started %d turns for two messages, want 2", turns.startCount())
 	}
 }
+
+func TestAnAddressPingIsNotTheThreadNameOrThePrompt(t *testing.T) {
+	b, f, turns, st := newTestBridge(t)
+	defer b.Close()
+	if err := b.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// How a real channel message arrives: the ping that addresses the bot is
+	// a raw mention token in the content, not the bot's name.
+	f.deliver(Inbound{MessageID: "m1", UserID: "U", GuildID: "G", ChannelID: "C1", Content: "<@1418> what time is it?"})
+	turns.waitForTurn(t)
+
+	threads := f.allThreads()
+	if len(threads) != 1 {
+		t.Fatalf("created %d threads, want 1", len(threads))
+	}
+	// A thread name is a channel name: Discord renders no mentions there, so
+	// a token left in it shows up as a literal "<@1418>".
+	if strings.Contains(threads[0].Name, "<@") {
+		t.Fatalf("thread name %q still carries a raw mention", threads[0].Name)
+	}
+	if !strings.Contains(threads[0].Name, "what time is it") {
+		t.Fatalf("thread name %q does not come from the prompt", threads[0].Name)
+	}
+	if got := turns.lastStart(); got.text != "what time is it?" {
+		t.Fatalf("turn text = %q, want the prompt without the address ping", got.text)
+	}
+	if _, found, err := st.SessionForExternal(context.Background(), bridgeName, threads[0].ThreadID); err != nil || !found {
+		t.Fatalf("the thread was not bound to a session: (found=%v, err=%v)", found, err)
+	}
+}
+
+func TestThreadNameDropsMentionsAnywhereInTheLine(t *testing.T) {
+	if got := threadName("<@1418> ask <@!99> about <@&7> the deploy"); strings.Contains(got, "<@") {
+		t.Fatalf("threadName kept a raw mention: %q", got)
+	}
+	if got := threadName("<@1418>"); got != "spore session" {
+		t.Fatalf("threadName(bare ping) = %q, want the fallback name", got)
+	}
+}
