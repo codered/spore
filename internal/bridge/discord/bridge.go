@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -196,7 +197,13 @@ func (b *Bridge) handleMessage(in Inbound) {
 		slog.Debug("discord message not admitted", "channel", in.ChannelID, "user", in.UserID)
 		return
 	}
-	content := strings.TrimSpace(in.Content)
+	// Discord delivers a ping as a raw token — "<@1418> what time is it?" —
+	// and nothing downstream renders it back into a name: the agent would
+	// read an opaque id, and the thread name (a channel name, where Discord
+	// renders nothing at all) would literally read "<@1418>". Drop the ping
+	// that addressed the bot; mentions of OTHER people further into the
+	// sentence are content and stay.
+	content := stripAddressPing(strings.TrimSpace(in.Content))
 	if content == "" {
 		return
 	}
@@ -429,6 +436,25 @@ func (b *Bridge) say(channelID, text string) {
 	}
 }
 
+// mentionToken matches a Discord mention as it arrives on the wire: a user
+// (<@123>, or <@!123> from older clients), a role (<@&123>), or a channel
+// (<#123>). Discord renders these as names only inside a message body.
+var mentionToken = regexp.MustCompile(`<@[!&]?[0-9]+>|<#[0-9]+>`)
+
+// stripAddressPing removes the leading mentions that address the bot, and
+// the whitespace after them, leaving the rest of the prompt untouched. Only
+// leading tokens go: a mention further in ("ask <@99> about the deploy") is
+// part of what was said, not part of how the bot was summoned.
+func stripAddressPing(s string) string {
+	for {
+		loc := mentionToken.FindStringIndex(s)
+		if loc == nil || loc[0] != 0 {
+			return s
+		}
+		s = strings.TrimLeft(s[loc[1]:], " \t")
+	}
+}
+
 // threadName derives a Discord thread name from a prompt: its first line,
 // whitespace collapsed, truncated to 90 runes (Discord's own cap is 100;
 // this leaves room for an ellipsis a future truncation might add), falling
@@ -438,6 +464,10 @@ func threadName(prompt string) string {
 	if i := strings.IndexAny(line, "\r\n"); i >= 0 {
 		line = line[:i]
 	}
+	// Unlike a message body, a channel name renders no mentions, so any
+	// token left here — including one naming a third person mid-sentence,
+	// which the prompt itself keeps — would show as a bare "<@1418>".
+	line = mentionToken.ReplaceAllString(line, " ")
 	line = strings.Join(strings.Fields(line), " ")
 	line = truncate(line, 90)
 	if line == "" {
