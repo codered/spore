@@ -27,6 +27,10 @@ const (
 type WireEvent struct {
 	Type string `json:"type"`
 
+	// Session is the session an event belongs to. It is set only on the
+	// global feed (GET /api/events), where one stream carries every session.
+	Session string `json:"session,omitempty"`
+
 	// text
 	Text string `json:"text,omitempty"`
 
