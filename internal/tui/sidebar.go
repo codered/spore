@@ -24,9 +24,10 @@ type row struct {
 // lists before the rest collapse into "+N more".
 const idleShownPerWorkspace = 10
 
-// rows lays out the sidebar. By default it shows chat sessions, their
-// sub-agents, and anything working or blocked; showAll adds idle sessions
-// from other sources; a filter matches title or id across everything. The
+// rows lays out the sidebar. By default it shows chat sessions, sessions of
+// unknown source, their sub-agents, and anything working or blocked; showAll
+// adds idle sessions from other sources; a filter matches title or id across
+// everything. The
 // selected session always shows, so the chat pane never displays a session
 // the sidebar has hidden.
 func (c *cache) rows(showAll bool, filter, selected string) []row {
@@ -67,8 +68,13 @@ func (c *cache) rows(showAll bool, filter, selected string) []row {
 		if showAll {
 			return true
 		}
-		st := c.State(id)
-		return sv.info.Source == "chat" || st != daemon.SessionIdle
+		// "unknown" is every session from before sources were recorded: the
+		// user's whole history, which the default view must not hide.
+		switch sv.info.Source {
+		case "chat", "unknown":
+			return true
+		}
+		return c.State(id) != daemon.SessionIdle
 	}
 	var subtree func(sv *sessionView) bool
 	subtree = func(sv *sessionView) bool {

@@ -54,6 +54,18 @@ func TestTheDefaultFilterShowsChatsBlockedAndWorking(t *testing.T) {
 	}
 }
 
+// Sessions from before sources were recorded are migrated as "unknown". They
+// are the user's whole history, so the default view must not hide them.
+func TestTheDefaultFilterShowsSessionsOfUnknownSource(t *testing.T) {
+	c := seed(
+		daemon.SessionJSON{ID: "c1", Title: "now", Workspace: "/a", Source: "chat"},
+		daemon.SessionJSON{ID: "u1", Title: "from before", Workspace: "/a", Source: "unknown"},
+	)
+	if got := strings.Join(ids(c.rows(false, "", "c1")), " "); got != "c1@0 u1@0" {
+		t.Fatalf("default rows = %q, want the migrated session listed too", got)
+	}
+}
+
 func TestIdleSessionsBeyondTenCollapse(t *testing.T) {
 	var list []daemon.SessionJSON
 	for i := 0; i < 12; i++ {
