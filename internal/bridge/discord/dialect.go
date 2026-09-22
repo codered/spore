@@ -43,7 +43,10 @@ func (d *dialect) hold(s string) int {
 
 	lastNL := strings.LastIndexByte(s, '\n') + 1
 	holdFrom := len(s)
-	if tail := s[lastNL:]; tail != "" && !(lastNL == 0 && continuation) && mayOpenRewrite(tail) {
+	// The trailing line opens here only if a newline preceded it in s; with
+	// no newline at all it is the continuation of one already on screen.
+	opensHere := lastNL != 0 || !continuation
+	if tail := s[lastNL:]; tail != "" && opensHere && mayOpenRewrite(tail) {
 		holdFrom = lastNL
 	}
 	// Extend back over a trailing run of table rows: more rows may follow.
