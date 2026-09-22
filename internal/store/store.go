@@ -268,10 +268,6 @@ func newID() string {
 // creator has no directory of its own -- a bridge, the web UI, the scheduler.
 func (s *Store) SessionsDir() string { return filepath.Join(s.dataDir, "sessions") }
 
-// CreateSession records a session rooted at workspace. An empty workspace
-// means the creator has no directory of its own, and the session is rooted at
-// SessionsDir()/<id>. The directory is NOT created here: a session that is
-// opened and never used must leave nothing on disk.
 // CreateSession records a session with no known source. Callers that know
 // where a session came from use CreateSessionFrom.
 func (s *Store) CreateSession(ctx context.Context, title, workspace string) (string, error) {
