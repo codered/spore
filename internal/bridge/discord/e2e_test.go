@@ -86,7 +86,9 @@ user_ids    = ["U"]
 	var firstPrompt sentMessage
 	waitFor(t, func() bool {
 		for _, m := range f.allSent() {
-			if len(m.Message.Buttons) > 0 {
+			// An approval prompt, specifically: a turn's activity message
+			// carries a button too, and it is not one of these.
+			if len(m.Message.Buttons) > 0 && !isDetailsCustomID(m.Message.Buttons[0].CustomID) {
 				firstPrompt = m
 				return true
 			}
@@ -123,9 +125,11 @@ user_ids    = ["U"]
 		if len(allSent) < 2 {
 			return false
 		}
-		// Find a sent message that's not firstPrompt and has buttons
+		// Find an approval prompt that is not firstPrompt. The activity
+		// message carries a button of its own, so having buttons is no
+		// longer enough to identify one.
 		for _, m := range allSent {
-			if m.MessageID != firstPrompt.MessageID && len(m.Message.Buttons) > 0 {
+			if m.MessageID != firstPrompt.MessageID && len(m.Message.Buttons) > 0 && !isDetailsCustomID(m.Message.Buttons[0].CustomID) {
 				secondPrompt = m
 				return true
 			}
@@ -238,7 +242,9 @@ user_ids    = ["U"]
 	var prompt sentMessage
 	waitFor(t, func() bool {
 		for _, m := range f.allSent() {
-			if len(m.Message.Buttons) > 0 {
+			// An approval prompt, specifically: a turn's activity message
+			// carries a button too, and it is not one of these.
+			if len(m.Message.Buttons) > 0 && !isDetailsCustomID(m.Message.Buttons[0].CustomID) {
 				prompt = m
 				return true
 			}

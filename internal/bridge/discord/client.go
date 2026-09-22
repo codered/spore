@@ -106,6 +106,16 @@ type Client interface {
 	Send(ctx context.Context, channelID string, m Message) (messageID string, err error)
 	Edit(ctx context.Context, channelID, messageID string, m Message) error
 	CreateThread(ctx context.Context, channelID, messageID, name string) (threadID string, err error)
+	// React adds one of the bot's own reactions to a message, and Unreact
+	// removes it again. They are how a prompt is acknowledged before there
+	// is anything to say about it: the eyes go on as soon as the message is
+	// claimed, and are traded for a check when the turn is done.
+	React(ctx context.Context, channelID, messageID, emoji string) error
+	Unreact(ctx context.Context, channelID, messageID, emoji string) error
+	// Typing shows Discord's typing indicator in a channel. Discord expires
+	// it after about ten seconds, so a caller that wants it held for the
+	// length of a turn must call this repeatedly.
+	Typing(ctx context.Context, channelID string) error
 	// Respond acknowledges an interaction with an ephemeral message. Discord
 	// requires an acknowledgement within three seconds or the button shows
 	// as failed, so this is called before any slow work.
@@ -277,6 +287,40 @@ func (c *gatewayClient) CreateThread(ctx context.Context, channelID, messageID, 
 		return "", fmt.Errorf("create discord thread: %w", err)
 	}
 	return ch.ID, nil
+}
+
+// emojiEyes and emojiDone are the two reactions the bridge puts on an
+// inbound message: eyes while the turn runs, a check once it is answered.
+const (
+	emojiEyes = "\U0001F440"
+	emojiDone = "\u2705"
+)
+
+// React adds one of the bot's own reactions to a message.
+func (c *gatewayClient) React(ctx context.Context, channelID, messageID, emoji string) error {
+	if err := c.sess.MessageReactionAdd(channelID, messageID, emoji, discordgo.WithContext(ctx)); err != nil {
+		return fmt.Errorf("add discord reaction: %w", err)
+	}
+	return nil
+}
+
+// Unreact removes one of the bot's own reactions. "@me" is Discord's own
+// spelling for the authenticated user, so this can never remove somebody
+// else's reaction even if the bot has Manage Messages.
+func (c *gatewayClient) Unreact(ctx context.Context, channelID, messageID, emoji string) error {
+	if err := c.sess.MessageReactionRemove(channelID, messageID, emoji, "@me", discordgo.WithContext(ctx)); err != nil {
+		return fmt.Errorf("remove discord reaction: %w", err)
+	}
+	return nil
+}
+
+// Typing shows the typing indicator in a channel. Discord expires it after
+// about ten seconds; holding it for a whole turn is the renderer's job.
+func (c *gatewayClient) Typing(ctx context.Context, channelID string) error {
+	if err := c.sess.ChannelTyping(channelID, discordgo.WithContext(ctx)); err != nil {
+		return fmt.Errorf("send discord typing: %w", err)
+	}
+	return nil
 }
 
 // Respond acknowledges an interaction with an ephemeral message, visible

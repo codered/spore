@@ -21,6 +21,8 @@ type fakeClient struct {
 	edits    []sentMessage
 	threads  []createdThread
 	responds []respondCall
+	reacts   []reactCall
+	typings  []string
 	opens    int
 	isClosed bool
 	nextID   int
@@ -42,6 +44,13 @@ type sentMessage struct {
 
 type createdThread struct{ ChannelID, MessageID, Name, ThreadID string }
 type respondCall struct{ InteractionID, Token, Content string }
+
+// reactCall records a React or Unreact call. Removed is what tells the two
+// apart, so a test can assert the eyes went on AND came off again.
+type reactCall struct {
+	ChannelID, MessageID, Emoji string
+	Removed                     bool
+}
 
 func newFakeClient() *fakeClient { return &fakeClient{failNext: map[string]error{}} }
 
@@ -138,6 +147,36 @@ func (f *fakeClient) Respond(ctx context.Context, interactionID, token, content 
 		return err
 	}
 	f.responds = append(f.responds, respondCall{InteractionID: interactionID, Token: token, Content: content})
+	return nil
+}
+
+func (f *fakeClient) React(ctx context.Context, channelID, messageID, emoji string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.take("React"); err != nil {
+		return err
+	}
+	f.reacts = append(f.reacts, reactCall{ChannelID: channelID, MessageID: messageID, Emoji: emoji})
+	return nil
+}
+
+func (f *fakeClient) Unreact(ctx context.Context, channelID, messageID, emoji string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.take("Unreact"); err != nil {
+		return err
+	}
+	f.reacts = append(f.reacts, reactCall{ChannelID: channelID, MessageID: messageID, Emoji: emoji, Removed: true})
+	return nil
+}
+
+func (f *fakeClient) Typing(ctx context.Context, channelID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.take("Typing"); err != nil {
+		return err
+	}
+	f.typings = append(f.typings, channelID)
 	return nil
 }
 
@@ -282,4 +321,26 @@ func (f *fakeClient) closed() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.isClosed
+}
+
+// allReacts returns a copy of every React and Unreact call, in call order.
+func (f *fakeClient) allReacts() []reactCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]reactCall, len(f.reacts))
+	copy(out, f.reacts)
+	return out
+}
+
+// typingCount returns how many times Typing has been called for channelID.
+func (f *fakeClient) typingCount(channelID string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.typings {
+		if c == channelID {
+			n++
+		}
+	}
+	return n
 }
