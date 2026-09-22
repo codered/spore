@@ -189,6 +189,10 @@ func selfSection(cfg *config.Config, workspace string) string {
 		fmt.Fprintf(&b, "- Config: %s\n", cfg.Path)
 	}
 	b.WriteString("\nAnswer questions about where things live from this list rather than searching the filesystem for them.\n")
+	// Knowing the path is not knowing that the user may simply ask. Without
+	// this the model answers "your skills go in <dir>" when what the user
+	// wanted was a skill written for them.
+	b.WriteString("\nThe user can ask you to do these things directly: \"write me a skill for X\" is skill_install, and \"remember that X\" is memory. Each asks for their approval before it writes.\n")
 	return b.String()
 }
 

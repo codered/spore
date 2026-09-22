@@ -525,3 +525,18 @@ func TestMemoryDirMatchesWhereFactsAreLoadedFrom(t *testing.T) {
 		t.Fatalf("MemoryDir() = %q, want %q", got, want)
 	}
 }
+
+func TestSelfSectionSaysWhatTheUserCanAskFor(t *testing.T) {
+	// Knowing the path is not knowing that the user may just ask. A model
+	// with only the path answers "your skills go in ~/.spore/skills" when
+	// the user wanted a skill written.
+	cfg := config.Default()
+	cfg.DataDir = "/home/u/.spore"
+
+	got := selfSection(cfg, "")
+	for _, want := range []string{"ask you", "skill_install", "memory"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("self section never mentions %q:\n%s", want, got)
+		}
+	}
+}
