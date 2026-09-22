@@ -542,7 +542,7 @@ func TestFirstTurnCreatesAnAllocatedSessionDirectory(t *testing.T) {
 func TestRemoteSessionIsConfined(t *testing.T) {
 	srv, _ := newTestServer(t)
 	srv.cfg.Policy.Workspace = t.TempDir()
-	id, err := srv.CreateSession(context.Background(), "", srv.cfg.Policy.Workspace, policy.ProfileRemote)
+	id, err := srv.CreateSession(context.Background(), "", srv.cfg.Policy.Workspace, store.SourceChat, policy.ProfileRemote)
 	if err != nil {
 		t.Fatal(err)
 	}

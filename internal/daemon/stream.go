@@ -38,6 +38,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeSSE(w, flusher, ev)
 	}
 
+	streamSSE(w, flusher, r.Context().Done(), events)
+}
+
+// streamSSE writes events until the channel closes, the client goes away, or
+// a write fails, with a heartbeat so idle proxies keep the stream open.
+// Unsubscribing is the caller's job: a turn belongs to the daemon and keeps
+// running whether or not anyone is watching.
+func streamSSE(w http.ResponseWriter, flusher http.Flusher, done <-chan struct{}, events <-chan WireEvent) {
 	ticker := time.NewTicker(heartbeat)
 	defer ticker.Stop()
 	for {
@@ -52,12 +60,36 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		case <-ticker.C:
 			_, _ = fmt.Fprint(w, ": ping\n\n")
 			flusher.Flush()
-		case <-r.Context().Done():
-			// The client went away. Unsubscribing is all that happens: the
-			// turn belongs to the daemon and keeps running.
+		case <-done:
 			return
 		}
 	}
+}
+
+// handleAllEvents streams every session's events, each tagged with its
+// session. It is what a client showing many sessions at once attaches to.
+// When the hub closes the stream because this client fell behind, the
+// response ends and the client is expected to reconnect and resync.
+func (s *Server) handleAllEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	// Subscribe before the header, for the same reason handleEvents does.
+	events, unsubscribe := s.hub.SubscribeAll()
+	defer unsubscribe()
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	for _, ev := range s.allPendingApprovalEvents(r.Context()) {
+		writeSSE(w, flusher, ev)
+	}
+	streamSSE(w, flusher, r.Context().Done(), events)
 }
 
 func writeSSE(w http.ResponseWriter, f http.Flusher, ev WireEvent) bool {

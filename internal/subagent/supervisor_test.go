@@ -497,3 +497,91 @@ func TestSweepOrphansMarksRunsFromAPreviousProcess(t *testing.T) {
 		t.Errorf("orphan state = %q, want interrupted", got.State)
 	}
 }
+
+// recordingObserver keeps what the supervisor reported, in order.
+type recordingObserver struct {
+	mu      sync.Mutex
+	started []string
+	events  int
+	settled []string
+}
+
+func (o *recordingObserver) ChildStarted(parentID, childID, prompt string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.started = append(o.started, parentID+">"+childID+":"+prompt)
+}
+func (o *recordingObserver) ChildEvent(childID string, ev Event) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.events++
+}
+func (o *recordingObserver) ChildSettled(childID, state string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.settled = append(o.settled, childID+":"+state)
+}
+func (o *recordingObserver) snapshot() ([]string, int, []string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.started...), o.events, append([]string(nil), o.settled...)
+}
+
+func TestObserverSeesAChildStartStreamAndSettle(t *testing.T) {
+	sup, st := testSupervisor(t, config.SubagentConfig{MaxDepth: 2, MaxCostUSD: 1, MaxConcurrent: 4}, &stubRunner{reply: "ok"})
+	obs := &recordingObserver{}
+	sup.SetObserver(obs)
+	parent := parentSession(t, st)
+
+	got, err := sup.Run(ctxFor(parent), parent, "look")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, events, settled := obs.snapshot()
+	if len(started) != 1 || started[0] != parent+">"+got.ID+":look" {
+		t.Errorf("started = %v", started)
+	}
+	if events != 1 {
+		t.Errorf("events = %d, want 1 (the stub sends one)", events)
+	}
+	if len(settled) != 1 || settled[0] != got.ID+":"+store.RunDone {
+		t.Errorf("settled = %v, want exactly one done", settled)
+	}
+}
+
+// Cancel records the stop and the child's goroutine then tries to record it
+// again. Only the write that moved the row may report.
+func TestObserverHearsACancelledChildSettleOnce(t *testing.T) {
+	r := &releaseRunner{release: make(chan struct{}), reply: "never"}
+	sup, st := testSupervisor(t, config.SubagentConfig{MaxDepth: 2, MaxCostUSD: 1, MaxConcurrent: 4}, r)
+	sup.AllowDetached(true)
+	obs := &recordingObserver{}
+	sup.SetObserver(obs)
+	parent := parentSession(t, st)
+
+	id, err := sup.Spawn(ctxFor(parent), parent, "background")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sup.Cancel(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	// Wait until the child's goroutine has untracked itself, so its own
+	// finish has run.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		sup.mu.Lock()
+		_, live := sup.running[id]
+		sup.mu.Unlock()
+		if !live {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the cancelled child never untracked")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, _, settled := obs.snapshot(); len(settled) != 1 || settled[0] != id+":"+store.RunInterrupted {
+		t.Fatalf("settled = %v, want exactly one interrupted", settled)
+	}
+}

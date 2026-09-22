@@ -1,15 +1,28 @@
 package daemon
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
 // subscriberBuffer is how far a client may fall behind before it starts
 // missing events. A browser tab that is not reading must never block the
 // turn, so a full buffer drops rather than waits.
 const subscriberBuffer = 256
 
+// globalBuffer is how far a global subscriber may fall behind before it is
+// disconnected. A global reader tracks state -- which sessions are working
+// -- so a skipped event would leave it wrong with no way to notice. Closing
+// the stream forces it down its reconnect-and-resync path instead.
+const globalBuffer = 1024
+
 type sessionHub struct {
 	subs    map[chan WireEvent]struct{}
 	running bool
+	// cancel stops the running turn. It is set by startTurn once the turn's
+	// context exists and cleared by End; a slot claimed by /clear or
+	// /compact never has one.
+	cancel context.CancelCauseFunc
 }
 
 // Hub fans one turn's events out to every client attached to a session, and
@@ -19,9 +32,12 @@ type sessionHub struct {
 type Hub struct {
 	mu       sync.Mutex
 	sessions map[string]*sessionHub
+	global   map[chan WireEvent]struct{}
 }
 
-func NewHub() *Hub { return &Hub{sessions: map[string]*sessionHub{}} }
+func NewHub() *Hub {
+	return &Hub{sessions: map[string]*sessionHub{}, global: map[chan WireEvent]struct{}{}}
+}
 
 func (h *Hub) get(sessionID string) *sessionHub {
 	sh, ok := h.sessions[sessionID]
@@ -62,19 +78,55 @@ func (h *Hub) Subscribe(sessionID string) (<-chan WireEvent, func()) {
 	}
 }
 
-// Publish delivers to every current subscriber. A subscriber whose buffer is
-// full is skipped, not waited on.
+// SubscribeAll attaches a client to every session. Events arrive tagged with
+// their session. The returned function detaches it; it is safe to call more
+// than once, and safe after the hub has closed the channel on overflow.
+func (h *Hub) SubscribeAll() (<-chan WireEvent, func()) {
+	ch := make(chan WireEvent, globalBuffer)
+	h.mu.Lock()
+	h.global[ch] = struct{}{}
+	h.mu.Unlock()
+
+	var once sync.Once
+	return ch, func() {
+		once.Do(func() {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			if _, still := h.global[ch]; still {
+				delete(h.global, ch)
+				close(ch)
+			}
+		})
+	}
+}
+
+// Publish delivers to every current subscriber of the session, and to every
+// global subscriber tagged with the session. A per-session subscriber whose
+// buffer is full is skipped; a global one is disconnected (see globalBuffer).
 func (h *Hub) Publish(sessionID string, ev WireEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	sh, ok := h.sessions[sessionID]
-	if !ok {
+	if sh, ok := h.sessions[sessionID]; ok {
+		for ch := range sh.subs {
+			select {
+			case ch <- ev:
+			default:
+			}
+		}
+	}
+	if len(h.global) == 0 {
 		return
 	}
-	for ch := range sh.subs {
+	tagged := ev
+	tagged.Session = sessionID
+	for ch := range h.global {
 		select {
-		case ch <- ev:
+		case ch <- tagged:
 		default:
+			// Closing under the lock is safe for the same reason it is in
+			// Subscribe's detach: nothing can be mid-send on this channel.
+			delete(h.global, ch)
+			close(ch)
 		}
 	}
 }
@@ -101,6 +153,7 @@ func (h *Hub) End(sessionID string) {
 		return
 	}
 	sh.running = false
+	sh.cancel = nil
 	h.gc(sessionID, sh)
 }
 
@@ -110,6 +163,35 @@ func (h *Hub) Running(sessionID string) bool {
 	defer h.mu.Unlock()
 	sh, ok := h.sessions[sessionID]
 	return ok && sh.running
+}
+
+// SetCancel records how to stop the session's running turn. It does nothing
+// when no turn is running.
+func (h *Hub) SetCancel(sessionID string, cancel context.CancelCauseFunc) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	sh, ok := h.sessions[sessionID]
+	if !ok || !sh.running {
+		return
+	}
+	sh.cancel = cancel
+}
+
+// Stop cancels the session's running turn with cause, reporting whether
+// there was one to cancel. The cancel runs outside the lock: it wakes the
+// turn, which will call End.
+func (h *Hub) Stop(sessionID string, cause error) bool {
+	h.mu.Lock()
+	var cancel context.CancelCauseFunc
+	if sh, ok := h.sessions[sessionID]; ok && sh.running {
+		cancel = sh.cancel
+	}
+	h.mu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel(cause)
+	return true
 }
 
 // gc drops the bookkeeping for a session with no subscribers and no turn, so

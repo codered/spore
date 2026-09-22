@@ -126,24 +126,27 @@ func TestEndToEndAllowedToolCallReachesTheRealBuiltin(t *testing.T) {
 	post := postJSON(t, ts.URL+"/api/sessions/"+id+"/messages", map[string]string{"text": "read note.txt"})
 	post.Body.Close()
 
-	events := readSSE(t, r, 4) // tool_call, tool_result, text, turn_done
-	if events[0].Type != WireToolCall || events[0].Tool != "fs_read" {
-		t.Fatalf("first event = %+v, want the fs_read call", events[0])
+	events := readSSE(t, r, 5) // turn_started, tool_call, tool_result, text, turn_done
+	if events[0].Type != WireTurnStarted {
+		t.Fatalf("first event = %+v, want turn_started", events[0])
 	}
-	if events[1].Type != WireToolResult {
-		t.Fatalf("second event = %+v, want a tool result", events[1])
+	if events[1].Type != WireToolCall || events[1].Tool != "fs_read" {
+		t.Fatalf("second event = %+v, want the fs_read call", events[1])
 	}
-	if events[1].IsError {
-		t.Fatalf("the tool call failed: %s", events[1].Content)
+	if events[2].Type != WireToolResult {
+		t.Fatalf("third event = %+v, want a tool result", events[2])
 	}
-	if !strings.Contains(events[1].Content, "hello from disk") {
-		t.Errorf("tool result = %q, want the file's real content", events[1].Content)
+	if events[2].IsError {
+		t.Fatalf("the tool call failed: %s", events[2].Content)
 	}
-	if events[2].Type != WireText || events[2].Text != "the note says hello" {
-		t.Errorf("third event = %+v", events[2])
+	if !strings.Contains(events[2].Content, "hello from disk") {
+		t.Errorf("tool result = %q, want the file's real content", events[2].Content)
 	}
-	if events[3].Type != WireTurnDone {
-		t.Errorf("fourth event = %+v, want turn_done", events[3])
+	if events[3].Type != WireText || events[3].Text != "the note says hello" {
+		t.Errorf("fourth event = %+v", events[3])
+	}
+	if events[4].Type != WireTurnDone {
+		t.Errorf("fifth event = %+v, want turn_done", events[4])
 	}
 }
 
@@ -167,17 +170,17 @@ func TestEndToEndDeniedCallNeverReachesTheBuiltin(t *testing.T) {
 	post := postJSON(t, ts.URL+"/api/sessions/"+id+"/messages", map[string]string{"text": "read /etc/passwd"})
 	post.Body.Close()
 
-	events := readSSE(t, r, 4)
+	events := readSSE(t, r, 5) // turn_started, tool_call, tool_result (error), text, turn_done
 	for _, ev := range events {
 		if ev.Type == WireApproval {
 			t.Fatal("a denied call produced an approval prompt; deny must never be escalated to a human")
 		}
 	}
-	if !events[1].IsError {
-		t.Fatalf("the out-of-workspace read was not refused: %+v", events[1])
+	if !events[2].IsError {
+		t.Fatalf("the out-of-workspace read was not refused: %+v", events[2])
 	}
-	if !strings.Contains(events[1].Content, "denied by policy") {
-		t.Errorf("refusal text = %q, want it to name the policy", events[1].Content)
+	if !strings.Contains(events[2].Content, "denied by policy") {
+		t.Errorf("refusal text = %q, want it to name the policy", events[2].Content)
 	}
 }
 
@@ -200,7 +203,7 @@ func TestEndToEndApprovalSuspendsAndResumesTheTurn(t *testing.T) {
 	post := postJSON(t, ts.URL+"/api/sessions/"+id+"/messages", map[string]string{"text": "write out.txt"})
 	post.Body.Close()
 
-	events := readSSE(t, r, 2) // tool_call, approval
+	events := readSSE(t, r, 3) // turn_started, tool_call, approval
 	var approval WireEvent
 	for _, ev := range events {
 		if ev.Type == WireApproval {
@@ -260,7 +263,7 @@ func TestEndToEndSecondClientSeesThePendingApproval(t *testing.T) {
 	first := attachStream(t, ts, id)
 	post := postJSON(t, ts.URL+"/api/sessions/"+id+"/messages", map[string]string{"text": "write late.txt"})
 	post.Body.Close()
-	readSSE(t, first, 2) // wait until the approval exists
+	readSSE(t, first, 3) // turn_started, tool_call, wait until the approval exists
 
 	// A client attaching now must be told immediately, before any deltas.
 	second := attachStream(t, ts, id)
@@ -368,12 +371,12 @@ ask = ["fs_write"]
 	post := postJSON(t, ts.URL+"/api/sessions/"+id+"/messages", map[string]string{"text": "read the absolute path"})
 	post.Body.Close()
 
-	events := readSSE(t, r, 4) // tool_call, tool_result, text, turn_done
-	if events[1].Type != WireToolResult || events[1].IsError {
-		t.Fatalf("an absolute path inside the session's own workspace was refused: %+v", events[1])
+	events := readSSE(t, r, 5) // turn_started, tool_call, tool_result, text, turn_done
+	if events[2].Type != WireToolResult || events[2].IsError {
+		t.Fatalf("an absolute path inside the session's own workspace was refused: %+v", events[2])
 	}
-	if !strings.Contains(events[1].Content, "hello from disk") {
-		t.Errorf("tool result = %q, want the file's real content", events[1].Content)
+	if !strings.Contains(events[2].Content, "hello from disk") {
+		t.Errorf("tool result = %q, want the file's real content", events[2].Content)
 	}
 }
 
@@ -426,12 +429,12 @@ ask = ["fs_write"]
 	post := postJSON(t, ts.URL+"/api/sessions/"+id+"/messages", map[string]string{"text": "read the absolute path"})
 	post.Body.Close()
 
-	events := readSSE(t, r, 4)
-	if !events[1].IsError {
-		t.Fatalf("a read outside the session's own workspace (but inside the ceiling) was allowed: %+v", events[1])
+	events := readSSE(t, r, 5) // turn_started, tool_call, tool_result, text, turn_done
+	if !events[2].IsError {
+		t.Fatalf("a read outside the session's own workspace (but inside the ceiling) was allowed: %+v", events[2])
 	}
-	if !strings.Contains(events[1].Content, "path outside workspace") {
-		t.Errorf("refusal text = %q, want it to name the path-outside-workspace rule", events[1].Content)
+	if !strings.Contains(events[2].Content, "path outside workspace") {
+		t.Errorf("refusal text = %q, want it to name the path-outside-workspace rule", events[2].Content)
 	}
 	if _, err := os.ReadFile(secretPath); err != nil {
 		t.Fatalf("the source file should be untouched: %v", err)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codered/spore/internal/daemon"
 )
@@ -379,5 +380,29 @@ func TestRendererEmitsAHeldTableWhenTheTurnEndsInsideIt(t *testing.T) {
 	}
 	if got := all.String(); !strings.Contains(got, "Mon") || !strings.Contains(got, "71°") {
 		t.Fatalf("held table rows never reached the screen: %q", got)
+	}
+}
+
+// A stopped turn is over. A renderer started for one turn must return on it,
+// or its goroutine waits forever for a turn_done that will never come.
+func TestRendererStopsAfterAStoppedTurn(t *testing.T) {
+	f := newFakeClient()
+	r := newRenderer(f, "C1", 0)
+	r.stopAfterTurn = true
+	events := make(chan daemon.WireEvent, 2)
+	events <- daemon.WireEvent{Type: daemon.WireText, Text: "partial"}
+	events <- daemon.WireEvent{Type: daemon.WireStopped}
+	// The channel is left open on purpose: only the stopped event may end
+	// the loop.
+
+	done := make(chan struct{})
+	go func() {
+		r.Consume(context.Background(), events)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Consume did not return after a stopped turn")
 	}
 }

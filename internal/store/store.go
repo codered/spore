@@ -18,6 +18,16 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// Session sources: where a session was opened from. The TUI filters its
+// sidebar on them; nothing in the engine branches on them.
+const (
+	SourceChat     = "chat"
+	SourceDiscord  = "discord"
+	SourceJob      = "job"
+	SourceSubagent = "subagent"
+	SourceUnknown  = "unknown"
+)
+
 type Store struct {
 	db *sql.DB
 	// dataDir is the directory holding the database file. It is where a
@@ -36,7 +46,10 @@ type Session struct {
 	// ParentID is the session that launched this one as a sub-agent, or ""
 	// for a top-level session. Fixed at creation and never rewritten, which
 	// is what lets the approval ancestor walk trust it without a lock.
-	ParentID  string
+	ParentID string
+	// Source is where the session was opened from: one of the Source*
+	// constants. Fixed at creation.
+	Source    string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -144,6 +157,16 @@ func migrateSessions(db *sql.DB) error {
 			return fmt.Errorf("add sessions.parent_id: %w", err)
 		}
 	}
+	if !have["source"] {
+		if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add sessions.source: %w", err)
+		}
+		// Rows written before the column existed: a parent means a sub-agent,
+		// and nothing else recorded where a session came from.
+		if _, err := db.Exec(`UPDATE sessions SET source = CASE WHEN parent_id != '' THEN 'subagent' ELSE 'unknown' END`); err != nil {
+			return fmt.Errorf("backfill sessions.source: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -245,19 +268,26 @@ func newID() string {
 // creator has no directory of its own -- a bridge, the web UI, the scheduler.
 func (s *Store) SessionsDir() string { return filepath.Join(s.dataDir, "sessions") }
 
-// CreateSession records a session rooted at workspace. An empty workspace
-// means the creator has no directory of its own, and the session is rooted at
-// SessionsDir()/<id>. The directory is NOT created here: a session that is
-// opened and never used must leave nothing on disk.
+// CreateSession records a session with no known source. Callers that know
+// where a session came from use CreateSessionFrom.
 func (s *Store) CreateSession(ctx context.Context, title, workspace string) (string, error) {
+	return s.CreateSessionFrom(ctx, title, workspace, SourceUnknown)
+}
+
+// CreateSessionFrom records a session rooted at workspace, opened from
+// source. An empty workspace means the creator has no directory of its own,
+// and the session is rooted at SessionsDir()/<id>. The directory is NOT
+// created here: a session that is opened and never used must leave nothing
+// on disk.
+func (s *Store) CreateSessionFrom(ctx context.Context, title, workspace, source string) (string, error) {
 	id := newID()
 	if workspace == "" {
 		workspace = filepath.Join(s.SessionsDir(), id)
 	}
 	now := time.Now().UTC().Format(timeFormat)
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sessions (id, title, workspace, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		id, title, workspace, "", now, now)
+		`INSERT INTO sessions (id, title, workspace, parent_id, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, title, workspace, "", source, now, now)
 	if err != nil {
 		return "", fmt.Errorf("create session: %w", err)
 	}
@@ -268,10 +298,10 @@ func (s *Store) CreateSession(ctx context.Context, title, workspace string) (str
 // sessions are hidden unless includeChildren: a fan-out leaves one row per
 // child, and `session list` is a human's view of their own conversations.
 func (s *Store) ListSessions(ctx context.Context, limit int, includeChildren bool) ([]Session, error) {
-	q := `SELECT id, title, workspace, parent_id, created_at, updated_at FROM sessions
+	q := `SELECT id, title, workspace, parent_id, source, created_at, updated_at FROM sessions
 	      WHERE parent_id = '' ORDER BY updated_at DESC LIMIT ?`
 	if includeChildren {
-		q = `SELECT id, title, workspace, parent_id, created_at, updated_at FROM sessions
+		q = `SELECT id, title, workspace, parent_id, source, created_at, updated_at FROM sessions
 		     ORDER BY updated_at DESC LIMIT ?`
 	}
 	rows, err := s.db.QueryContext(ctx, q, limit)
@@ -283,7 +313,7 @@ func (s *Store) ListSessions(ctx context.Context, limit int, includeChildren boo
 	for rows.Next() {
 		var sess Session
 		var created, updated string
-		if err := rows.Scan(&sess.ID, &sess.Title, &sess.Workspace, &sess.ParentID, &created, &updated); err != nil {
+		if err := rows.Scan(&sess.ID, &sess.Title, &sess.Workspace, &sess.ParentID, &sess.Source, &created, &updated); err != nil {
 			return nil, err
 		}
 		sess.CreatedAt, _ = time.Parse(timeFormat, created)
@@ -298,8 +328,8 @@ func (s *Store) Session(ctx context.Context, id string) (Session, bool, error) {
 	var sess Session
 	var created, updated string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, title, workspace, parent_id, created_at, updated_at FROM sessions WHERE id = ?`, id).
-		Scan(&sess.ID, &sess.Title, &sess.Workspace, &sess.ParentID, &created, &updated)
+		`SELECT id, title, workspace, parent_id, source, created_at, updated_at FROM sessions WHERE id = ?`, id).
+		Scan(&sess.ID, &sess.Title, &sess.Workspace, &sess.ParentID, &sess.Source, &created, &updated)
 	if err == sql.ErrNoRows {
 		return Session{}, false, nil
 	}
@@ -324,9 +354,9 @@ func (s *Store) CreateChildSession(ctx context.Context, title, workspace, parent
 	}
 	now := nowString()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sessions (id, title, workspace, parent_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		id, title, workspace, parentID, now, now)
+		`INSERT INTO sessions (id, title, workspace, parent_id, source, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, title, workspace, parentID, SourceSubagent, now, now)
 	if err != nil {
 		return "", fmt.Errorf("create child session: %w", err)
 	}
@@ -583,6 +613,30 @@ func (s *Store) PendingCalls(ctx context.Context, sessionID string) ([]PendingCa
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, session_id, tool_use_id, tool, args, profile, rule, created_at
 		 FROM pending_calls WHERE session_id = ? AND state = 'pending' ORDER BY id`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("read pending calls: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []PendingCall
+	for rows.Next() {
+		var p PendingCall
+		var args, created string
+		if err := rows.Scan(&p.ID, &p.SessionID, &p.ToolUseID, &p.Tool, &args, &p.Profile, &p.Rule, &created); err != nil {
+			return nil, err
+		}
+		p.ArgsJSON = []byte(args)
+		p.CreatedAt, _ = time.Parse(timeFormat, created)
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// PendingCallsAll returns every unanswered approval across all sessions,
+// oldest first. The global event feed replays them to a client attaching.
+func (s *Store) PendingCallsAll(ctx context.Context) ([]PendingCall, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, session_id, tool_use_id, tool, args, profile, rule, created_at
+		 FROM pending_calls WHERE state = 'pending' ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("read pending calls: %w", err)
 	}

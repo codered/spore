@@ -83,8 +83,15 @@ func (s *Server) Attach(a *agent.Agent, g *policy.Guard) {
 }
 
 // AttachSubagents supplies the sub-agent supervisor. It arrives with the
-// agent, after New, for the same reason Attach exists.
-func (s *Server) AttachSubagents(sup *subagent.Supervisor) { s.subagents = sup }
+// agent, after New, for the same reason Attach exists. Attaching is also what
+// makes children visible: the server observes the supervisor and publishes
+// each child onto the hub.
+func (s *Server) AttachSubagents(sup *subagent.Supervisor) {
+	s.subagents = sup
+	if sup != nil {
+		sup.SetObserver(childPublisher{s})
+	}
+}
 
 // Subagents is the supervisor the daemon serves /agents from.
 func (s *Server) Subagents() *subagent.Supervisor { return s.subagents }
@@ -102,6 +109,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.handlePatchSession)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleShowSession)
 	mux.HandleFunc("POST /api/sessions/{id}/messages", s.handlePostMessage)
+	mux.HandleFunc("POST /api/sessions/{id}/stop", s.handleStop)
+	mux.HandleFunc("GET /api/events", s.handleAllEvents)
 	mux.HandleFunc("GET /api/sessions/{id}/events", s.handleEvents)
 	mux.HandleFunc("POST /api/sessions/{id}/compact", s.handleCompact)
 	mux.HandleFunc("POST /api/sessions/{id}/clear", s.handleClear)

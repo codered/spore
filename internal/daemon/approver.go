@@ -163,10 +163,16 @@ func (b *Broker) pruneAnswered() {
 }
 
 func approvalEvent(a policy.Ask) WireEvent {
-	return WireEvent{
+	ev := WireEvent{
 		Type: WireApproval, PendingID: a.PendingID, Tool: a.Tool,
 		Args: string(a.Args), Rule: a.Rule, Pattern: a.Pattern,
 	}
+	// A child's ask is published to its root. Origin tells the human they
+	// are answering for a sub-agent, exactly as the replay path does.
+	if a.RootID != "" && a.RootID != a.SessionID {
+		ev.Origin = a.SessionID
+	}
+	return ev
 }
 
 func decisionOf(a policy.Answer) string {
@@ -200,6 +206,33 @@ func (s *Server) pendingApprovalEvents(ctx context.Context, sessionID string) []
 		// human can see they are answering for a sub-agent, not for the
 		// conversation in front of them.
 		if p.SessionID != sessionID {
+			ev.Origin = p.SessionID
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
+// allPendingApprovalEvents is pendingApprovalEvents across every session.
+// Each approval is tagged with the root session it is answered through, and
+// with Origin when a sub-agent asked.
+func (s *Server) allPendingApprovalEvents(ctx context.Context) []WireEvent {
+	pending, err := s.store.PendingCallsAll(ctx)
+	if err != nil {
+		return nil
+	}
+	out := make([]WireEvent, 0, len(pending))
+	for _, p := range pending {
+		root := p.SessionID
+		if anc, err := s.store.SessionAncestors(ctx, p.SessionID); err == nil && len(anc) > 0 {
+			root = anc[len(anc)-1]
+		}
+		pattern, _ := policy.PatternFor(policy.Call{Tool: p.Tool, Args: p.ArgsJSON})
+		ev := WireEvent{
+			Type: WireApproval, Session: root, PendingID: p.ID, Tool: p.Tool,
+			Args: string(p.ArgsJSON), Rule: p.Rule, Pattern: pattern,
+		}
+		if p.SessionID != root {
 			ev.Origin = p.SessionID
 		}
 		out = append(out, ev)

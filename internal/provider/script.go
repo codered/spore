@@ -12,6 +12,9 @@ type ScriptTurn struct {
 	ToolCalls []Block
 	Usage     Usage
 	Err       error
+	// Hold, when set, keeps the stream open after Text until Hold is closed
+	// or the request's context ends. It is how a test stops a turn mid-reply.
+	Hold <-chan struct{}
 }
 
 // Script is a Provider that replays canned turns in order. It is the test
@@ -55,6 +58,14 @@ func (s *Script) Stream(ctx context.Context, req Request) (<-chan Event, error) 
 		}
 		if turn.Text != "" {
 			ch <- Event{Type: EventTextDelta, Text: turn.Text}
+		}
+		if turn.Hold != nil {
+			select {
+			case <-turn.Hold:
+			case <-ctx.Done():
+				ch <- Event{Type: EventError, Err: ctx.Err()}
+				return
+			}
 		}
 		for i := range turn.ToolCalls {
 			b := turn.ToolCalls[i]

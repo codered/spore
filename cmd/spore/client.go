@@ -170,25 +170,24 @@ func (c *client) listAgents(ctx context.Context, sessionID string) (agentListJSO
 	return out, nil
 }
 
-// streamFrom reads the session's server-sent events until ctx is cancelled,
-// the connection drops, or fn returns an error. It closes `connected` once
-// the stream is actually open, which is what lets a caller post a message
-// knowing that no event published in the meantime can be missed — attaching
-// in a goroutine and posting immediately would race.
-func (c *client) streamFrom(ctx context.Context, sessionID string, connected chan<- struct{}, fn func(daemon.WireEvent) error) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.base+"/api/sessions/"+sessionID+"/events", nil) //nolint:gosec // G704: c.base is the local daemon URL, sessionID is from the API
+// streamPath reads server-sent events from path until ctx is cancelled, the
+// connection drops, or fn returns an error. It closes `connected` once the
+// stream is actually open, which is what lets a caller post a message knowing
+// that no event published in the meantime can be missed.
+func (c *client) streamPath(ctx context.Context, path, label string, connected chan<- struct{}, fn func(daemon.WireEvent) error) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.base+path, nil) //nolint:gosec // G704: c.base is the local daemon URL, path is from the API
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
-	//nolint:gosec // G704: c.base is the local daemon URL, sessionID is from the API
+	//nolint:gosec // G704: c.base is the local daemon URL, path is from the API
 	res, err := c.streamClient.Do(req) //nolint:gosec // G704: c.base is the local daemon URL
 	if err != nil {
 		return err
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("attach to session %s: %s", sessionID, res.Status)
+		return fmt.Errorf("attach to %s: %s", label, res.Status)
 	}
 	if connected != nil {
 		close(connected)
@@ -210,4 +209,35 @@ func (c *client) streamFrom(ctx context.Context, sessionID string, connected cha
 		}
 	}
 	return sc.Err()
+}
+
+// streamFrom reads one session's events.
+func (c *client) streamFrom(ctx context.Context, sessionID string, connected chan<- struct{}, fn func(daemon.WireEvent) error) error {
+	return c.streamPath(ctx, "/api/sessions/"+sessionID+"/events", "session "+sessionID, connected, fn)
+}
+
+// streamAll reads every session's events, each tagged with its session.
+func (c *client) streamAll(ctx context.Context, connected chan<- struct{}, fn func(daemon.WireEvent) error) error {
+	return c.streamPath(ctx, "/api/events", "the event feed", connected, fn)
+}
+
+func (c *client) stop(ctx context.Context, sessionID string) error {
+	return c.do(ctx, "POST", "/api/sessions/"+sessionID+"/stop", nil, nil)
+}
+
+func (c *client) cancelAgent(ctx context.Context, parent, child string) error {
+	return c.do(ctx, "DELETE", "/api/sessions/"+parent+"/agents/"+child, nil, nil)
+}
+
+// sessions lists every session, sub-agents included.
+func (c *client) sessions(ctx context.Context) ([]daemon.SessionJSON, error) {
+	var out []daemon.SessionJSON
+	err := c.do(ctx, "GET", "/api/sessions?children=1", nil, &out)
+	return out, err
+}
+
+func (c *client) transcript(ctx context.Context, sessionID string) (daemon.TranscriptJSON, error) {
+	var out daemon.TranscriptJSON
+	err := c.do(ctx, "GET", "/api/sessions/"+sessionID, nil, &out)
+	return out, err
 }

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -47,6 +48,10 @@ const (
 	EvToolResult EventType = "tool_result"
 	EvTurnDone   EventType = "turn_done"
 	EvError      EventType = "error"
+	// EvStopped ends a turn a human stopped. It carries Err: ErrStopped so a
+	// consumer that only checks Err (the sub-agent supervisor) still sees a
+	// turn that did not finish.
+	EvStopped EventType = "stopped"
 )
 
 type Event struct {
@@ -57,6 +62,22 @@ type Event struct {
 	Usage provider.Usage
 	Cost  float64
 	Err   error
+}
+
+// ErrStopped is the cancellation cause that marks a turn as stopped by a
+// human. A turn cancelled for any other reason -- the daemon shutting down --
+// is an error, not a stop.
+var ErrStopped = errors.New("stopped by user")
+
+// stopMarker ends the text of a reply that was cut off, so the model can see
+// on its next turn where it was interrupted.
+const stopMarker = "\n\n[stopped by you]"
+
+// stopped reports whether ctx was cancelled with ErrStopped. The cause
+// propagates to derived contexts, so this holds inside tools and sub-agents
+// launched from the stopped turn too.
+func stopped(ctx context.Context) bool {
+	return errors.Is(context.Cause(ctx), ErrStopped)
 }
 
 // ToolRunner is the seam Plan 2 fills. The loop knows only that tools have
@@ -226,6 +247,10 @@ func (a *Agent) RunSite(ctx context.Context, sessionID, input, site string) (<-c
 		ctx, turn := sporetrace.StartTurn(ctx, sessionID, "core")
 		defer turn.End()
 		if err := a.loop(ctx, sessionID, site, out); err != nil {
+			if stopped(ctx) {
+				out <- Event{Type: EvStopped, Err: ErrStopped}
+				return
+			}
 			turn.RecordError(err)
 			out <- Event{Type: EvError, Err: err}
 		}
@@ -235,6 +260,9 @@ func (a *Agent) RunSite(ctx context.Context, sessionID, input, site string) (<-c
 
 func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Event) error {
 	for i := 0; i < maxIterations; i++ {
+		if stopped(ctx) {
+			return ErrStopped
+		}
 		if err := a.MaybeCompact(ctx, sessionID); err != nil {
 			return fmt.Errorf("compaction: %w", err)
 		}
@@ -266,6 +294,8 @@ func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Eve
 		var text string
 		var calls []provider.Block
 		var usage provider.Usage
+		var streamErr error
+	stream:
 		for ev := range ch {
 			switch ev.Type {
 			case provider.EventTextDelta:
@@ -279,10 +309,32 @@ func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Eve
 					usage = *ev.Usage
 				}
 			case provider.EventError:
-				llmSpan.RecordError(ev.Err)
-				llmSpan.End()
-				return ev.Err
+				streamErr = ev.Err
+				break stream
 			}
+		}
+
+		// A stop is checked before a stream error: a provider cut off by a
+		// cancelled context reports the cancellation as an error, and that
+		// error is the stop, not a failure.
+		if stopped(ctx) {
+			llmSpan.End()
+			if text != "" {
+				pctx, cancelPersist := persistCtx(ctx)
+				err := a.appendMessage(pctx, sessionID, provider.RoleAssistant,
+					[]provider.Block{{Type: provider.BlockText, Text: text + stopMarker}},
+					ref, site, usage, price.Cost(usage))
+				cancelPersist()
+				if err != nil {
+					return err
+				}
+			}
+			return ErrStopped
+		}
+		if streamErr != nil {
+			llmSpan.RecordError(streamErr)
+			llmSpan.End()
+			return streamErr
 		}
 
 		if text != "" {

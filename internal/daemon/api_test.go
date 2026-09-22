@@ -214,12 +214,15 @@ func TestPostMessageStreamsToTwoAttachedClients(t *testing.T) {
 	}
 
 	for i, r := range readers {
-		events := readSSE(t, r, 2)
-		if events[0].Type != WireText || events[0].Text != "hello from the model" {
-			t.Errorf("client %d first event = %+v", i, events[0])
+		events := readSSE(t, r, 3)
+		if events[0].Type != WireTurnStarted {
+			t.Errorf("client %d first event should be turn_started, got %+v", i, events[0])
 		}
-		if events[1].Type != WireTurnDone || events[1].Model != "script/fake" {
+		if events[1].Type != WireText || events[1].Text != "hello from the model" {
 			t.Errorf("client %d second event = %+v", i, events[1])
+		}
+		if events[2].Type != WireTurnDone || events[2].Model != "script/fake" {
+			t.Errorf("client %d third event = %+v", i, events[2])
 		}
 	}
 }

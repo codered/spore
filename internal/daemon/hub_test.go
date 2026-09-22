@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -101,5 +103,91 @@ func TestHubAllowsOneTurnPerSession(t *testing.T) {
 	h.End("s1")
 	if !h.Begin("s1") {
 		t.Error("Begin refused after End")
+	}
+}
+
+func TestGlobalSubscriberSeesEverySessionTagged(t *testing.T) {
+	h := NewHub()
+	ch, unsubscribe := h.SubscribeAll()
+	defer unsubscribe()
+
+	// Neither session has a per-session subscriber or a running turn.
+	h.Publish("a", WireEvent{Type: WireText, Text: "one"})
+	h.Publish("b", WireEvent{Type: WireText, Text: "two"})
+
+	first, second := <-ch, <-ch
+	if first.Session != "a" || first.Text != "one" || second.Session != "b" || second.Text != "two" {
+		t.Fatalf("got %+v then %+v, want a/one then b/two", first, second)
+	}
+}
+
+func TestPerSessionSubscriberIsNotTagged(t *testing.T) {
+	h := NewHub()
+	ch, unsubscribe := h.Subscribe("a")
+	defer unsubscribe()
+	h.Publish("a", WireEvent{Type: WireText, Text: "x"})
+	if ev := <-ch; ev.Session != "" {
+		t.Fatalf("per-session event Session = %q, want empty", ev.Session)
+	}
+}
+
+// A global reader that falls behind is disconnected, because a skipped event
+// would leave it wrong with no way to notice. A per-session reader in the
+// same position keeps its stream and only misses events.
+func TestGlobalSubscriberThatFallsBehindIsClosed(t *testing.T) {
+	h := NewHub()
+	global, unsubscribeGlobal := h.SubscribeAll()
+	local, unsubscribeLocal := h.Subscribe("a")
+	defer unsubscribeLocal()
+
+	for i := 0; i < globalBuffer+1; i++ {
+		h.Publish("a", WireEvent{Type: WireText, Text: "x"})
+	}
+
+	n := 0
+	for range global {
+		n++
+	}
+	if n != globalBuffer {
+		t.Fatalf("global subscriber received %d events before closing, want %d", n, globalBuffer)
+	}
+	unsubscribeGlobal() // must be safe after the hub closed the channel
+
+	for i := 0; i < subscriberBuffer; i++ {
+		<-local
+	}
+	select {
+	case _, open := <-local:
+		if !open {
+			t.Fatal("per-session subscriber was closed on overflow")
+		}
+		t.Fatal("per-session subscriber received more than its buffer")
+	default:
+	}
+}
+
+func TestStopCancelsTheRunningTurnWithItsCause(t *testing.T) {
+	h := NewHub()
+	errWhy := errors.New("why")
+	if h.Stop("a", errWhy) {
+		t.Fatal("Stop reported a turn on an idle session")
+	}
+	if !h.Begin("a") {
+		t.Fatal("Begin failed")
+	}
+	if h.Stop("a", errWhy) {
+		t.Fatal("Stop reported a turn with no cancel function registered")
+	}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	h.SetCancel("a", cancel)
+	if !h.Stop("a", errWhy) {
+		t.Fatal("Stop did not find the running turn")
+	}
+	if !errors.Is(context.Cause(ctx), errWhy) {
+		t.Fatalf("cause = %v, want %v", context.Cause(ctx), errWhy)
+	}
+	h.End("a")
+	if h.Stop("a", errWhy) {
+		t.Fatal("Stop reported a turn after End")
 	}
 }

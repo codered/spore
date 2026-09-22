@@ -27,6 +27,16 @@ type Runner interface {
 	RunSite(ctx context.Context, sessionID, input, site string) (<-chan Event, error)
 }
 
+// Observer hears about a child's life. The daemon implements it to put
+// children on the event hub: a child's turns never pass through the daemon's
+// startTurn, so without it nothing outside the supervisor could see one
+// working.
+type Observer interface {
+	ChildStarted(parentID, childID, prompt string)
+	ChildEvent(childID string, ev Event)
+	ChildSettled(childID, state string)
+}
+
 // Status is one child, live or finished. It is what agent_result returns to
 // the model and what the endpoint renders.
 type Status struct {
@@ -61,6 +71,7 @@ type Supervisor struct {
 	// letting one write running rows would also make the daemon's startup
 	// sweep unable to tell a live run from an orphan.
 	detached bool
+	observer Observer
 }
 
 func New(st *store.Store, cfg config.SubagentConfig) *Supervisor {
@@ -78,6 +89,26 @@ func (s *Supervisor) AttachRunner(r Runner) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.runner = r
+}
+
+// SetObserver installs the observer. The daemon calls it once at startup.
+func (s *Supervisor) SetObserver(o Observer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.observer = o
+}
+
+func (s *Supervisor) currentObserver() Observer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.observer
+}
+
+// settled reports a run's terminal state to the observer.
+func (s *Supervisor) settled(childID, state string) {
+	if o := s.currentObserver(); o != nil {
+		o.ChildSettled(childID, state)
+	}
 }
 
 // admit decides whether one more child may start under this parent, and
@@ -127,17 +158,24 @@ func (s *Supervisor) start(ctx context.Context, parentID, prompt string, depth i
 	if err != nil {
 		return "", nil, err
 	}
+	if o := s.currentObserver(); o != nil {
+		o.ChildStarted(parentID, childID, prompt)
+	}
 	childCtx := policy.WithSession(ctx, policy.Session{
 		ID: childID, Profile: parent.Profile, Workspace: parent.Workspace,
 	})
 	return childID, childCtx, nil
 }
 
-// drain consumes a child's turn to completion and returns its final text.
-func drain(ch <-chan Event) (string, error) {
+// drain collects a child's reply, reporting each event to the observer.
+func (s *Supervisor) drain(childID string, ch <-chan Event) (string, error) {
+	o := s.currentObserver()
 	var text string
 	var turnErr error
 	for ev := range ch {
+		if o != nil {
+			o.ChildEvent(childID, ev)
+		}
 		switch {
 		case ev.Err != nil:
 			turnErr = ev.Err
@@ -183,7 +221,7 @@ func (s *Supervisor) Run(ctx context.Context, parentID, prompt string) (Status, 
 		s.finish(ctx, childID, store.RunFailed, "", err.Error())
 		return Status{}, err
 	}
-	text, turnErr := drain(ch)
+	text, turnErr := s.drain(childID, ch)
 	if turnErr != nil {
 		s.finish(ctx, childID, store.RunFailed, text, turnErr.Error())
 		return Status{}, turnErr
@@ -240,10 +278,14 @@ func (s *Supervisor) tryTrack(ctx context.Context, id string, root string, c *ch
 func (s *Supervisor) finish(ctx context.Context, childID, state, result, errText string) {
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if _, err := s.store.FinishSubagentRun(writeCtx, childID, state, result, errText); err != nil {
+	moved, err := s.store.FinishSubagentRun(writeCtx, childID, state, result, errText)
+	if err != nil {
 		// The transcript is the record; a lost bookkeeping row costs the
 		// listing accuracy, never the work.
-		_ = err
+		return
+	}
+	if moved {
+		s.settled(childID, state)
 	}
 }
 
@@ -339,7 +381,7 @@ func (s *Supervisor) Spawn(ctx context.Context, parentID, prompt string) (string
 			s.finish(bg, childID, store.RunFailed, "", err.Error())
 			return
 		}
-		text, turnErr := drain(ch)
+		text, turnErr := s.drain(childID, ch)
 		switch {
 		case turnErr != nil && bg.Err() != nil:
 			// Cancel has normally recorded this already, and then the write
@@ -373,6 +415,7 @@ func (s *Supervisor) Cancel(ctx context.Context, childID string) error {
 	if !moved {
 		return fmt.Errorf("sub-agent %s had already finished: %w", childID, ErrNotRunning)
 	}
+	s.settled(childID, store.RunInterrupted)
 	c.cancel()
 	return nil
 }
