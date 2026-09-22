@@ -220,21 +220,31 @@ func selfSection(cfg *config.Config, workspace string) string {
 // soulSection renders soul.md. It is identity, so it goes with identity:
 // directly under the system prompt, which is the operational half of the
 // same thing.
-func soulSection(body string) string {
-	if strings.TrimSpace(body) == "" {
-		return ""
-	}
-	return "\n\n## Who you are\n\n" + strings.TrimRight(body, "\n") + "\n"
-}
+func soulSection(body string) string { return titled(body, "## Who you are") }
 
 // agentSection renders agent.md. It goes last in the stable prefix: it is the
 // most situational thing in it, so it sits closest to the conversation it
 // governs.
-func agentSection(body string) string {
+func agentSection(body string) string { return titled(body, "## Working in this project") }
+
+// titled renders a persona file under heading, unless the file already titles
+// itself.
+//
+// Someone writing a markdown file naturally gives it a title, and prepending
+// one regardless stacks two headings -- comically so when the file guessed the
+// same words we did. The rule is deliberately about any leading heading rather
+// than one that matches ours: a file called "# My rules" is just as titled as
+// one called "## Who you are", and a user should be able to predict the
+// behaviour without knowing our wording.
+func titled(body, heading string) string {
 	if strings.TrimSpace(body) == "" {
 		return ""
 	}
-	return "\n\n## Working in this project\n\n" + strings.TrimRight(body, "\n") + "\n"
+	text := strings.TrimRight(body, "\n")
+	if strings.HasPrefix(strings.TrimLeft(text, " \t\n"), "#") {
+		return "\n\n" + strings.TrimLeft(text, " \t\n") + "\n"
+	}
+	return "\n\n" + heading + "\n\n" + text + "\n"
 }
 
 // Assemble builds the request ordered by stability rather than by topic: the
