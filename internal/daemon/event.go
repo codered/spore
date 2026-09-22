@@ -12,13 +12,17 @@ import (
 // Wire event types. These strings are the API: the web UI and the CLI client
 // both switch on them, so they are append-only.
 const (
-	WireText       = "text"
-	WireToolCall   = "tool_call"
-	WireToolResult = "tool_result"
-	WireTurnDone   = "turn_done"
-	WireError      = "error"
-	WireApproval   = "approval"
-	WireResolved   = "resolved"
+	WireText        = "text"
+	WireToolCall    = "tool_call"
+	WireToolResult  = "tool_result"
+	WireTurnDone    = "turn_done"
+	WireError       = "error"
+	WireApproval    = "approval"
+	WireResolved    = "resolved"
+	WireTurnStarted = "turn_started"
+	WireStopped     = "stopped"
+	WireSession     = "session"
+	WireAgentState  = "agent_state"
 )
 
 // WireEvent is one server-sent event. It is comparable on purpose — tests
@@ -43,10 +47,12 @@ type WireEvent struct {
 	Truncated bool   `json:"truncated,omitempty"`
 
 	// turn_done
-	Model     string  `json:"model,omitempty"`
-	TokensIn  int     `json:"tokens_in,omitempty"`
-	TokensOut int     `json:"tokens_out,omitempty"`
-	CostUSD   float64 `json:"cost_usd,omitempty"`
+	Model            string  `json:"model,omitempty"`
+	TokensIn         int     `json:"tokens_in,omitempty"`
+	TokensOut        int     `json:"tokens_out,omitempty"`
+	CostUSD          float64 `json:"cost_usd,omitempty"`
+	TokensCacheRead  int     `json:"tokens_cache_read,omitempty"`
+	TokensCacheWrite int     `json:"tokens_cache_write,omitempty"`
 
 	// error
 	Error string `json:"error,omitempty"`
@@ -60,6 +66,14 @@ type WireEvent struct {
 	// human can see they are answering for a sub-agent, not for the
 	// conversation in front of them.
 	Origin string `json:"origin_session,omitempty"`
+
+	// session / agent_state. State is a sub-agent run state (running, done,
+	// failed, interrupted).
+	State     string `json:"state,omitempty"`
+	Title     string `json:"title,omitempty"`
+	Workspace string `json:"workspace,omitempty"`
+	Source    string `json:"source,omitempty"`
+	ParentID  string `json:"parent_id,omitempty"`
 }
 
 // FromAgent converts a core event into its wire form. The agent's Err field
@@ -85,8 +99,11 @@ func FromAgent(ev agent.Event) WireEvent {
 		return WireEvent{
 			Type: WireTurnDone, Model: ev.Model,
 			TokensIn: ev.Usage.InputTokens, TokensOut: ev.Usage.OutputTokens,
+			TokensCacheRead: ev.Usage.CacheReadTokens, TokensCacheWrite: ev.Usage.CacheWriteTokens,
 			CostUSD: ev.Cost,
 		}
+	case agent.EvStopped:
+		return WireEvent{Type: WireStopped}
 	case agent.EvError:
 		msg := ""
 		if ev.Err != nil {

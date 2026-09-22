@@ -102,6 +102,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.handlePatchSession)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleShowSession)
 	mux.HandleFunc("POST /api/sessions/{id}/messages", s.handlePostMessage)
+	mux.HandleFunc("POST /api/sessions/{id}/stop", s.handleStop)
 	mux.HandleFunc("GET /api/sessions/{id}/events", s.handleEvents)
 	mux.HandleFunc("POST /api/sessions/{id}/compact", s.handleCompact)
 	mux.HandleFunc("POST /api/sessions/{id}/clear", s.handleClear)

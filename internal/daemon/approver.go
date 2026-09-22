@@ -163,10 +163,16 @@ func (b *Broker) pruneAnswered() {
 }
 
 func approvalEvent(a policy.Ask) WireEvent {
-	return WireEvent{
+	ev := WireEvent{
 		Type: WireApproval, PendingID: a.PendingID, Tool: a.Tool,
 		Args: string(a.Args), Rule: a.Rule, Pattern: a.Pattern,
 	}
+	// A child's ask is published to its root. Origin tells the human they
+	// are answering for a sub-agent, exactly as the replay path does.
+	if a.RootID != "" && a.RootID != a.SessionID {
+		ev.Origin = a.SessionID
+	}
+	return ev
 }
 
 func decisionOf(a policy.Answer) string {

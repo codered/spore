@@ -256,6 +256,20 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "running"})
 }
 
+// handleStop stops the session's running turn. The turn itself ends with a
+// `stopped` event on the stream; this only asks for it.
+func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, ok := s.findSession(w, r, id); !ok {
+		return
+	}
+	if !s.hub.Stop(id, agent.ErrStopped) {
+		writeError(w, http.StatusConflict, "nothing running in session %s", id)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "stopping"})
+}
+
 // CompactJSON is what a manual compaction reports back: how many messages
 // were folded, and the assembled estimate either side of the fold. A client
 // that only knew it succeeded could not tell a fold from a no-op.
@@ -357,18 +371,24 @@ func (s *Server) startTurn(sessionID, text, client string, profile policy.Profil
 			return fmt.Errorf("create session directory: %w", err)
 		}
 	}
-	ctx := policy.WithSession(s.base, policy.Session{
+	turnCtx, cancel := context.WithCancelCause(s.base)
+	ctx := policy.WithSession(turnCtx, policy.Session{
 		ID: sessionID, Profile: profile, Workspace: sess.Workspace,
 	})
 	ctx, turn = sporetrace.StartTurn(ctx, sessionID, client)
+	s.hub.SetCancel(sessionID, cancel)
 
 	ch, err := s.agent.Run(ctx, sessionID, text)
 	if err != nil {
+		cancel(nil)
 		turn.End()
 		return err
 	}
+	// Published before the pump starts, so it precedes every event of the turn.
+	s.hub.Publish(sessionID, WireEvent{Type: WireTurnStarted})
 	go func() {
 		defer s.hub.End(sessionID)
+		defer cancel(nil)
 		defer turn.End()
 
 		// Recover in the pump goroutine so a panic in event handling
