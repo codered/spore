@@ -9,6 +9,9 @@ import (
 	"github.com/codered/spore/internal/daemon"
 )
 
+// compactSummary says what a compaction actually did. A session with nothing
+// outside the protected recent window folds nothing, and reporting that as
+// "compacted" would be a lie the operator acts on.
 func compactSummary(res daemon.CompactJSON) string {
 	if res.Folded == 0 {
 		return "nothing outside the protected recent window to fold"

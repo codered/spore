@@ -273,6 +273,8 @@ func (s *Supervisor) tryTrack(ctx context.Context, id string, root string, c *ch
 	return nil
 }
 
+// finish records the terminal state. It uses a context detached from the
+// child's own, because a cancelled child must still record that it stopped.
 func (s *Supervisor) finish(ctx context.Context, childID, state, result, errText string) {
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()

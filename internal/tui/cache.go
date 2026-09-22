@@ -77,14 +77,13 @@ func (sv *sessionView) dropLastUser(text string) {
 	}
 }
 
-func (sv *sessionView) dropApproval(pendingID int64) bool {
+func (sv *sessionView) dropApproval(pendingID int64) {
 	for i, a := range sv.approvals {
 		if a.PendingID == pendingID {
 			sv.approvals = append(sv.approvals[:i], sv.approvals[i+1:]...)
-			return true
+			return
 		}
 	}
-	return false
 }
 
 func (sv *sessionView) dropApprovalsWhere(match func(daemon.WireEvent) bool) {
