@@ -125,7 +125,11 @@ append-only):
 |---|---|---|
 | `turn_started` | `startTurn`, after the turn slot is claimed | — |
 | `stopped` | a turn ended because it was stopped | — |
-| `session` | a session is created or its title changes | `Title`, `Workspace`, `Source`, `ParentID` |
+| `session` | a session is created | `Title`, `Workspace`, `Source`, `ParentID` |
+| `agent_state` | a sub-agent run starts or settles (§3.5) | `State` (`running`, `done`, `failed`, `interrupted`) |
+
+`WireEvent` gains the fields these carry: `State`, `Title`, `Workspace`,
+`Source`, `ParentID`, all `omitempty`.
 
 `turn_done` gains `TokensCacheRead` and `TokensCacheWrite`. Since prompt
 caching shipped, `TokensIn` is only the uncached remainder, so the context
@@ -133,18 +137,27 @@ figure a client shows is the sum of all three.
 
 ### 3.3 Stopping a turn: `POST /api/sessions/{id}/stop`
 
-- `startTurn` derives the turn's context with `context.WithCancel(s.base)` and
-  stores the cancel function on the session's hub entry beside `running`.
+- `startTurn` derives the turn's context with `context.WithCancelCause(s.base)`
+  and stores the cancel function on the session's hub entry beside `running`.
   `Hub.End` clears it.
-- `Hub.Stop(id)` calls it and reports whether a turn was running. The handler
-  returns 202 when it was, 409 when it was not, 404 for an unknown session.
-- The agent loop distinguishes cancellation from failure. When `ctx.Err()` is
-  `context.Canceled`:
+- `Hub.Stop(id)` calls it with the cause `agent.ErrStopped` and reports whether
+  a turn was running. The handler returns 202 when it was, 409 when it was not,
+  404 for an unknown session.
+- **The cause is what makes it a stop.** Daemon shutdown also cancels every
+  turn (through `s.base`), and that must stay an error, not read as the user
+  stopping it. So the agent treats a turn as stopped only when
+  `errors.Is(context.Cause(ctx), agent.ErrStopped)`. The cause propagates to
+  derived contexts, so an `agent_run` child of a stopped turn is stopped too.
+- The agent loop distinguishes a stop from failure. When the turn is stopped:
   - if the provider stream was interrupted with text already received, the
     assistant message is persisted with that text followed by
     `\n\n[stopped by you]`, through `persistCtx` as every other write is;
-  - it emits `EvStopped`, which `FromAgent` maps to `stopped`, instead of
-    `EvError`.
+  - it emits `EvStopped` (carrying `Err: agent.ErrStopped`, so the
+    supervisor's `drain` still sees a turn that did not finish), which
+    `FromAgent` maps to `stopped`, instead of `EvError`;
+  - the loop also checks for a stop at the top of each iteration, so a stop
+    during tool execution ends the turn after the results are persisted
+    instead of making one more provider call.
 - Tools already running see a cancelled context. A pending approval returns
   when its context is cancelled — the approver already selects on `ctx.Done()`
   (`approver.go:88`); a test pins it.
@@ -164,15 +177,50 @@ figure a client shows is the sum of all three.
   column and backfills: rows with a `parent_id` become `subagent`, the rest
   `unknown`. It runs on every open, as the existing migrations do, and is
   idempotent.
-- `Server.CreateSession` and `store.CreateSession` take a `source`. The four
-  call sites pass: `handleCreateSession` → `chat`, the jobs runner → `job`, the
-  Discord bridge (both sites) → `discord`. Sub-agents are created by
-  `store.CreateChildSession`, not `CreateSession`; it writes `subagent` itself
-  and takes no new argument.
+- `store.CreateSessionFrom(ctx, title, workspace, source)` is added.
+  `store.CreateSession` keeps its signature (about a hundred test call sites
+  use it) and delegates with `unknown`.
+- `Server.CreateSession` gains a `source` parameter and calls
+  `CreateSessionFrom`. The four call sites pass: `handleCreateSession` →
+  `chat`, the jobs runner → `job`, the Discord bridge (both sites) → `discord`.
+  Sub-agents are created by `store.CreateChildSession`, which writes
+  `subagent` itself and takes no new argument.
+- `GET /api/sessions?children=1` includes sub-agent sessions; without it the
+  listing is unchanged.
 - `SessionJSON` gains `source`, `parent_id`, `state` (`idle`, `working`,
   `blocked`) and `pending` (count of unresolved approvals). `state` is
   `blocked` when `pending > 0`, else `working` when the hub has a turn
-  running, else `idle`.
+  running — or, for a sub-agent, when its `subagent_runs` row is `running` —
+  else `idle`.
+
+### 3.5 Sub-agent visibility
+
+A sub-agent's turns do not go through `startTurn` or the hub: the supervisor
+calls `RunSite` and drains the channel itself. Without a change, the global
+feed would carry nothing from a child and the sidebar could never show one
+working.
+
+- `subagent.Supervisor` gains `SetObserver(Observer)`:
+
+  ```go
+  type Observer interface {
+      ChildStarted(parentID, childID, prompt string)
+      ChildEvent(childID string, ev agent.Event)
+      ChildSettled(parentID, childID, state string)
+  }
+  ```
+
+  `ChildStarted` is called after `StartSubagentRun`; `drain` calls
+  `ChildEvent` for every event; `ChildSettled` is called whenever
+  `FinishSubagentRun` actually moved the row (so a cancel and the goroutine's
+  later no-op write do not both report).
+- The daemon implements it: `ChildStarted` publishes `session` and
+  `turn_started` under the child's id; `ChildEvent` publishes
+  `FromAgent(ev)` under the child's id; `ChildSettled` publishes
+  `agent_state` under the child's id. The global feed tags each with the
+  child's id, so the TUI streams a child exactly as it streams any session.
+- A child's approvals are unchanged: published to the root session with
+  `Origin` set to the child, and answered through the root.
 
 ## 4. Interaction
 
@@ -265,6 +313,11 @@ A notice is a transcript block in the selected session, never a modal.
 - Stop cancels the turn, persists partial text with the marker, and publishes
   `stopped`; a new message afterwards gets a normal turn.
 - Stop during tool execution, then a new message, succeeds (§3.3).
+- Cancelling the server's base context (shutdown) produces `error`, not
+  `stopped`, and writes no `[stopped by you]` marker.
+- A sub-agent run through the supervisor with an observer attached reports
+  started, its events, and settled exactly once — including when it is
+  cancelled.
 - A pending approval returns when the turn is stopped.
 - Each creation site sets `source`: the test calls the site and reads the row,
   so a site that forgets fails — asserting the call site, not the definition.
