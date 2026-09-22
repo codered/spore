@@ -204,7 +204,7 @@ func recallReindexCmd(ctx context.Context, cfg *config.Config, st *store.Store, 
 	if err != nil {
 		return err
 	}
-	dir := filepath.Join(cfg.DataDir, "memory")
+	dir := cfg.MemoryDir()
 	facts, errs := memory.Load(dir)
 	for _, e := range errs {
 		if errors.Is(e, memory.ErrReadDir) {

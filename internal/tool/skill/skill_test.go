@@ -139,3 +139,32 @@ func TestToolsAreOffWithoutASkillsDirectory(t *testing.T) {
 		t.Fatal("a session with no skills directory must say so, not read the global one")
 	}
 }
+
+func TestInstallDescriptionNamesTheDirectory(t *testing.T) {
+	// "the user's skills directory" is not an answer to "where do skills
+	// go?". The tool knows the path; the model should see it.
+	cfg := config.Default()
+	cfg.DataDir = "/home/u/.spore"
+	tool := installTool{cfg: cfg}
+
+	if got := tool.Description(); !strings.Contains(got, "/home/u/.spore/skills") {
+		t.Fatalf("description does not name the skills directory: %q", got)
+	}
+}
+
+func TestInstallDescriptionUnderWorkspaceScope(t *testing.T) {
+	// Under workspace scope there is no single path to name, and naming the
+	// global one would send the user to a directory spore does not read.
+	cfg := config.Default()
+	cfg.DataDir = "/home/u/.spore"
+	cfg.Skills.Scope = config.SkillsWorkspace
+	tool := installTool{cfg: cfg}
+
+	got := tool.Description()
+	if strings.Contains(got, "/home/u/.spore/skills") {
+		t.Fatalf("global skills dir named although scope is workspace: %q", got)
+	}
+	if !strings.Contains(got, ".spore/skills") {
+		t.Fatalf("description says nothing about where skills live: %q", got)
+	}
+}

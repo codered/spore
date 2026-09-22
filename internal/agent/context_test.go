@@ -1,10 +1,10 @@
 package agent
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
-
-	"fmt"
 
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/memory"
@@ -437,5 +437,91 @@ func TestAssembleDoesNotMutateTheSnapshot(t *testing.T) {
 	}
 	if snap.Messages[0].Blocks[0].CacheBreak {
 		t.Fatal("Assemble marked a breakpoint on the caller's snapshot")
+	}
+}
+
+func TestSelfSectionNamesWhereEverythingLives(t *testing.T) {
+	// A model asked "where do skills go?" must answer from the prompt. With
+	// nothing in it naming the paths, it greps config.toml and the database
+	// instead and gets nonsense.
+	cfg := config.Default()
+	cfg.DataDir = "/home/u/.spore"
+	cfg.Path = "/home/u/.spore/config.toml"
+
+	got := selfSection(cfg, "/home/u/work")
+	for _, want := range []string{
+		"/home/u/.spore/skills",
+		"/home/u/.spore/memory",
+		"/home/u/.spore/config.toml",
+		"SKILL.md",
+		"skill_install",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("self section does not mention %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestSelfSectionFollowsWorkspaceSkillScope(t *testing.T) {
+	// Under workspace scope the skills directory moves per session. Naming
+	// the global one would send the user to a directory spore does not read.
+	cfg := config.Default()
+	cfg.DataDir = "/home/u/.spore"
+	cfg.Skills.Scope = config.SkillsWorkspace
+
+	got := selfSection(cfg, "/home/u/work")
+	if !strings.Contains(got, "/home/u/work/.spore/skills") {
+		t.Fatalf("workspace-scoped skills dir not named:\n%s", got)
+	}
+	if strings.Contains(got, "/home/u/.spore/skills") {
+		t.Fatalf("the global skills dir is named although scope is workspace:\n%s", got)
+	}
+}
+
+func TestSelfSectionSaysWhenNoSkillsAreInstalled(t *testing.T) {
+	// skillsSection renders nothing when the index is empty, so without this
+	// the prompt is silent about skills exactly when the user is most likely
+	// to be asking how to add one.
+	cfg := config.Default()
+	cfg.DataDir = "/home/u/.spore"
+
+	snap := Snapshot{System: "You are spore.", Self: selfSection(cfg, "")}
+	got := systemText(Assemble(snap, cfg.Context).System)
+	if !strings.Contains(got, "/home/u/.spore/skills") {
+		t.Fatalf("with no skills installed the prompt never names the skills directory:\n%s", got)
+	}
+}
+
+func TestSelfSectionRidesInTheCachedPrefix(t *testing.T) {
+	// The paths are stable for the life of a session. Putting them after the
+	// moving breakpoint would re-send them every turn.
+	cfg := config.Default()
+	cfg.DataDir = "/home/u/.spore"
+	snap := Snapshot{
+		System:   "You are spore.",
+		Self:     selfSection(cfg, ""),
+		Messages: []provider.Message{{Role: "user", Blocks: []provider.Block{{Type: provider.BlockText, Text: "hi"}}}},
+	}
+	req := Assemble(snap, cfg.Context)
+
+	var found bool
+	for i, blk := range req.System {
+		if strings.Contains(blk.Text, "/home/u/.spore/skills") {
+			found = true
+			if blk.CacheBreak && i != len(req.System)-1 {
+				t.Fatal("the self section breaks the cache mid-prefix")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("the self section is not a system block: %#v", req.System)
+	}
+}
+
+func TestMemoryDirMatchesWhereFactsAreLoadedFrom(t *testing.T) {
+	cfg := config.Default()
+	cfg.DataDir = "/home/u/.spore"
+	if got, want := cfg.MemoryDir(), filepath.Join("/home/u/.spore", "memory"); got != want {
+		t.Fatalf("MemoryDir() = %q, want %q", got, want)
 	}
 }
