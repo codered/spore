@@ -89,6 +89,32 @@ again. `agent_note` writing the file costs the same miss.
 from the same session root the environment section already resolves through
 `policy.WorkspaceFrom(ctx)`.
 
+### What the user can ask for
+
+Naming the paths tells the model where things live. It does not tell it that
+the user may simply ask for them to be changed, and a model that knows only the
+path answers "your skills go in ~/.spore/skills" when the user wanted a skill
+written. The self section therefore gains a short closing paragraph naming the
+three requests and the tool each one reaches for:
+
+```
+The user can ask you to do these things directly. "Write me a skill for X"
+is skill_install. "From now on in this project, always X" is agent_note.
+"Remember that X" is memory. Each asks for their approval before it writes.
+
+soul.md is theirs, not yours: you cannot write it. When they ask you to
+change how you behave in general rather than in one project, tell them the
+path and what to add, and let them make the edit.
+```
+
+The asymmetry is the point. Two of the three are things spore does on request;
+the third is a file spore reads and the user owns, and a model that does not
+know the difference will either attempt a write that no tool offers or refuse a
+request it could have satisfied by pointing at a path.
+
+This extends the self section added by the prompt self-knowledge change, which
+must land first.
+
 ## 4. The `internal/persona` package
 
 Pure I/O, no rendering:
