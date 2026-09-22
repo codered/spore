@@ -131,6 +131,13 @@ append-only):
 `WireEvent` gains the fields these carry: `State`, `Title`, `Workspace`,
 `Source`, `ParentID`, all `omitempty`.
 
+**Every consumer that waits for a turn to end must accept `stopped`.**
+`stopped` is published on the per-session stream too, and today five places
+treat only `turn_done` and `error` as the end of a turn: `cmd/spore/once.go`
+(printing and waiting), the plain loop in `cmd/spore/chat.go`, the Discord
+renderer (`stopAfterTurn` and its per-turn reset), and `web/app.js`. Each gains
+`stopped`, or a stopped turn leaks a goroutine or leaves a spinner running.
+
 `turn_done` gains `TokensCacheRead` and `TokensCacheWrite`. Since prompt
 caching shipped, `TokensIn` is only the uncached remainder, so the context
 figure a client shows is the sum of all three.
