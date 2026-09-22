@@ -213,7 +213,7 @@ working.
   type Observer interface {
       ChildStarted(parentID, childID, prompt string)
       ChildEvent(childID string, ev agent.Event)
-      ChildSettled(parentID, childID, state string)
+      ChildSettled(childID, state string)
   }
   ```
 
