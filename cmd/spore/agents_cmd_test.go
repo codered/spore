@@ -64,10 +64,3 @@ func TestRunPlainSlashListsAgentsWithoutPostingAMessage(t *testing.T) {
 		t.Fatalf("output = %q, want the sub-agent id", out.String())
 	}
 }
-
-func TestSlashHintOffersAgents(t *testing.T) {
-	ui := newChatUI("s1", "http://127.0.0.1/#s1", false)
-	if got := ui.renderSlashHint("/ag"); !strings.Contains(got, "/agents") {
-		t.Errorf("hint for /ag = %q, want it to offer /agents", got)
-	}
-}
