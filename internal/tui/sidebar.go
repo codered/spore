@@ -107,7 +107,10 @@ func (c *cache) rows(showAll bool, filter, selected string) []row {
 		groups[ws] = append(groups[ws], r)
 	}
 	for _, ws := range order {
-		out = append(out, row{header: ws})
+		// Only show header if workspace is non-empty
+		if ws != "" {
+			out = append(out, row{header: ws})
+		}
 		idle, hidden := 0, 0
 		for _, r := range groups[ws] {
 			if filter == "" && r.info.ID != selected && c.State(r.info.ID) == daemon.SessionIdle {

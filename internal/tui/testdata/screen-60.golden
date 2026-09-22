@@ -1,0 +1,24 @@
+› fix the flaky tui test                                    
+  Looking at tui_test.go…                                   
+▸ read {"path":"cmd/spore/tui_test.go"}  ✓ 3 lines          
+▸ bash {"cmd":"go test ./cmd/spore"}  ✗ exit 1              
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+╭──────────────────────────────────────────────────────────╮
+│ Ask spore something…                                     │
+╰──────────────────────────────────────────────────────────╯
+ INSERT  a1b2 · chat · /work/spore sonnet-5 · ctx 38.0k · 1…
