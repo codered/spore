@@ -1,11 +1,9 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/codered/spore/internal/daemon"
 )
@@ -38,7 +36,7 @@ func (m *Model) sync() {
 		m.md, m.mdWidth = newMarkdown(w), w
 	}
 	m.vp.Width = w
-	m.vp.Height = max(1, m.height-1-lipgloss.Height(m.inputView())-m.overlayHeight())
+	m.vp.Height = max(1, m.bodyHeight()-lipgloss.Height(m.inputView())-m.overlayHeight())
 
 	content := m.transcript(w)
 	if content != m.lastContent {
@@ -100,11 +98,11 @@ func (m *Model) View() string {
 	if m.sidebarOn() {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, m.sidebarView(), body)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, body, m.statusView())
+	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), m.ruleView(), body, m.statusView())
 }
 
 func (m *Model) mainView() string {
-	w, h := m.mainWidth(), m.height-1
+	w, h := m.mainWidth(), m.bodyHeight()
 	box := lipgloss.NewStyle().Width(w).Height(h).MaxHeight(h)
 	if m.help {
 		return box.Render(helpText())
@@ -118,7 +116,7 @@ func (m *Model) mainView() string {
 }
 
 func (m *Model) sidebarView() string {
-	h := m.height - 1
+	h := m.bodyHeight()
 	body := renderSidebar(m.cache, m.cache.rows(m.showAll, m.filter, m.selected), m.selected, sidebarWidth, h)
 	return stySidebar.Width(sidebarWidth).Height(h).MaxHeight(h).Render(body)
 }
@@ -178,43 +176,18 @@ func (m *Model) overlayHeight() int {
 	return 0
 }
 
+// statusView is the mode badge and the keys that work here, with the few
+// signals that need the user now on the right.
 func (m *Model) statusView() string {
-	sv := m.cache.get(m.selected)
-	src := sv.info.Source
-	if src == "" {
-		src = "unknown"
-	}
-	left := styMode.Render(" "+m.mode.String()+" ") + " " + short(m.selected) +
-		styMuted.Render(" · "+src+" · "+tildePath(sv.info.Workspace))
-
+	left := styMode.Render(" "+m.mode.String()+" ") + " " + m.keyHints()
 	var right []string
-	if sv.model != "" {
-		right = append(right, sv.model)
-	}
-	if sv.ctxTokens > 0 {
-		right = append(right, "ctx "+humanTokens(sv.ctxTokens))
-	}
-	if m.opts.ShowCost && sv.cost > 0 {
-		right = append(right, fmt.Sprintf("$%.2f", sv.cost))
-	}
-	if n := m.cache.BlockedCount(); n > 0 {
-		right = append(right, styWarn.Render(fmt.Sprintf("%d blocked", n)))
-	}
 	if m.unseen {
 		right = append(right, styAccent.Render("↓ new"))
 	}
 	if m.mode == modeNormal && m.cache.State(m.selected) != daemon.SessionIdle {
-		right = append(right, styKey.Render("esc")+" stop")
+		right = append(right, hint("esc", "stop"))
 	}
-	if m.reconnecting {
-		right = append(right, styDanger.Render("reconnecting…"))
-	}
-	r := strings.Join(right, styMuted.Render(" · "))
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(r)
-	if gap < 1 {
-		return ansi.Truncate(left+" "+r, m.width, "…")
-	}
-	return left + strings.Repeat(" ", gap) + r
+	return fitRow(left, strings.Join(right, styMuted.Render(" · ")), m.width)
 }
 
 func helpText() string {
@@ -234,6 +207,10 @@ func helpText() string {
 		"",
 		styKey.Render("INSERT"),
 		"  enter send · ctrl+j newline · ↑↓ history · esc normal mode",
+		"",
+		styKey.Render("VIEWS") + "  (normal mode)",
+		"  S skills · A agents · U usage · J jobs · or :skills :agents :usage :jobs",
+		"  in a view: j/k move · / filter · s sort · enter open · x act on the row · ctrl+r refresh · esc back",
 		"",
 		styKey.Render("COMMANDS"),
 		"  :new [dir]  :sessions [all]  :clear  :compact  :context  :usage  :skills  :agents  :q",
