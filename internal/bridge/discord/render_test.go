@@ -101,9 +101,10 @@ func TestRendererStartsANewMessageAtTheLimit(t *testing.T) {
 	}
 }
 
-func TestRendererShowsToolCallsAsEmbeds(t *testing.T) {
+func TestRendererCollapsesToolCallsOntoOneActivityMessage(t *testing.T) {
 	f := newFakeClient()
 	r := newRenderer(f, "C1", 0)
+	r.detailID = "run-1"
 
 	drain(t, r,
 		daemon.WireEvent{Type: daemon.WireText, Text: "checking"},
@@ -112,23 +113,29 @@ func TestRendererShowsToolCallsAsEmbeds(t *testing.T) {
 		daemon.WireEvent{Type: daemon.WireTurnDone},
 	)
 
-	// Check what actually survives on screen (not historical calls).
+	// The machinery collapses to one line with a way to open it; the prose
+	// keeps its own message above.
 	finals := finalMessages(f, "C1")
-
-	// Both the tool call and result embeds must be visible in their own messages.
-	var callFound, resultFound bool
+	var activity Message
+	var found bool
 	for _, msg := range finals {
 		for _, e := range msg.Embeds {
-			if strings.Contains(e.Title, "⚙") && strings.Contains(e.Title, "fs_read") {
-				callFound = true
-			}
-			if strings.Contains(e.Title, "↳") && strings.Contains(e.Title, "fs_read") {
-				resultFound = true
+			if strings.Contains(e.Title, "fs_read") {
+				t.Fatalf("a tool call still rendered as its own embed: %q", e.Title)
 			}
 		}
+		if strings.Contains(msg.Content, "fs_read") {
+			activity, found = msg, true
+		}
 	}
-	if !callFound || !resultFound {
-		t.Fatalf("both tool call and result embeds must survive on screen: callFound=%v, resultFound=%v, finals=%#v", callFound, resultFound, finals)
+	if !found {
+		t.Fatalf("no activity message names the tool: %#v", finals)
+	}
+	if len(activity.Buttons) != 1 || activity.Buttons[0].CustomID != detailsCustomID("run-1") {
+		t.Fatalf("activity message %#v has no details button", activity)
+	}
+	if finals[0].Content != "checking" {
+		t.Fatalf("the prose message was disturbed: %q", finals[0].Content)
 	}
 }
 
@@ -141,16 +148,13 @@ func TestRendererMarksAFailedToolCall(t *testing.T) {
 		daemon.WireEvent{Type: daemon.WireTurnDone},
 	)
 
-	// Check what actually survives on screen.
-	finals := finalMessages(f, "C1")
-	for _, msg := range finals {
-		for _, e := range msg.Embeds {
-			if e.Error {
-				return
-			}
+	// Collapsing the detail must not collapse the fact that it failed.
+	for _, msg := range finalMessages(f, "C1") {
+		if strings.Contains(msg.Content, "⚠") && strings.Contains(msg.Content, "shell_exec") {
+			return
 		}
 	}
-	t.Fatal("a failed tool call was not marked as an error in the final on-screen state")
+	t.Fatalf("a failed tool call was not marked on the activity line: %#v", finalMessages(f, "C1"))
 }
 
 func TestRendererReportsATurnError(t *testing.T) {
@@ -233,9 +237,9 @@ func TestRendererSplitsAtNewlines(t *testing.T) {
 }
 
 func TestRendererBackToBackToolCalls(t *testing.T) {
-	// Two tool calls and results with no text between them exercises the
-	// WireToolResult reset, which is load-bearing: without it, the second
-	// call's embed Edit overwrites the first result's message.
+	// Two calls with no text between them must land on ONE line that is
+	// edited, not a second activity message: the edit path is what keeps a
+	// twenty-tool turn from being twenty messages.
 	f := newFakeClient()
 	r := newRenderer(f, "C1", 0)
 
@@ -247,23 +251,19 @@ func TestRendererBackToBackToolCalls(t *testing.T) {
 		daemon.WireEvent{Type: daemon.WireTurnDone},
 	)
 
-	// All four embeds must survive in their own messages.
+	if n := len(f.sentTo("C1")); n != 1 {
+		t.Fatalf("a turn with two tools sent %d messages, want 1", n)
+	}
 	finals := finalMessages(f, "C1")
-	var titles []string
-	for _, msg := range finals {
-		for _, e := range msg.Embeds {
-			titles = append(titles, e.Title)
-		}
+	line := finals[0].Content
+	if !strings.Contains(line, "fs_read") || !strings.Contains(line, "shell_exec") {
+		t.Fatalf("activity line %q does not name both tools in call order", line)
 	}
-
-	expected := []string{"⚙ fs_read", "↳ fs_read", "⚙ shell_exec", "↳ shell_exec"}
-	if len(titles) != len(expected) {
-		t.Fatalf("expected %d embeds, got %d: titles=%v", len(expected), len(titles), titles)
+	if strings.Index(line, "fs_read") > strings.Index(line, "shell_exec") {
+		t.Fatalf("activity line %q is out of call order", line)
 	}
-	for i, exp := range expected {
-		if titles[i] != exp {
-			t.Fatalf("embed %d: got %q, want %q", i, titles[i], exp)
-		}
+	if !strings.Contains(line, "(2 tools)") {
+		t.Fatalf("activity line %q does not count the calls", line)
 	}
 }
 

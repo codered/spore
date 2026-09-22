@@ -258,8 +258,8 @@ spore can be driven from Discord. Create an application and bot at
 <https://discord.com/developers/applications>, enable the **Message Content**
 privileged intent under Bot → Privileged Gateway Intents, and invite it to a
 server only you are in with the `bot` scope and the Send Messages, Create
-Public Threads, Send Messages in Threads, Read Message History and Embed Links
-permissions.
+Public Threads, Send Messages in Threads, Read Message History, Embed Links
+and Add Reactions permissions.
 
 ```toml
 [bridge.discord]
@@ -278,6 +278,15 @@ Mode (Settings → Advanced) to copy ids.
 A message in an allowlisted channel opens a thread and a session; replies in
 that thread continue it. A DM is one rolling session, reset with `/new`.
 Approvals arrive as buttons.
+
+spore reacts with 👀 the moment it picks a message up and trades that for ✅
+when the turn is answered, and shows Discord's typing indicator for as long as
+the turn runs. A turn's tool calls collapse onto one line — `⚙ fs_read ·
+shell_exec  (2 tools)`, with a failed call marked `⚠` — rather than filling the
+thread; **Show details** on that line replies with the arguments and results,
+visible only to you. The most recent 50 turns are kept in memory for that
+button, and a restart empties it: `spore trace` has the full record either
+way.
 
 Discord sessions run under the `remote` trust profile, so you can hold them to
 a stricter ruleset than the local web UI:

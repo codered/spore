@@ -100,6 +100,18 @@ func (f *fakeTurns) Subscribe(sessionID string) (<-chan daemon.WireEvent, func()
 	return ch, func() {}
 }
 
+// publish feeds one event to whoever is subscribed to sessionID, the way
+// Hub.Publish does. Tests that need a turn to progress past its first event
+// (tool calls, a turn that ends) drive it through here.
+func (f *fakeTurns) publish(sessionID string, ev daemon.WireEvent) {
+	f.mu.Lock()
+	ch, ok := f.events[sessionID]
+	f.mu.Unlock()
+	if ok {
+		ch <- ev
+	}
+}
+
 // waitForTurn blocks until a StartTurn call has been recorded, failing the
 // test after 5s.
 func (f *fakeTurns) waitForTurn(t *testing.T) {
@@ -580,4 +592,152 @@ func TestThreadNameDropsMentionsAnywhereInTheLine(t *testing.T) {
 	if got := threadName("<@1418>"); got != "spore session" {
 		t.Fatalf("threadName(bare ping) = %q, want the fallback name", got)
 	}
+}
+
+func TestAnInboundMessageGetsEyesThenACheckWhenTheTurnEnds(t *testing.T) {
+	b, f, turns, st := newTestBridge(t)
+	defer b.Close()
+	if err := b.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	f.deliver(Inbound{MessageID: "m1", UserID: "U", GuildID: "G", ChannelID: "C1", Content: "what time is it?"})
+	turns.waitForTurn(t)
+
+	// The eyes go on the message the user sent, in the channel they sent it
+	// in — not in the thread, which they are not looking at yet.
+	waitFor(t, func() bool { return len(f.allReacts()) >= 1 })
+	first := f.allReacts()[0]
+	if first.ChannelID != "C1" || first.MessageID != "m1" || first.Emoji != emojiEyes || first.Removed {
+		t.Fatalf("first reaction = %+v, want the eyes added to C1/m1", first)
+	}
+
+	// Typing shows in the thread, where the answer is being written.
+	thread := f.allThreads()[0].ThreadID
+	waitFor(t, func() bool { return f.typingCount(thread) >= 1 })
+
+	sid, _, err := st.SessionForExternal(context.Background(), bridgeName, thread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns.publish(sid, daemon.WireEvent{Type: daemon.WireTurnDone})
+
+	// Once the turn is answered the eyes are traded for a check: both calls
+	// land, and the eyes are the one that is removed.
+	waitFor(t, func() bool { return len(f.allReacts()) >= 3 })
+	var addedDone, removedEyes bool
+	for _, r := range f.allReacts() {
+		if r.Emoji == emojiDone && !r.Removed && r.MessageID == "m1" {
+			addedDone = true
+		}
+		if r.Emoji == emojiEyes && r.Removed && r.MessageID == "m1" {
+			removedEyes = true
+		}
+	}
+	if !addedDone || !removedEyes {
+		t.Fatalf("reactions %+v, want the check added and the eyes removed", f.allReacts())
+	}
+}
+
+func TestToolCallsCollapseToOneActivityMessageWithADetailsButton(t *testing.T) {
+	b, f, turns, st := newTestBridge(t)
+	defer b.Close()
+	if err := b.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	f.deliver(Inbound{MessageID: "m1", UserID: "U", GuildID: "G", ChannelID: "C1", Content: "look around"})
+	turns.waitForTurn(t)
+	thread := f.allThreads()[0].ThreadID
+	sid, _, err := st.SessionForExternal(context.Background(), bridgeName, thread)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, ev := range []daemon.WireEvent{
+		{Type: daemon.WireToolCall, ToolUseID: "t1", Tool: "fs_read", Args: `{"path":"go.mod"}`},
+		{Type: daemon.WireToolResult, ToolUseID: "t1", Content: "module spore"},
+		{Type: daemon.WireToolCall, ToolUseID: "t2", Tool: "shell_exec", Args: `{"cmd":"ls"}`},
+		{Type: daemon.WireToolResult, ToolUseID: "t2", Content: "boom", IsError: true},
+	} {
+		turns.publish(sid, ev)
+	}
+
+	// One activity message for the whole turn, naming both tools, with the
+	// failed one marked so a collapse never hides a failure.
+	var activity sentMessage
+	waitFor(t, func() bool {
+		for _, m := range f.sentTo(thread) {
+			if len(m.Message.Buttons) > 0 && strings.HasPrefix(m.Message.Buttons[0].CustomID, detailsPrefix) {
+				activity = m
+				return true
+			}
+		}
+		return false
+	})
+	waitFor(t, func() bool {
+		return strings.Contains(currentContentOf(f, thread, activity.MessageID), "shell_exec")
+	})
+	line := currentContentOf(f, thread, activity.MessageID)
+	if !strings.Contains(line, "fs_read") || !strings.Contains(line, "shell_exec") {
+		t.Fatalf("activity line %q does not name both tools", line)
+	}
+	if !strings.Contains(line, "⚠") {
+		t.Fatalf("activity line %q does not mark the failed tool", line)
+	}
+	// The collapse is the point: no separate embed per call or per result.
+	for _, m := range f.sentTo(thread) {
+		if m.MessageID == activity.MessageID {
+			continue
+		}
+		for _, e := range m.Message.Embeds {
+			if strings.Contains(e.Title, "fs_read") || strings.Contains(e.Title, "shell_exec") {
+				t.Fatalf("tool %q still got its own embed", e.Title)
+			}
+		}
+	}
+
+	// Pressing the button answers privately with the full transcript.
+	f.press(Interaction{ID: "i1", Token: "tok", UserID: "U", GuildID: "G", ChannelID: thread, ParentID: "C1", CustomID: activity.Message.Buttons[0].CustomID})
+	waitFor(t, func() bool { return len(f.allResponds()) >= 1 })
+	detail := f.allResponds()[0].Content
+	for _, want := range []string{"fs_read", "go.mod", "module spore", "shell_exec", "boom"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("details %q missing %q", detail, want)
+		}
+	}
+}
+
+func TestADetailsButtonFromBeforeARestartExpiresCleanly(t *testing.T) {
+	st := openTestStore(t)
+	f := newFakeClient()
+	b, _, _ := bridgeWithStore(t, f, st)
+	defer b.Close()
+	if err := b.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// An id minted by a previous process: right shape, unknown run.
+	f.press(Interaction{ID: "i1", Token: "tok", UserID: "U", GuildID: "G", ChannelID: "C1", CustomID: detailsPrefix + "deadbeef-7"})
+	waitFor(t, func() bool { return len(f.allResponds()) >= 1 })
+	if got := f.allResponds()[0].Content; !strings.Contains(got, "no longer") {
+		t.Fatalf("expired details replied %q, want a clear expiry message", got)
+	}
+}
+
+// currentContentOf returns what message id currently reads as: its latest
+// edit if it has been edited, otherwise the content it was sent with.
+func currentContentOf(f *fakeClient, channelID, messageID string) string {
+	var out string
+	for _, m := range f.allSent() {
+		if m.MessageID == messageID {
+			out = m.Message.Content
+		}
+	}
+	for _, e := range f.editsTo(channelID) {
+		if e.MessageID == messageID {
+			out = e.Message.Content
+		}
+	}
+	return out
 }

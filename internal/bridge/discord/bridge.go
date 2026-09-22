@@ -70,6 +70,11 @@ type Bridge struct {
 	answer   *answerer
 	throttle time.Duration
 
+	// details holds recent turns' tool transcripts for the "show details"
+	// button. It lives here, not on the renderer, because the press arrives
+	// after the renderer's goroutine has ended with its turn.
+	details *details
+
 	// ctx bounds the render goroutines. It is the BRIDGE's context, never a
 	// message's: a turn outlives the message that started it, and so must
 	// the goroutine rendering it.
@@ -142,6 +147,7 @@ func New(o Options) (*Bridge, error) {
 		store:    o.Store,
 		answer:   newAnswerer(o.Broker, o.Guard),
 		throttle: throttle,
+		details:  newDetails(),
 	}, nil
 }
 
@@ -218,6 +224,11 @@ func (b *Bridge) handleMessage(in Inbound) {
 	if !fresh {
 		return
 	}
+	// Acknowledge before there is anything to say: the eyes go on the
+	// message as soon as it is claimed, and are traded for a check when the
+	// turn that answers it ends. After the dedupe, never before, so a
+	// gateway resume does not re-react to a message already handled.
+	b.react(in.ChannelID, in.MessageID, emojiEyes)
 
 	if content == "/new" {
 		b.handleNew(in)
@@ -229,7 +240,7 @@ func (b *Bridge) handleMessage(in Inbound) {
 		slog.Warn("discord session resolution failed", "err", err)
 		return
 	}
-	b.startTurn(sessionID, replyChannel, content)
+	b.startTurn(sessionID, replyChannel, in, content)
 }
 
 // handleNew starts a fresh session and rebinds the conversation to it,
@@ -349,10 +360,19 @@ func (b *Bridge) resolveSession(in Inbound) (sessionID, replyChannel string, err
 // must happen first, or the turn's first events are published to nobody and
 // are lost forever — the hub does not buffer for a subscriber that has not
 // yet attached.
-func (b *Bridge) startTurn(sessionID, replyChannel, text string) {
+func (b *Bridge) startTurn(sessionID, replyChannel string, in Inbound, text string) {
 	events, cancel := b.turns.Subscribe(sessionID)
 
 	r := newRenderer(b.client, replyChannel, b.throttle)
+	// detailID names this turn's transcript before the turn runs, because
+	// the button carrying it is rendered while the turn is still going.
+	r.detailID = b.details.mintID()
+	r.recordTools = b.details.put
+	r.typingFn = func(ctx context.Context) {
+		if err := b.client.Typing(ctx, replyChannel); err != nil {
+			slog.Debug("discord typing failed", "err", err)
+		}
+	}
 	// onApproval and stopAfterTurn must both be set before the Consume
 	// goroutine starts: renderer.approvalFn has no synchronisation of its
 	// own, so setting either concurrently with Consume's read of them is a
@@ -380,6 +400,12 @@ func (b *Bridge) startTurn(sessionID, replyChannel, text string) {
 		// b.ctx, never a per-message context: the turn outlives the message
 		// that started it, and so must the goroutine rendering it.
 		r.Consume(b.ctx, events)
+		// Consume returns when the turn ends, so this is the one place that
+		// knows the prompt has been answered: swap the eyes for a check. The
+		// check goes on first — if only one of the two calls can get through,
+		// "answered" is the more useful thing to be left on screen.
+		b.react(in.ChannelID, in.MessageID, emojiDone)
+		b.unreact(in.ChannelID, in.MessageID, emojiEyes)
 	}()
 
 	if err := b.turns.StartTurn(sessionID, text, bridgeName, policy.ProfileRemote); err != nil {
@@ -411,6 +437,10 @@ func (b *Bridge) handleInteraction(i Interaction) {
 	// entrance to the same house.
 	if !b.admit.AdmitInteraction(i) {
 		slog.Debug("discord interaction not admitted", "channel", i.ChannelID, "user", i.UserID)
+		return
+	}
+	if isDetailsCustomID(i.CustomID) {
+		b.showDetails(i)
 		return
 	}
 	sessionID, pendingID, ans, err := decodeCustomID(i.CustomID)
@@ -474,4 +504,37 @@ func threadName(prompt string) string {
 		return "spore session"
 	}
 	return line
+}
+
+// showDetails answers a "show details" press with the turn's tool
+// transcript, ephemerally — only the person who pressed sees it, so the
+// collapsed feed stays collapsed for everyone else in the channel.
+//
+// A miss is the normal end of a transcript's life, not an error: the store
+// holds the most recent turns only, and a restart empties it while the old
+// buttons stay on screen forever. Say so plainly rather than silently doing
+// nothing, which would read as a broken button.
+func (b *Bridge) showDetails(i Interaction) {
+	content := "those details are no longer in memory — `spore trace` has the full turn"
+	if entries, ok := b.details.get(detailsIDFrom(i.CustomID)); ok {
+		content = renderDetails(entries)
+	}
+	if err := b.client.Respond(b.ctx, i.ID, i.Token, content); err != nil {
+		slog.Warn("discord details response", "err", err)
+	}
+}
+
+// react and unreact are logged best-effort reaction calls. A reaction is an
+// acknowledgement, never a correctness requirement: Discord refusing one
+// (missing permission, a deleted message) must not disturb the turn.
+func (b *Bridge) react(channelID, messageID, emoji string) {
+	if err := b.client.React(b.ctx, channelID, messageID, emoji); err != nil {
+		slog.Warn("discord react failed", "emoji", emoji, "err", err)
+	}
+}
+
+func (b *Bridge) unreact(channelID, messageID, emoji string) {
+	if err := b.client.Unreact(b.ctx, channelID, messageID, emoji); err != nil {
+		slog.Warn("discord unreact failed", "emoji", emoji, "err", err)
+	}
 }

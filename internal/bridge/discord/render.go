@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,11 @@ const messageLimit = 2000
 // Discord's rate limits are per channel and unforgiving; a turn that emits a
 // hundred deltas a second must still only edit a few times a second.
 const defaultThrottle = 1500 * time.Millisecond
+
+// defaultTypingEvery is how often the typing indicator is renewed. Discord
+// expires it after about ten seconds, so this must stay comfortably under
+// that or the indicator flickers off between turns of a long tool run.
+const defaultTypingEvery = 8 * time.Second
 
 // renderer turns one session's event stream into Discord messages. A turn
 // emits many small text deltas, so it accumulates them and edits a single
@@ -43,6 +49,25 @@ type renderer struct {
 	pendingCalls map[string]string // tool_use_id -> tool name
 	approvalFn   func(daemon.WireEvent)
 
+	// The tool calls of the turn in flight, collapsed onto one activity
+	// message rather than two embeds per call. activityID is that message
+	// (empty until the first tool call), tools is what it summarises, and
+	// byUseID finds the entry a result belongs to. detailID names the
+	// transcript in the bridge's details store, and recordTools publishes
+	// it there — the goroutine running this renderer ends with the turn,
+	// but the button on the activity message outlives it.
+	activityID  string
+	tools       []toolEntry
+	byUseID     map[string]int
+	detailID    string
+	recordTools func(detailID string, entries []toolEntry)
+
+	// typingFn is called when the turn starts and on every typingEvery tick
+	// for as long as it runs: Discord expires the indicator after about ten
+	// seconds, so it has to be renewed rather than set once.
+	typingFn    func(context.Context)
+	typingEvery time.Duration
+
 	// stopAfterTurn makes Consume return once the turn it was started for
 	// ends. The bridge sets it: one goroutine per turn, ending with the turn,
 	// so a long-lived session does not accumulate one renderer per prompt.
@@ -58,6 +83,8 @@ func newRenderer(c Client, channelID string, throttle time.Duration) *renderer {
 		channelID:    channelID,
 		throttle:     throttle,
 		pendingCalls: make(map[string]string),
+		byUseID:      make(map[string]int),
+		typingEvery:  defaultTypingEvery,
 	}
 }
 
@@ -70,15 +97,31 @@ func (r *renderer) Consume(ctx context.Context, events <-chan daemon.WireEvent) 
 		ticker = time.NewTicker(r.throttle)
 		tickChan = ticker.C
 	}
+	// Typing starts at once rather than one tick in: the whole point is to
+	// show something during the silence before the first token arrives.
+	var typingTicker *time.Ticker
+	var typingChan <-chan time.Time
+	if r.typingFn != nil {
+		r.typingFn(ctx)
+		if r.typingEvery > 0 {
+			typingTicker = time.NewTicker(r.typingEvery)
+			typingChan = typingTicker.C
+		}
+	}
 	defer func() {
 		if ticker != nil {
 			ticker.Stop()
+		}
+		if typingTicker != nil {
+			typingTicker.Stop()
 		}
 		r.flush(ctx)
 	}()
 
 	for {
 		select {
+		case <-typingChan:
+			r.typingFn(ctx)
 		case ev, ok := <-events:
 			if !ok {
 				return
@@ -108,40 +151,32 @@ func (r *renderer) handleEvent(ctx context.Context, ev daemon.WireEvent) {
 		}
 
 	case daemon.WireToolCall:
+		// The prose written so far belongs above the activity message, so it
+		// is flushed and closed before the activity message is touched.
 		r.flush(ctx)
 		r.pendingCalls[ev.ToolUseID] = ev.Tool
-
-		// Send embed for the tool call. Each embed is a boundary in the
-		// transcript, so the embed gets its own message and any following text
-		// starts a fresh one.
-		desc := truncate(ev.Args, 1000)
-		// Wrap in code fence
-		desc = "```\n" + desc + "\n```"
-		r.sendEmbed(ctx, Embed{
-			Title:       "⚙ " + ev.Tool,
-			Description: desc,
-		})
-		// Reset so the next embed gets its own message, not an edit.
+		r.byUseID[ev.ToolUseID] = len(r.tools)
+		r.tools = append(r.tools, toolEntry{Name: ev.Tool, Args: ev.Args})
 		r.msgID = ""
 		r.onScreen = 0
 		r.currentContent.Reset()
+		r.publishTools()
+		r.writeActivity(ctx)
 
 	case daemon.WireToolResult:
-		// Get the tool name from pending calls
-		toolName := r.pendingCalls[ev.ToolUseID]
 		delete(r.pendingCalls, ev.ToolUseID)
-
-		// Send result embed as its own message.
-		desc := truncate(ev.Content, 1000)
-		r.sendEmbed(ctx, Embed{
-			Title:       "↳ " + toolName,
-			Description: desc,
-			Error:       ev.IsError,
-		})
-		// Reset so any following text starts a fresh message.
-		r.msgID = ""
-		r.onScreen = 0
-		r.currentContent.Reset()
+		// A result for a call this renderer never saw (a turn resumed mid
+		// flight, say) still deserves a line rather than being dropped.
+		i, ok := r.byUseID[ev.ToolUseID]
+		if !ok {
+			i = len(r.tools)
+			r.byUseID[ev.ToolUseID] = i
+			r.tools = append(r.tools, toolEntry{Name: "tool"})
+		}
+		r.tools[i].Result = ev.Content
+		r.tools[i].IsError = ev.IsError
+		r.publishTools()
+		r.writeActivity(ctx)
 
 	case daemon.WireApproval:
 		r.flush(ctx)
@@ -175,6 +210,7 @@ func (r *renderer) handleEvent(ctx context.Context, ev daemon.WireEvent) {
 		r.onScreen = 0
 		r.currentContent.Reset()
 		clear(r.pendingCalls)
+		r.resetActivity()
 
 	case daemon.WireError:
 		r.flush(ctx)
@@ -191,12 +227,73 @@ func (r *renderer) handleEvent(ctx context.Context, ev daemon.WireEvent) {
 		r.onScreen = 0
 		r.currentContent.Reset()
 		clear(r.pendingCalls)
+		r.resetActivity()
 	}
 }
 
-// sendEmbed sends a message containing only an embed.
-func (r *renderer) sendEmbed(ctx context.Context, e Embed) {
-	r.write(ctx, "", []Embed{e})
+// activityLine is the collapsed view of a turn's tool calls: the tools in
+// call order, a failed one marked, and a count. It is the whole feed a turn's
+// machinery gets — the arguments and results live behind the button.
+func (r *renderer) activityLine() string {
+	names := make([]string, 0, len(r.tools))
+	for _, t := range r.tools {
+		if t.IsError {
+			names = append(names, "⚠ "+t.Name)
+			continue
+		}
+		names = append(names, t.Name)
+	}
+	line := "⚙ " + strings.Join(names, " · ")
+	unit := " tools)"
+	if len(r.tools) == 1 {
+		unit = " tool)"
+	}
+	line += "  (" + strconv.Itoa(len(r.tools)) + unit
+	return truncate(line, messageLimit-200)
+}
+
+// writeActivity sends the turn's activity message the first time and edits it
+// in place afterwards, so a turn's tool calls stay one line in the feed
+// however many of them there are. It bypasses the text message's state
+// entirely (msgID, currentContent): the two messages interleave on screen and
+// must not share a cursor.
+func (r *renderer) writeActivity(ctx context.Context) {
+	m := Message{Content: r.activityLine()}
+	// No transcript id means nothing to show: a renderer built without one
+	// (a test, or a caller that did not wire the details store) renders the
+	// line alone rather than a button that can only ever say "expired".
+	if r.detailID != "" {
+		m.Buttons = []Button{{CustomID: detailsCustomID(r.detailID), Label: "Show details"}}
+	}
+	if r.activityID == "" {
+		id, err := r.client.Send(ctx, r.channelID, m)
+		if err != nil {
+			slog.Warn("discord activity send", "err", err)
+			return
+		}
+		r.activityID = id
+		return
+	}
+	if err := r.client.Edit(ctx, r.channelID, r.activityID, m); err != nil {
+		slog.Warn("discord activity edit", "err", err)
+	}
+}
+
+// publishTools hands the transcript so far to the bridge, which outlives this
+// renderer and answers the button press.
+func (r *renderer) publishTools() {
+	if r.recordTools != nil && r.detailID != "" {
+		r.recordTools(r.detailID, r.tools)
+	}
+}
+
+// resetActivity ends the turn's activity message. The transcript stays in the
+// bridge's details store, so the button on the message still works; only this
+// renderer's cursor is cleared, and a following turn starts its own line.
+func (r *renderer) resetActivity() {
+	r.activityID = ""
+	r.tools = nil
+	clear(r.byUseID)
 }
 
 // flush puts the buffered text on screen, splitting at the message limit.
