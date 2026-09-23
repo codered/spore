@@ -38,9 +38,13 @@ func TestExitAtTheDeadlineIsReportedAsAnExitNotAKill(t *testing.T) {
 	// output pipe open past the deadline, so the deadline expires while the
 	// call is still waiting. The process exited on its own and was never
 	// signalled: reporting a kill would hide the exit status from the model.
+	//
+	// The deadline has to leave bash time to start and exit on a loaded CI
+	// runner. At 20ms a slow macOS runner hit the deadline before bash had
+	// exited, so the kill was real and the test failed for the wrong reason.
 	ws := t.TempDir()
-	tl := New(20*time.Millisecond, 1<<20)
-	out, err := call(t, tl, ws, map[string]string{"command": "sleep 1 & exit 7"})
+	tl := New(time.Second, 1<<20)
+	out, err := call(t, tl, ws, map[string]string{"command": "sleep 5 & exit 7"})
 	if err != nil {
 		t.Fatal(err)
 	}
