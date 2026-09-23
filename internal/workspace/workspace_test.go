@@ -46,10 +46,26 @@ func TestDescribeReportsWorkingDirectoryAndFiles(t *testing.T) {
 	if !strings.Contains(got, "Working directory: "+root) {
 		t.Errorf("missing working directory line:\n%s", got)
 	}
-	for _, want := range []string{"main.go", "docs/", "docs/readme.md"} {
+	for _, want := range []string{"main.go", "docs/"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("listing missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestListingNamesOnlyTheTopLevel(t *testing.T) {
+	root := t.TempDir()
+	tree(t, root, map[string]string{
+		"main.go":         "",
+		"docs/readme.md":  "",
+		"a/b/c/deep.txt":  "",
+		"internal/x/y.go": "",
+	})
+
+	got := listOf(t, root)
+	want := []string{"a/", "docs/", "internal/", "main.go"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("listing = %v, want only the top level %v", got, want)
 	}
 }
 
@@ -87,12 +103,12 @@ func TestGitignoreExcludesMatchingEntries(t *testing.T) {
 	})
 
 	got := listOf(t, root)
-	for _, want := range []string{"keep.go", "sub/", "sub/rootonly.txt"} {
+	for _, want := range []string{"keep.go", "sub/"} {
 		if !has(got, want) {
 			t.Errorf("expected %q in listing, got %v", want, got)
 		}
 	}
-	for _, unwanted := range []string{"debug.log", "rootonly.txt", "build/", "build/out.bin", "sub/nested.log"} {
+	for _, unwanted := range []string{"debug.log", "rootonly.txt", "build/"} {
 		if has(got, unwanted) {
 			t.Errorf("ignored entry %q appeared in listing: %v", unwanted, got)
 		}
@@ -113,31 +129,6 @@ func TestGitignoreNegationReincludes(t *testing.T) {
 	}
 	if has(got, "drop.log") {
 		t.Errorf("drop.log should stay ignored: %v", got)
-	}
-}
-
-func TestGitignoreDoubleStarAndNestedFiles(t *testing.T) {
-	root := t.TempDir()
-	tree(t, root, map[string]string{
-		".gitignore":      "a/**/skip.txt\n",
-		"sub/.gitignore":  "local.txt\n",
-		"a/b/c/skip.txt":  "",
-		"a/keep.txt":      "",
-		"sub/local.txt":   "",
-		"sub/visible.txt": "",
-		"other/local.txt": "",
-	})
-
-	got := listOf(t, root)
-	for _, unwanted := range []string{"a/b/c/skip.txt", "sub/local.txt"} {
-		if has(got, unwanted) {
-			t.Errorf("%q should be ignored: %v", unwanted, got)
-		}
-	}
-	for _, want := range []string{"a/keep.txt", "sub/visible.txt", "other/local.txt"} {
-		if !has(got, want) {
-			t.Errorf("%q should be listed: %v", want, got)
-		}
 	}
 }
 
@@ -170,17 +161,6 @@ func TestListingIsBoundedAndSaysSo(t *testing.T) {
 	}
 	if got := Describe(root); !strings.Contains(got, "stopped at") {
 		t.Errorf("truncated listing should say so:\n%s", got[len(got)-200:])
-	}
-}
-
-func TestWalkStopsAtMaxDepth(t *testing.T) {
-	root := t.TempDir()
-	tree(t, root, map[string]string{"a/b/c/d/e/deep.txt": ""})
-
-	for _, e := range listOf(t, root) {
-		if strings.Count(e, "/") > maxDepth {
-			t.Errorf("entry %q is deeper than maxDepth %d", e, maxDepth)
-		}
 	}
 }
 
@@ -220,49 +200,8 @@ func TestCacheDirectoriesAreNeverListed(t *testing.T) {
 			}
 		}
 	}
-	if !has(got, "src/main.go") {
+	if !has(got, "src/") {
 		t.Errorf("real source missing from the listing: %v", got)
-	}
-}
-
-func TestOneFatSubtreeCannotStarveTheRest(t *testing.T) {
-	root := t.TempDir()
-	files := map[string]string{"slim/keep.txt": "", "zzz.txt": ""}
-	for i := 0; i < maxEntries; i++ {
-		files["fat/f"+itoa(i)+".txt"] = ""
-	}
-	tree(t, root, files)
-
-	got := listOf(t, root)
-	for _, want := range []string{"slim/keep.txt", "zzz.txt"} {
-		if !has(got, want) {
-			t.Errorf("%q was starved by the fat subtree: %v", want, got)
-		}
-	}
-	// Count what fat/ contributed below itself: its own directory line is
-	// not part of the cap, and the overflow marker is allowed on top of it.
-	fat := 0
-	for _, e := range got {
-		if strings.HasPrefix(e, "fat/") && e != "fat/" {
-			fat++
-		}
-	}
-	if fat > maxPerDir+1 {
-		t.Errorf("fat/ contributed %d entries, want at most %d", fat, maxPerDir+1)
-	}
-}
-
-func TestOverflowingDirectorySaysHowMuchIsHidden(t *testing.T) {
-	root := t.TempDir()
-	files := map[string]string{}
-	for i := 0; i < maxPerDir+25; i++ {
-		files["fat/f"+itoa(i)+".txt"] = ""
-	}
-	tree(t, root, files)
-
-	got := strings.Join(listOf(t, root), "\n")
-	if !strings.Contains(got, "25 more") {
-		t.Errorf("hidden entries were not accounted for:\n%s", got)
 	}
 }
 
