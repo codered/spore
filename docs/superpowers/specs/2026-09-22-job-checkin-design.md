@@ -1,6 +1,6 @@
 # Job check-in and notifications — design
 
-**Status:** draft for review. Nothing here is built.
+**Status:** decisions made 2026-09-22; awaiting spec review. Nothing here is built.
 **Depends on:** branch `sessions-delete-jobs` (jobs folder, `job_output`, job runs tagged with their job).
 
 ## Goal
@@ -12,7 +12,8 @@ created the job, and asks how they want to hear about it from now on:
 > failures, or nothing? It's always in the Jobs folder, and you can ask me for its last output any time.
 
 The user's answer sets that job's notification mode, and every later run follows it. "Here" means the
-surface the job was created from: the TUI chat, or the Discord thread or DM.
+surface the job was created from: the TUI chat, or the Discord thread or DM. It is always and only that
+chat. A job created in the TUI never notifies Discord, even when Discord is connected.
 
 ## Non-goals
 
@@ -75,13 +76,26 @@ Rejected for the check-in.
 **Approach C — append an assistant message directly.** No model call, but it leaves two assistant
 messages in a row, which some providers reject. Rejected.
 
-## Later runs with `each` / `failures` — open question
+## Later runs with `each` / `failures` — a plain notification
 
-A model turn per run (Approach A again) keeps the chat's model aware of every run, but costs one turn
-per run. With `*/5 * * * *` that's 288 turns a day. A plain note (Approach B) costs nothing, but the
-model won't know about the runs unless asked, and `job_output` covers that case.
-**Recommendation:** notes for later runs. That needs a model-invisible `note` role (shown in
-transcripts, skipped by `agent.Snapshot`) and a `Deliver` hook on the bridge for bound channels.
+Decided: after the check-in, a run under `each` (or a failed run under `failures`) produces a short
+**notification that the job ran**. It has no reply text and no model turn:
+
+> ⏰ job 1 ran at 02:30 UTC — ok · it's in the Jobs folder
+> ⏰ job 1 failed at 02:30 UTC: provider timeout · it's in the Jobs folder
+
+It is delivered in three ways at once:
+
+- **Persisted** in the origin session as a message with a new role, `note`. Transcripts show it, so a
+  chat opened later still has it. `agent.Snapshot` skips it, so the model never sees it and the
+  user/assistant alternation is untouched. Asked "what did job 1 say?", the model uses `job_output`.
+- **Live** through a new wire event, `job_note` (appended to the wire constants), which the TUI renders
+  as a notice block in the origin session.
+- **On Discord**, when the origin session is bound to a Discord channel: the bridge gains
+  `Deliver(sessionID, text)` and posts the note there. It never posts to any other channel.
+
+A note is written even while the origin session is mid-turn: it is not a model message, so it cannot
+interleave with the turn's history.
 
 ## Tests (to plan in detail after review)
 
@@ -91,13 +105,13 @@ transcripts, skipped by `agent.Snapshot`) and a `Deliver` hook on the bridge for
   none; a failed first run starts none.
 - A busy origin runs the check-in after its turn ends, never alongside it.
 - `schedule_notify` sets the mode; `each` / `failures` / `none` deliver as specified, on the TUI feed
-  and to a bound Discord channel (fake client).
+  and to a bound Discord channel (fake client). A TUI-created job's note never reaches Discord.
+- `agent.Snapshot` leaves `note` messages out of the model's history; the TUI transcript shows them.
 - End to end: a real daemon with a scripted provider, a job created from a chat session, one tick,
   and the check-in turn in that session's transcript.
 
-## Questions for review
+## Decisions
 
-1. Later runs under `each` / `failures`: a plain note (recommended) or a model turn each time?
-2. A job created from the TUI has no Discord thread. If Discord is connected, should its
-   notifications *also* go to your Discord DM, or strictly to where the job was created
-   (recommended: strictly the origin)?
+- **Check-in:** once, after the first successful run, as a model turn in the origin chat (Approach A).
+- **Later runs:** a plain notification that the job ran, with no reply text and no model turn.
+- **Where:** only the chat that created the job.
