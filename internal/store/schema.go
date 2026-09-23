@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   workspace  TEXT NOT NULL DEFAULT '',
   parent_id  TEXT NOT NULL DEFAULT '',
   source     TEXT NOT NULL DEFAULT '',
+  job_id     INTEGER NOT NULL DEFAULT 0,
+  seen_seq   INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );

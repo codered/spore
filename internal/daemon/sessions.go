@@ -40,6 +40,10 @@ type SessionJSON struct {
 	// State and Pending are filled by the listing only.
 	State   string `json:"state,omitempty"`
 	Pending int    `json:"pending,omitempty"`
+	// JobID is the scheduled job a job run belongs to; Unread is set while
+	// the session holds messages nobody has opened.
+	JobID  int64 `json:"job_id,omitempty"`
+	Unread bool  `json:"unread,omitempty"`
 }
 
 type MessageJSON struct {
@@ -67,7 +71,8 @@ type TranscriptJSON struct {
 func toSessionJSON(s store.Session) SessionJSON {
 	return SessionJSON{ID: s.ID, Title: s.Title, Workspace: s.Workspace,
 		Source: s.Source, ParentID: s.ParentID,
-		CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt}
+		CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt,
+		JobID: s.JobID, Unread: s.Unread()}
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -90,6 +91,10 @@ func (s *Server) StartJob(ctx context.Context, job store.Job) (string, error) {
 	sessionID, err := s.CreateSession(ctx, title, "", store.SourceJob, policy.ProfileLocal)
 	if err != nil {
 		return "", err
+	}
+	// The run still happens if this fails; it only lands ungrouped.
+	if err := s.store.SetSessionJob(ctx, sessionID, job.ID); err != nil {
+		slog.Warn("could not tag the job run with its job", "job", job.ID, "session", sessionID, "err", err)
 	}
 	if !s.hub.Begin(sessionID) {
 		return sessionID, errSessionBusy

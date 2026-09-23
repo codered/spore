@@ -26,12 +26,15 @@ type Options struct {
 }
 
 type Server struct {
-	agent  *agent.Agent
-	store  *store.Store
-	cfg    *config.Config
-	guard  *policy.Guard
-	hub    *Hub
-	broker *Broker
+	agent *agent.Agent
+	store *store.Store
+	cfg   *config.Config
+	guard *policy.Guard
+	hub   *Hub
+	// cleaner is the chat surface a delete may ask to clean up; nil when no
+	// bridge is connected.
+	cleaner Cleaner
+	broker  *Broker
 
 	// subagents is the supervisor the sub-agent tools launch through. It is
 	// nil in tests that do not exercise sub-agents.
@@ -107,6 +110,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	mux.HandleFunc("PATCH /api/sessions/{id}", s.handlePatchSession)
+	mux.HandleFunc("POST /api/sessions/delete", s.handleDeleteSessions)
+	mux.HandleFunc("POST /api/sessions/{id}/seen", s.handleSeen)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleShowSession)
 	mux.HandleFunc("POST /api/sessions/{id}/messages", s.handlePostMessage)
 	mux.HandleFunc("POST /api/sessions/{id}/stop", s.handleStop)

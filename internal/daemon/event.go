@@ -23,6 +23,8 @@ const (
 	WireStopped     = "stopped"
 	WireSession     = "session"
 	WireAgentState  = "agent_state"
+	// WireSessionDeleted says the session is gone: clients drop it.
+	WireSessionDeleted = "session_deleted"
 )
 
 // WireEvent is one server-sent event. It is comparable on purpose — tests
