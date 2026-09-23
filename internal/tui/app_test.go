@@ -33,6 +33,7 @@ type fakeBackend struct {
 
 	skills        daemon.SkillsJSON
 	agents        daemon.AgentsJSON
+	jobRuns       map[int64][]daemon.JobRunJSON
 	jobs          []daemon.JobJSON
 	usage         daemon.UsageJSON
 	viewErr       error
@@ -123,6 +124,10 @@ func (f *fakeBackend) Agents(context.Context, string) (daemon.AgentsJSON, error)
 func (f *fakeBackend) Jobs(context.Context) ([]daemon.JobJSON, error) {
 	f.fetched()
 	return f.jobs, f.viewErr
+}
+func (f *fakeBackend) JobRuns(_ context.Context, id int64) ([]daemon.JobRunJSON, error) {
+	f.fetched()
+	return f.jobRuns[id], f.viewErr
 }
 func (f *fakeBackend) Usage(context.Context, string) (daemon.UsageJSON, error) {
 	f.fetched()
@@ -728,5 +733,185 @@ func TestASessionDeletedElsewhereLeavesTheSidebar(t *testing.T) {
 	}
 	if m.selected != "s2" {
 		t.Fatalf("selected = %q, want the selection moved off the deleted session", m.selected)
+	}
+}
+
+// The cursor climbs past the chats onto the jobs folder, enter opens it, and
+// the job's label and runs are then reachable with k and j.
+func TestTheCursorReachesTheJobsFolderAndOpensIt(t *testing.T) {
+	m, _ := jobScene(t)
+	press(m, "esc", "k")
+	if m.sideCursor != folderKey || m.selected != "s1" {
+		t.Fatalf("cursor=%q selected=%q; want the folder under the cursor and s1 still shown", m.sideCursor, m.selected)
+	}
+	if !strings.Contains(m.View(), "▸ jobs") {
+		t.Fatalf("the folder is not drawn closed:\n%s", m.View())
+	}
+	press(m, "enter")
+	if !m.cache.jobsOpen || m.mode != modeNormal {
+		t.Fatalf("enter on the folder: open=%v mode=%s; want it open, still in NORMAL", m.cache.jobsOpen, m.mode)
+	}
+	press(m, "j")
+	if m.sideCursor != jobKey(7) {
+		t.Fatalf("cursor = %q, want job 7's label", m.sideCursor)
+	}
+	press(m, "j")
+	if m.sideCursor != "" || m.selected != "r1" {
+		t.Fatalf("cursor=%q selected=%q; want the run selected", m.sideCursor, m.selected)
+	}
+	press(m, "k", "k", "enter")
+	if m.cache.jobsOpen {
+		t.Fatal("enter on the open folder did not close it")
+	}
+}
+
+func runsBackend() *fakeBackend {
+	fb := &fakeBackend{
+		sessions: []daemon.SessionJSON{
+			{ID: "s1", Title: "chat", Source: "chat", Workspace: "/w"},
+			{ID: "r2", Title: "joke", Source: "job", JobID: 7, Workspace: "/s/r2"},
+			{ID: "r1", Title: "joke", Source: "job", JobID: 7, Workspace: "/s/r1"},
+		},
+		jobs: []daemon.JobJSON{{ID: 7, Kind: "cron", Spec: "*/5 * * * *", Prompt: "tell a joke", Enabled: true, NextRun: fixedNow().Add(time.Hour)}},
+		jobRuns: map[int64][]daemon.JobRunJSON{7: {
+			{Session: daemon.SessionJSON{ID: "r2", CreatedAt: fixedNow().Add(-5 * time.Minute)}, Status: daemon.RunFailed},
+			{Session: daemon.SessionJSON{ID: "r1", CreatedAt: fixedNow().Add(-10 * time.Minute)}, Status: daemon.RunOK,
+				Output: "My grandfather died leaving me his stress.\nSecond line."},
+		}},
+	}
+	// Loading a run's transcript must not strip what the listing said
+	// about it, as the daemon's own transcript never does.
+	fb.transcripts = map[string]daemon.TranscriptJSON{}
+	for _, s := range fb.sessions {
+		fb.transcripts[s.ID] = daemon.TranscriptJSON{Session: s}
+	}
+	return fb
+}
+
+// Enter on a job in the jobs view lists every run with its output; enter on
+// a run shows the whole output, esc steps back one window at a time, and o
+// opens the run in the chat.
+func TestEnterOnAJobListsItsRunsAndShowsEachOutput(t *testing.T) {
+	fb := runsBackend()
+	m := newTestModel(t, fb, "s1")
+	run(m, sessionsMsg{list: fb.sessions})
+	press(m, "esc", "J", "enter")
+	if m.table == nil || m.table.res.Name() != "job 7 runs" {
+		t.Fatalf("enter on a job did not open its runs")
+	}
+	view := m.View()
+	for _, want := range []string{"failed", "ok", "My grandfather died", "(no output)"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("runs window lacks %q:\n%s", want, view)
+		}
+	}
+	press(m, "j", "enter") // the older, successful run
+	if m.table.detail == nil || !strings.Contains(m.View(), "Second line.") {
+		t.Fatalf("enter did not show the run's whole output:\n%s", m.View())
+	}
+	press(m, "esc") // detail -> runs
+	if m.table == nil || m.table.detail != nil || m.table.res.Name() != "job 7 runs" {
+		t.Fatal("esc from the output did not return to the runs")
+	}
+	press(m, "esc") // runs -> jobs
+	if m.table == nil || m.table.res.Name() != "jobs" {
+		t.Fatal("esc from the runs did not return to the jobs view")
+	}
+	press(m, "enter", "o") // back in, open the newest run in the chat
+	if m.table != nil || m.selected != "r2" || len(m.back) != 0 {
+		t.Fatalf("o: table=%v selected=%q back=%d; want the chat on r2", m.table != nil, m.selected, len(m.back))
+	}
+}
+
+func TestEnterOnAJobLabelInTheSidebarOpensItsRuns(t *testing.T) {
+	fb := runsBackend()
+	m := newTestModel(t, fb, "s1")
+	run(m, sessionsMsg{list: fb.sessions})
+	press(m, "esc", "z")
+	for m.sideCursor != jobKey(7) {
+		before := m.sideCursor + m.selected
+		press(m, "k")
+		if m.sideCursor+m.selected == before {
+			t.Fatal("never reached job 7's label")
+		}
+	}
+	press(m, "enter")
+	if m.table == nil || m.table.res.Name() != "job 7 runs" {
+		t.Fatal("enter on a job's label did not open its runs")
+	}
+	press(m, "esc")
+	if m.table != nil {
+		t.Fatal("esc from runs opened from the sidebar should return to the chat")
+	}
+}
+
+// Closing the folder hides everything in it, the selected run included: the
+// selection moves to the first chat, so the chat pane never shows a run the
+// sidebar has hidden.
+func TestClosingTheFolderLeavesNoRunsBehind(t *testing.T) {
+	fb := runsBackend()
+	m := newTestModel(t, fb, "s1")
+	run(m, sessionsMsg{list: fb.sessions})
+	press(m, "esc", "z", "k") // open, then up onto a run
+	if m.cache.get(m.selected).info.Source != "job" {
+		t.Fatalf("selected = %q, want a job run", m.selected)
+	}
+	// Close it with enter on the folder, then again with z from a run.
+	for _, how := range []string{"enter", "z"} {
+		if !m.cache.jobsOpen {
+			press(m, "z")
+		}
+		cursorTo(t, m, func() bool { return m.sideCursor == "" && m.cache.get(m.selected).info.Source == "job" })
+		if how == "enter" {
+			cursorTo(t, m, func() bool { return m.sideCursor == folderKey })
+		}
+		press(m, how)
+		if m.cache.jobsOpen {
+			t.Fatalf("%s did not close the folder", how)
+		}
+		view := m.View()
+		if strings.Contains(view, "job 7 ·") || strings.Contains(view, short("r1")) || strings.Contains(view, short("r2")) {
+			t.Fatalf("after %s the closed folder still shows its runs:\n%s", how, view)
+		}
+		if m.selected != "s1" || m.sideCursor != folderKey {
+			t.Fatalf("after %s: selected=%q cursor=%q; want s1 shown and the cursor on the folder", how, m.selected, m.sideCursor)
+		}
+	}
+}
+
+// cursorTo moves the sidebar cursor, up then down, until at() holds.
+func cursorTo(t *testing.T, m *Model, at func() bool) {
+	t.Helper()
+	for _, key := range []string{"k", "j"} {
+		for i := 0; i < 20; i++ {
+			if at() {
+				return
+			}
+			press(m, key)
+		}
+	}
+	if !at() {
+		t.Fatal("the cursor never reached the row")
+	}
+}
+
+// Opening a run from anywhere, such as o in the runs window, opens the
+// folder it lives in.
+func TestOpeningARunOpensTheFolder(t *testing.T) {
+	fb := runsBackend()
+	m := newTestModel(t, fb, "s1")
+	run(m, sessionsMsg{list: fb.sessions})
+	press(m, "esc", "J", "enter", "o")
+	if m.selected != "r2" || !m.cache.jobsOpen {
+		t.Fatalf("selected=%q open=%v; want r2 in an open folder", m.selected, m.cache.jobsOpen)
+	}
+}
+
+func TestStartingOnARunOpensTheFolder(t *testing.T) {
+	fb := runsBackend()
+	m := newTestModel(t, fb, "r1")
+	run(m, sessionsMsg{list: fb.sessions})
+	if !m.cache.jobsOpen || !strings.Contains(m.View(), short("r1")) {
+		t.Fatalf("started on r1: open=%v\n%s", m.cache.jobsOpen, m.View())
 	}
 }

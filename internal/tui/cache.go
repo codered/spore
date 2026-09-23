@@ -2,10 +2,12 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/codered/spore/internal/daemon"
 	"github.com/codered/spore/internal/provider"
+	"github.com/codered/spore/internal/store"
 )
 
 // sessionView is everything the interface knows about one session.
@@ -185,6 +187,8 @@ func (c *cache) Apply(ev daemon.WireEvent) string {
 		sv.working = false
 		sv.dropApprovalsWhere(func(a daemon.WireEvent) bool { return a.Origin == "" })
 		sv.add(kindError, "turn failed: "+ev.Error)
+	case daemon.WireJobNote:
+		sv.add(kindNotice, ev.Text)
 	case daemon.WireSession:
 		sv.info.Title, sv.info.Workspace = ev.Title, ev.Workspace
 		sv.info.Source, sv.info.ParentID = ev.Source, ev.ParentID
@@ -251,6 +255,10 @@ func blocksFromMessages(msgs []daemon.MessageJSON) []*block {
 	for _, m := range msgs {
 		for _, b := range m.Blocks {
 			switch {
+			case b.Type == provider.BlockText && m.Role == store.RoleNote:
+				out = append(out, &block{kind: kindNotice, text: b.Text})
+			case b.Type == provider.BlockText && m.Role == string(provider.RoleUser) && strings.HasPrefix(b.Text, daemon.SchedulerTag):
+				out = append(out, &block{kind: kindNotice, text: schedulerNotice(b.Text)})
 			case b.Type == provider.BlockText && m.Role == string(provider.RoleUser):
 				out = append(out, &block{kind: kindUser, text: b.Text})
 			case b.Type == provider.BlockText:
@@ -267,6 +275,19 @@ func blocksFromMessages(msgs []daemon.MessageJSON) []*block {
 		}
 	}
 	return out
+}
+
+// schedulerNotice is how a message the scheduler wrote as the user reads in
+// the transcript: its first sentence, which says what happened. The rest is
+// instructions to the model, not to the person.
+func schedulerNotice(text string) string {
+	text = strings.TrimSpace(strings.TrimPrefix(text, daemon.SchedulerTag))
+	for _, cut := range []string{" Its reply was:", " Tell the user"} {
+		if i := strings.Index(text, cut); i >= 0 {
+			text = text[:i]
+		}
+	}
+	return "⏰ " + text
 }
 
 // State is blocked when an approval waits on the session (its own, or one

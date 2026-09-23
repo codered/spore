@@ -139,8 +139,14 @@ type Model struct {
 	reconnecting bool
 	// views serves the resource views; nil when the backend cannot.
 	views Views
-	// table is the open view; nil means the chat screen.
+	// table is the open view; nil means the chat screen. back holds the
+	// views it was opened over, innermost last: esc returns to them.
 	table *table
+	back  []*table
+	// sideCursor is the sidebar row under the cursor when it is not a
+	// session: the jobs folder or a job's label (see row.key). Empty while
+	// the cursor is on the selected session.
+	sideCursor string
 	// viewGen increments whenever a view opens or closes, so a tick from an
 	// earlier view is ignored.
 	viewGen  int
@@ -281,6 +287,12 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		m.cache.SetSessions(msg.list)
+		if m.cache.get(m.selected).info.Source == "job" {
+			// Started on a run: its folder must be open to show it. Closing
+			// the folder moves the selection off runs, so this never
+			// reopens one the user closed.
+			m.cache.jobsOpen = true
+		}
 		if m.selected == "" {
 			if ids := m.selectable(); len(ids) > 0 {
 				return m.selectSession(ids[0])
@@ -447,7 +459,12 @@ func (m *Model) keyNormal(k tea.KeyMsg) tea.Cmd {
 		return m.moveSelection(1)
 	case "k", "up":
 		return m.moveSelection(-1)
-	case "i", "a", "enter":
+	case "enter":
+		if m.sideCursor != "" {
+			return m.enterRow()
+		}
+		return m.enterInsert()
+	case "i", "a":
 		return m.enterInsert()
 	case "ctrl+d":
 		m.vp.HalfPageDown()
@@ -486,7 +503,7 @@ func (m *Model) keyNormal(k tea.KeyMsg) tea.Cmd {
 	case "d":
 		return m.confirmDelete(false)
 	case "z":
-		m.cache.jobsOpen = !m.cache.jobsOpen
+		return m.toggleJobs()
 	case "esc":
 		if m.cache.get(m.selected).info.ParentID != "" {
 			return m.confirmCancelAgent()
@@ -667,7 +684,7 @@ func (m *Model) command(line string) tea.Cmd {
 		m.showAll = len(args) > 0 && args[0] == "all"
 		return nil
 	case "chat":
-		m.closeView()
+		m.leaveViews()
 		return nil
 	case "delete":
 		return m.confirmDelete(len(args) > 0 && args[0] == "all")
@@ -818,18 +835,44 @@ func (m *Model) openView(r Resource) tea.Cmd {
 		m.errorf("views need the daemon")
 		return nil
 	}
+	m.back = nil
+	return m.showView(newTable(r, m.selected))
+}
+
+// pushView opens r over the open view; esc returns to it.
+func (m *Model) pushView(r Resource) tea.Cmd {
+	if m.table != nil {
+		m.back = append(m.back, m.table)
+	}
+	return m.showView(newTable(r, m.selected))
+}
+
+func (m *Model) showView(t *table) tea.Cmd {
 	m.mode = modeNormal
 	m.input.Blur()
-	m.table = newTable(r, m.selected)
+	m.table = t
 	m.viewErr = ""
 	m.viewGen++
 	return tea.Batch(m.fetchView(), m.viewTick(m.viewGen))
 }
 
-func (m *Model) closeView() {
+// closeView returns to the view this one was opened over, or to the chat.
+func (m *Model) closeView() tea.Cmd {
+	if n := len(m.back); n > 0 {
+		t := m.back[n-1]
+		m.back = m.back[:n-1]
+		return m.showView(t)
+	}
 	m.table = nil
 	m.viewErr = ""
 	m.viewGen++
+	return nil
+}
+
+// leaveViews closes every view and returns to the chat.
+func (m *Model) leaveViews() {
+	m.back = nil
+	m.closeView()
 }
 
 func (m *Model) fetchView() tea.Cmd {
@@ -865,7 +908,7 @@ func (m *Model) keyView(k tea.KeyMsg) tea.Cmd {
 			t.setFilter("")
 			return nil
 		}
-		m.closeView()
+		return m.closeView()
 	case "j", "down":
 		t.move(1)
 	case "k", "up":
@@ -890,13 +933,28 @@ func (m *Model) keyView(k tea.KeyMsg) tea.Cmd {
 		if !ok {
 			return nil
 		}
+		if d, ok := t.res.(driller); ok && s == "enter" {
+			if next, ok := d.Drill(r); ok {
+				return m.pushView(next)
+			}
+		}
 		if o, isOpener := t.res.(opener); isOpener && s == "enter" {
 			if id := o.Open(r); id != "" {
-				m.closeView()
+				m.leaveViews()
 				return m.selectSession(id)
 			}
 		}
 		t.openDetail(m.width, m.bodyHeight())
+	case "o":
+		r, ok := t.selected()
+		if !ok {
+			return nil
+		}
+		if o, isOpener := t.res.(sessionOpener); isOpener {
+			m.leaveViews()
+			return m.selectSession(o.OpenSession(r))
+		}
+		return m.runAction(s)
 	case "ctrl+r":
 		return m.fetchView()
 	case ":":
@@ -958,16 +1016,82 @@ func indexOf(ids []string, id string) int {
 	return -1
 }
 
+// navigable is every sidebar row the cursor can rest on, top to bottom:
+// sessions, and the jobs folder and each job's label.
+func (m *Model) navigable() []string {
+	var keys []string
+	for _, r := range m.cache.rows(m.showAll, m.filter, m.selected) {
+		switch {
+		case r.key != "":
+			keys = append(keys, r.key)
+		case r.id != "":
+			keys = append(keys, r.id)
+		}
+	}
+	return keys
+}
+
+// moveSelection moves the sidebar cursor. Landing on a session selects it;
+// landing on the jobs folder or a job's label leaves the chat pane on the
+// session it shows, and enter then acts on that row.
 func (m *Model) moveSelection(d int) tea.Cmd {
-	ids := m.selectable()
-	if len(ids) == 0 {
+	keys := m.navigable()
+	if len(keys) == 0 {
 		return nil
 	}
-	j := indexOf(ids, m.selected) + d
-	if indexOf(ids, m.selected) < 0 {
+	at := m.selected
+	if m.sideCursor != "" {
+		at = m.sideCursor
+	}
+	j := indexOf(keys, at) + d
+	if indexOf(keys, at) < 0 {
 		j = 0
 	}
-	return m.selectSession(ids[max(0, min(len(ids)-1, j))])
+	next := keys[max(0, min(len(keys)-1, j))]
+	if isRowKey(next) {
+		m.sideCursor = next
+		return nil
+	}
+	m.sideCursor = ""
+	return m.selectSession(next)
+}
+
+// toggleJobs opens or closes the jobs folder. Closing it hides every run in
+// it, so a selected run gives way to the first chat and the cursor rests on
+// the folder: nothing of the folder's contents stays on screen.
+func (m *Model) toggleJobs() tea.Cmd {
+	m.cache.jobsOpen = !m.cache.jobsOpen
+	if m.cache.jobsOpen {
+		return nil
+	}
+	inside := m.sideCursor != "" && m.sideCursor != folderKey
+	if m.cache.get(m.selected).info.Source == "job" {
+		inside = true
+		for _, key := range m.navigable() {
+			if !isRowKey(key) && m.cache.get(key).info.Source != "job" {
+				m.sideCursor = ""
+				cmd := m.selectSession(key)
+				m.sideCursor = folderKey
+				return cmd
+			}
+		}
+	}
+	if inside {
+		m.sideCursor = folderKey
+	}
+	return nil
+}
+
+// enterRow acts on the sidebar row under the cursor when it is not a
+// session: enter opens or closes the jobs folder, and opens a job's runs.
+func (m *Model) enterRow() tea.Cmd {
+	if m.sideCursor == folderKey {
+		return m.toggleJobs()
+	}
+	if id, ok := jobOfKey(m.sideCursor); ok {
+		return m.openView(jobRunsRes{job: id})
+	}
+	return nil
 }
 
 func (m *Model) selectSession(id string) tea.Cmd {
@@ -975,6 +1099,10 @@ func (m *Model) selectSession(id string) tea.Cmd {
 		return nil
 	}
 	m.selected, m.toolCursor, m.follow, m.unseen = id, -1, true, false
+	if m.cache.get(id).info.Source == "job" {
+		// A run lives in the jobs folder; showing one opens it.
+		m.cache.jobsOpen = true
+	}
 	seen := m.markSeen(id)
 	if !m.cache.get(id).loaded {
 		return tea.Batch(seen, m.loadTranscript(id))

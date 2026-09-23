@@ -97,7 +97,7 @@ func TestTheFilterMatchesTitleOrIDAcrossSources(t *testing.T) {
 func TestASessionRowShowsItsStateIDTitleAndSource(t *testing.T) {
 	c := seed(daemon.SessionJSON{ID: "a1b2c3", Title: "fix flaky test", Workspace: "/a", Source: "chat"})
 	c.get("a1b2c3").working = true
-	out := ansi.Strip(renderSidebar(c, c.rows(false, "", ""), "", 30, 10))
+	out := ansi.Strip(renderSidebar(c, c.rows(false, "", ""), "", "", 30, 10))
 	for _, want := range []string{"/a", "● a1b2 fix flaky test", "chat"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("sidebar is missing %q:\n%s", want, out)
@@ -128,7 +128,7 @@ func TestSidebarRowsStayWithinWidthForWideTitlesAndDeepNesting(t *testing.T) {
 	}
 	c := seed(sessions...)
 	deepestID := "child6"
-	output := ansi.Strip(renderSidebar(c, c.rows(false, "", deepestID), deepestID, 30, 20))
+	output := ansi.Strip(renderSidebar(c, c.rows(false, "", deepestID), deepestID, "", 30, 20))
 	for i, line := range strings.Split(output, "\n") {
 		if w := ansi.StringWidth(line); w > 30 {
 			t.Errorf("line %d is %d cells wide, exceeds 30-cell budget: %q", i, w, line)
@@ -163,7 +163,7 @@ func TestJobRunsLiveInACollapsedJobsFolderAtTheTop(t *testing.T) {
 	if got := strings.Join(ids(rs), " "); got != "c1@0" {
 		t.Fatalf("collapsed rows = %q, want no job runs listed", got)
 	}
-	out := ansi.Strip(renderSidebar(c, rs, "", 30, 10))
+	out := ansi.Strip(renderSidebar(c, rs, "", "", 30, 10))
 	if first := strings.Split(out, "\n")[0]; !strings.HasPrefix(first, "▸ jobs") {
 		t.Fatalf("first sidebar line = %q, want the collapsed folder", first)
 	}
@@ -176,7 +176,7 @@ func TestAnOpenJobsFolderListsRunsUnderTheirJob(t *testing.T) {
 	if got := strings.Join(ids(rs), " "); got != "r1@1 r3@1 r2@1 c1@0" {
 		t.Fatalf("open rows = %q, want job 7's runs newest first, then job 8's, then the chats", got)
 	}
-	out := ansi.Strip(renderSidebar(c, rs, "", 30, 20))
+	out := ansi.Strip(renderSidebar(c, rs, "", "", 30, 20))
 	for _, want := range []string{"▾ jobs", "job 7 · Send me a joke", "job 8 · nightly backup"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("sidebar is missing %q:\n%s", want, out)
@@ -200,7 +200,7 @@ func TestTheJobsFolderIsThereWhenEmptyAndBadgesUnreadRuns(t *testing.T) {
 	if f, _ := folderRow(c.rows(false, "", "")); !f.busy {
 		t.Fatalf("folder = %+v, want it marked busy while a run is going", f)
 	}
-	out := ansi.Strip(renderSidebar(c, c.rows(false, "", ""), "", 12, 10))
+	out := ansi.Strip(renderSidebar(c, c.rows(false, "", ""), "", "", 12, 10))
 	first := strings.Split(out, "\n")[0]
 	if !strings.Contains(first, "jobs") || !strings.Contains(first, " 2 ") {
 		t.Fatalf("first line = %q, want the folder with a badge of 2", first)
@@ -210,10 +210,18 @@ func TestTheJobsFolderIsThereWhenEmptyAndBadgesUnreadRuns(t *testing.T) {
 	}
 }
 
-func TestTheSelectedJobRunShowsEvenInACollapsedFolder(t *testing.T) {
+// A closed folder shows nothing inside it, not even the selected run: the
+// model keeps a run from being selected while the folder is closed, and a
+// row left behind here is exactly the stale text a closed folder must not
+// leave.
+func TestAClosedFolderShowsNoRunsEvenTheSelectedOne(t *testing.T) {
 	c := jobRuns()
-	if got := strings.Join(ids(c.rows(false, "", "r2")), " "); got != "r2@1 c1@0" {
-		t.Fatalf("rows with r2 selected = %q, want the run shown under the folder", got)
+	if got := strings.Join(ids(c.rows(false, "", "r2")), " "); got != "c1@0" {
+		t.Fatalf("rows with r2 selected in a closed folder = %q, want only the chat", got)
+	}
+	c.jobsOpen = true
+	if got := strings.Join(ids(c.rows(false, "", "r2")), " "); !strings.Contains(got, "r2@1") {
+		t.Fatalf("rows with the folder open = %q, want r2 listed", got)
 	}
 }
 

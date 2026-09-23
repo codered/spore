@@ -149,6 +149,12 @@ func (b tuiBackend) Jobs(ctx context.Context) ([]daemon.JobJSON, error) {
 	return out, viewErr(err)
 }
 
+func (b tuiBackend) JobRuns(ctx context.Context, jobID int64) ([]daemon.JobRunJSON, error) {
+	var out []daemon.JobRunJSON
+	err := b.c.do(ctx, "GET", "/api/jobs/"+strconv.FormatInt(jobID, 10)+"/runs", nil, &out)
+	return out, viewErr(err)
+}
+
 func (b tuiBackend) Usage(ctx context.Context, sessionID string) (daemon.UsageJSON, error) {
 	var out daemon.UsageJSON
 	path := "/api/usage"

@@ -19,6 +19,7 @@ type Views interface {
 	Skills(ctx context.Context, sessionID string) (daemon.SkillsJSON, error)
 	Agents(ctx context.Context, sessionID string) (daemon.AgentsJSON, error)
 	Jobs(ctx context.Context) ([]daemon.JobJSON, error)
+	JobRuns(ctx context.Context, jobID int64) ([]daemon.JobRunJSON, error)
 	Usage(ctx context.Context, sessionID string) (daemon.UsageJSON, error)
 	CancelAgent(ctx context.Context, parent, child string) error
 	CancelJob(ctx context.Context, id int64) error

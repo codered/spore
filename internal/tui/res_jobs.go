@@ -77,10 +77,11 @@ func (jobsRes) Actions() []Action {
 	}}
 }
 
-// Open selects the session the job last ran in.
-func (jobsRes) Open(r Row) string {
-	if j, ok := r.Data.(daemon.JobJSON); ok {
-		return j.LastSessionID
+// Drill opens the job's runs.
+func (jobsRes) Drill(r Row) (Resource, bool) {
+	id, ok := jobIDOf(r)
+	if !ok {
+		return nil, false
 	}
-	return ""
+	return jobRunsRes{job: id}, true
 }

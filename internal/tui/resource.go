@@ -48,6 +48,18 @@ type opener interface {
 	Open(r Row) (sessionID string)
 }
 
+// driller is a Resource whose rows open another view: enter opens it over
+// this one, and esc comes back.
+type driller interface {
+	Drill(r Row) (Resource, bool)
+}
+
+// sessionOpener is a Resource whose rows are sessions that o opens in the
+// chat, while enter keeps showing the row's detail.
+type sessionOpener interface {
+	OpenSession(r Row) (sessionID string)
+}
+
 // clock is the resources' notion of now, for ages and relative times. Tests
 // pin it.
 var clock = time.Now

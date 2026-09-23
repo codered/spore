@@ -110,8 +110,9 @@ func TestJobRowsShowRelativeTimesAndCancelOnlyEnabledJobs(t *testing.T) {
 	if len(fb.cancelledJobs) != 1 || fb.cancelledJobs[0] != 7 {
 		t.Fatalf("cancelled jobs = %v", fb.cancelledJobs)
 	}
-	if got := (jobsRes{}).Open(rows[0]); got != "abcd" {
-		t.Fatalf("enter opens %q, want the last session", got)
+	next, ok := (jobsRes{}).Drill(rows[0])
+	if !ok || next.Name() != "job 7 runs" {
+		t.Fatalf("enter opens %v, want job 7's runs", next)
 	}
 }
 

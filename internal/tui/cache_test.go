@@ -179,3 +179,32 @@ func TestClearApprovalsEmptiesEverySession(t *testing.T) {
 		t.Fatalf("BlockedCount = %d after ClearApprovals", c.BlockedCount())
 	}
 }
+
+// A job's note arrives live as job_note and, reloaded, as a note message;
+// both read as a notice. The scheduler's check-in, stored as the user's
+// turn, reads as spore's notice rather than as something the person typed.
+func TestJobNotesAndCheckInsAreNotices(t *testing.T) {
+	c := newCache(fixedNow)
+	c.Apply(daemon.WireEvent{Session: "s", Type: daemon.WireJobNote, Text: "⏰ job 1 ran at 02:30 UTC — ok"})
+	sv := c.get("s")
+	if want := []blockKind{kindNotice}; !sameKinds(kinds(sv), want) || sv.blocks[0].text != "⏰ job 1 ran at 02:30 UTC — ok" {
+		t.Fatalf("live note = %v %+v", kinds(sv), sv.blocks)
+	}
+
+	checkIn := daemon.SchedulerTag + ` Job 1 ("Send me a joke") ran for the first time at 02:25 UTC and succeeded. Its reply was: "a joke". Tell the user it ran.`
+	c.SetTranscript(daemon.TranscriptJSON{
+		Session: daemon.SessionJSON{ID: "s"},
+		Messages: []daemon.MessageJSON{
+			{Role: "user", Blocks: []provider.Block{{Type: provider.BlockText, Text: checkIn}}},
+			{Role: "assistant", Blocks: []provider.Block{{Type: provider.BlockText, Text: "Job 1 ran fine."}}},
+			{Role: "note", Blocks: []provider.Block{{Type: provider.BlockText, Text: "⏰ job 1 ran at 02:30 UTC — ok"}}},
+		},
+	})
+	if want := []blockKind{kindNotice, kindText, kindNotice}; !sameKinds(kinds(sv), want) {
+		t.Fatalf("kinds = %v, want %v", kinds(sv), want)
+	}
+	got := sv.blocks[0].text
+	if !strings.HasPrefix(got, "⏰ Job 1") || !strings.HasSuffix(got, "succeeded.") || strings.Contains(got, "Tell the user") {
+		t.Errorf("check-in notice = %q", got)
+	}
+}

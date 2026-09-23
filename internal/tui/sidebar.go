@@ -12,8 +12,8 @@ import (
 )
 
 // row is one sidebar line: the jobs folder, a job's label inside it, a
-// workspace heading, a session, or a "+N more" marker. Only session rows are
-// selectable.
+// workspace heading, a session, or a "+N more" marker. The cursor rests on
+// sessions, the jobs folder and job labels.
 type row struct {
 	header string
 	id     string
@@ -26,7 +26,26 @@ type row struct {
 	busy         bool // a run is in progress
 	// label names a job inside the open folder.
 	label string
+	// key is set on the rows the cursor can rest on that are not sessions:
+	// folderKey on the jobs folder, jobKey(id) on a job's label.
+	key string
 }
+
+// folderKey is the jobs folder row's cursor key.
+const folderKey = "#jobs"
+
+func jobKey(id int64) string { return fmt.Sprintf("#job:%d", id) }
+
+func jobOfKey(key string) (int64, bool) {
+	var id int64
+	if _, err := fmt.Sscanf(key, "#job:%d", &id); err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
+}
+
+// isRowKey tells a cursor key from a session id: session ids are hex.
+func isRowKey(key string) bool { return strings.HasPrefix(key, "#") }
 
 // idleShownPerWorkspace bounds how many idle top-level sessions a workspace
 // lists before the rest collapse into "+N more".
@@ -155,16 +174,23 @@ func (c *cache) rows(showAll bool, filter, selected string) []row {
 }
 
 // renderSidebar draws rows into width x height, scrolling to keep the
-// selection on screen.
-func renderSidebar(c *cache, rows []row, selected string, width, height int) string {
+// cursor on screen. cursor is the non-session row under the cursor, if any;
+// while it is set, the selected session is not highlighted.
+func renderSidebar(c *cache, rows []row, selected, cursor string, width, height int) string {
 	lines := make([]string, 0, len(rows))
 	sel := -1
+	if cursor != "" {
+		selected = ""
+	}
 	for _, r := range rows {
+		if r.key != "" && r.key == cursor {
+			sel = len(lines)
+		}
 		switch {
 		case r.folder:
-			lines = append(lines, folderLine(r, c.jobsOpen, width))
+			lines = append(lines, highlight(folderLine(r, c.jobsOpen, width), width, r.key != "" && r.key == cursor))
 		case r.label != "":
-			lines = append(lines, styMuted.Render(clip("  "+oneLine(r.label), width)))
+			lines = append(lines, highlight(styMuted.Render(clip("  "+oneLine(r.label), width)), width, r.key != "" && r.key == cursor))
 		case r.header != "":
 			lines = append(lines, styHeader.Render(clip(tildePath(r.header), width)))
 		case r.more > 0:
@@ -184,6 +210,15 @@ func renderSidebar(c *cache, rows []row, selected string, width, height int) str
 		lines = lines[start:min(len(lines), start+height)]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// highlight draws line as the cursor row when on is set.
+func highlight(line string, width int, on bool) string {
+	if !on {
+		return line
+	}
+	plain := ansi.Strip(line)
+	return stySelected.Render(plain + strings.Repeat(" ", max(0, width-lipgloss.Width(plain))))
 }
 
 func sessionRow(c *cache, r row, width int, selected bool) string {
@@ -242,11 +277,12 @@ func sourceTag(src string) string {
 
 // jobFolder is the jobs folder: its row, always, and inside it, while it is
 // open or a filter is searching it, each job's runs under the job's label,
-// newest job first. A selected run always shows, open or not, so the chat
-// pane never displays a session the sidebar has hidden.
+// newest job first. A closed folder shows none of its runs, the selected one
+// included: the model keeps a run from staying selected in a closed folder
+// (selecting a run opens it; closing it selects a chat).
 func (c *cache) jobFolder(runs []*sessionView, filter, selected string,
 	visible, subtree func(*sessionView) bool, addKids func(*sessionView, int, bool)) []row {
-	folder := row{folder: true, runs: len(runs)}
+	folder := row{folder: true, runs: len(runs), key: folderKey}
 	for _, r := range runs {
 		if r.info.Unread {
 			folder.unread++
@@ -261,7 +297,7 @@ func (c *cache) jobFolder(runs []*sessionView, filter, selected string,
 	byJob := map[int64][]*sessionView{}
 	var order []int64
 	for _, r := range runs {
-		shown := r.info.ID == selected || (open && (filter == "" || subtree(r)))
+		shown := open && (filter == "" || r.info.ID == selected || subtree(r))
 		if !shown {
 			continue
 		}
@@ -272,11 +308,11 @@ func (c *cache) jobFolder(runs []*sessionView, filter, selected string,
 	}
 	for _, job := range order {
 		group := byJob[job]
-		label := "earlier runs"
+		lr := row{label: "earlier runs"}
 		if job > 0 {
-			label = fmt.Sprintf("job %d · %s", job, group[0].info.Title)
+			lr = row{label: fmt.Sprintf("job %d · %s", job, group[0].info.Title), key: jobKey(job)}
 		}
-		out = append(out, row{label: label})
+		out = append(out, lr)
 		hidden := 0
 		for i, r := range group {
 			if filter == "" && i >= idleShownPerWorkspace && r.info.ID != selected {

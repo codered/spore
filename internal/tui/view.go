@@ -121,7 +121,7 @@ func (m *Model) mainView() string {
 
 func (m *Model) sidebarView() string {
 	h := m.bodyHeight()
-	body := renderSidebar(m.cache, m.cache.rows(m.showAll, m.filter, m.selected), m.selected, sidebarWidth, h)
+	body := renderSidebar(m.cache, m.cache.rows(m.showAll, m.filter, m.selected), m.selected, m.sideCursor, sidebarWidth, h)
 	return stySidebar.Width(sidebarWidth).Height(h).MaxHeight(h).Render(body)
 }
 
@@ -214,7 +214,7 @@ func helpText() string {
 		"  x         stop the selected sub-agent  esc        stop the running turn",
 		"  ctrl+b    toggle the sidebar           q          quit",
 		"  d         delete the session (y here, D also on Discord)   :delete all  delete every session",
-		"  z         open / close the jobs folder",
+		"  z         open / close the jobs folder     enter on the folder opens / closes it; on a job, lists its runs",
 		"",
 		styKey.Render("APPROVAL") + "  (normal mode, while one is showing)",
 		"  y allow once · n deny · s allow the tool this session · p always allow the pattern",
@@ -226,6 +226,7 @@ func helpText() string {
 		styKey.Render("VIEWS") + "  (normal mode)",
 		"  S skills · A agents · U usage · J jobs · or :skills :agents :usage :jobs",
 		"  in a view: j/k move · / filter · s sort · enter open · x act on the row · ctrl+r refresh · esc back",
+		"  jobs: enter lists a job's runs · runs: enter shows a run's output · o opens the run in the chat",
 		"",
 		styKey.Render("COMMANDS"),
 		"  :new [dir]  :sessions [all]  :clear  :compact  :context  :usage  :skills  :agents  :q",
