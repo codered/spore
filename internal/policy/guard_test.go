@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/provider"
@@ -135,6 +136,39 @@ func TestAskPromptsAndRunsOnApproval(t *testing.T) {
 	}
 	if len(pending) != 0 {
 		t.Errorf("%d pending calls left behind", len(pending))
+	}
+}
+
+// A human takes seconds to answer. The writes that close the suspension must
+// get their own time budget once the answer is in; a budget that started
+// before the wait has expired by then, which left the row pending forever
+// (the session read as blocked, so every later message queued) and dropped
+// the audit row that remembers a session-scope answer.
+func TestAnApprovalAnsweredAfterTheBookkeepingWindowIsStillRecorded(t *testing.T) {
+	old := bookkeepingTimeout
+	bookkeepingTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { bookkeepingTimeout = old })
+	release := make(chan struct{})
+	ap := &scriptedApprover{answer: Answer{Allow: true, Scope: ScopeSession}, block: release}
+	g, inner, st, sid := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
+	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal, Workspace: "/ws"})
+
+	time.AfterFunc(100*time.Millisecond, func() { close(release) }) // the human answers late
+	if got := g.Run(ctx, toolCall("fs_write", "c1", `{"path":"/ws/a"}`)); got.IsError {
+		t.Fatalf("approved call errored: %q", got.Content)
+	}
+	pending, err := st.PendingCalls(context.Background(), sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("%d pending calls left behind after a late answer", len(pending))
+	}
+	if got := g.Run(ctx, toolCall("fs_write", "c2", `{"path":"/ws/b"}`)); got.IsError {
+		t.Fatalf("second call errored: %q", got.Content)
+	}
+	if ap.count() != 1 || len(inner.calls) != 2 {
+		t.Fatalf("asked %d times, ran %d; want 1 and 2 — the session answer must be remembered", ap.count(), len(inner.calls))
 	}
 }
 
