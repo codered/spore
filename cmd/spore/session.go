@@ -11,7 +11,7 @@ import (
 
 func cmdSession(ctx context.Context, st *store.Store, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("session needs a subcommand: list or show")
+		return fmt.Errorf("session needs a subcommand: list, show or delete")
 	}
 	switch args[0] {
 	case "list":
