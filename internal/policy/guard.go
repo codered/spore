@@ -36,6 +36,10 @@ const (
 	ScopePattern Scope = "pattern"
 )
 
+// bookkeepingTimeout bounds the writes that close a suspension: resolving the
+// pending row and writing the audit entry. Tests shorten it.
+var bookkeepingTimeout = 5 * time.Second
+
 // Ask is one approval request handed to a client.
 type Ask struct {
 	SessionID string
@@ -208,13 +212,6 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 		return denied(call.ID, "could not record the approval request: %v", err)
 	}
 
-	// Bookkeeping writes use a context detached from the caller's. When a turn
-	// is abandoned mid-approval the caller's ctx is already dead, and writing
-	// through it fails instantly — stranding the suspension row we just wrote
-	// and losing the audit entry. Values are preserved, cancellation is not.
-	book, cancelBook := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancelBook()
-
 	// An approval nobody answers denies, so a turn started from a phone
 	// cannot sit half-executed forever.
 	askCtx, cancel := context.WithTimeout(ctx, g.engine.ApprovalTimeout())
@@ -238,6 +235,15 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 		Pattern:   pattern,
 		RootID:    rootID,
 	})
+
+	// Bookkeeping writes use a context detached from the caller's. When a turn
+	// is abandoned mid-approval the caller's ctx is already dead, and writing
+	// through it fails instantly — stranding the suspension row we just wrote
+	// and losing the audit entry. Values are preserved, cancellation is not.
+	// The budget starts now, after the answer: a human takes longer to decide
+	// than any write should, and a budget spent on the wait left the row pending.
+	book, cancelBook := context.WithTimeout(context.WithoutCancel(ctx), bookkeepingTimeout)
+	defer cancelBook()
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		// Resolve the suspension. If this call claimed it (not already answered
