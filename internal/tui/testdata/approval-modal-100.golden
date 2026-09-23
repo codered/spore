@@ -9,22 +9,22 @@
 │○ e5f6 notes              chat│┃                                                                  ┃
 │                              │┃                                                                  ┃
 │                              │┃                                                                  ┃
-│                              │┃                                                                  ┃
-│                              │┃                                                                  ┃
-│                              │┃                                                                  ┃
-│                              │┃                                                                  ┃
-│                              │┃                                                                  ┃
-│                              │┃                                                                  ┃
-│                              │┃ ╭──────────────────────────────────────────────────────────────╮ ┃
-│                              │┃ │ spore wants to run fs.write                                  │ ┃
-│                              │┃ │ matched policy rule "fs.write.ask"                           │ ┃
+│                             ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓                             ┃
+│                             ┃                                      ┃                             ┃
+│                             ┃  Allow fs.write for this session?    ┃                             ┃
+│                             ┃  matched policy rule "fs.write.ask"  ┃                             ┃
+│                             ┃                                      ┃                             ┃
+│                             ┃  <y> confirm  <esc> cancel           ┃───────────────────────────╮ ┃
+│                             ┃                                      ┃                           │ ┃
+│                             ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛                           │ ┃
 │                              │┃ │ {                                                            │ ┃
 │                              │┃ │   "path": "cmd/spore/tui_test.go"                            │ ┃
 │                              │┃ │ }                                                            │ ┃
-│                              │┃ │ esc, then y/n/s/p                                            │ ┃
+│                              │┃ │ y allow once  ·  n deny  ·  s allow fs.write this session  · │ ┃
+│                              │┃ │ p always allow fs.write:cmd/spore/*                          │ ┃
 │                              │┃ ╰──────────────────────────────────────────────────────────────╯ ┃
 │                              │┃ ╭──────────────────────────────────────────────────────────────╮ ┃
 │                              │┃ │ Ask spore something…                                         │ ┃
 │                              │┃ ╰──────────────────────────────────────────────────────────────╯ ┃
 ╰──────────────────────────────╯┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
- INSERT  <enter> send  <ctrl+j> newline  <esc> normal                                               
+ CONFIRM  <y> confirm  <esc> cancel                                                                 

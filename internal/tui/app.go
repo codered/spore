@@ -32,6 +32,14 @@ func (m mode) String() string {
 	return [...]string{"NORMAL", "INSERT", "COMMAND", "FILTER", "CONFIRM"}[m]
 }
 
+// pane is which half of the chat screen NORMAL-mode keys drive.
+type pane int
+
+const (
+	paneChat pane = iota
+	paneSidebar
+)
+
 const (
 	sidebarWidth   = 30
 	sidebarMinTerm = 90
@@ -97,12 +105,22 @@ type Options struct {
 // commandNames are the `:` commands, for completion.
 var commandNames = []string{"agents", "chat", "clear", "compact", "context", "delete", "jobs", "new", "q", "quit", "sessions", "skills", "usage"}
 
+// confirmState is the modal on screen. yes and alt run on the model's
+// goroutine when the key is pressed, so they may change the model before
+// returning the command that does the work.
 type confirmState struct {
-	prompt string
-	yes    tea.Cmd
+	question string
+	detail   []string
+	// yesLabel names what y does; empty means "confirm".
+	yesLabel string
+	yes      func() tea.Cmd
 	// alt, when set, is what D does: the delete prompt's "and on Discord".
-	alt tea.Cmd
+	alt      func() tea.Cmd
+	altLabel string
 }
+
+// do wraps a command that needs nothing from the model as a confirm action.
+func do(cmd tea.Cmd) func() tea.Cmd { return func() tea.Cmd { return cmd } }
 
 // Model is the Bubble Tea model behind `spore chat`.
 type Model struct {
@@ -113,6 +131,8 @@ type Model struct {
 	cache    *cache
 	selected string
 	mode     mode
+	// focus is the pane NORMAL-mode keys drive; see focused.
+	focus pane
 
 	input textarea.Model
 	line  textinput.Model
@@ -333,7 +353,7 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 
 	case approvalFailedMsg:
 		m.cache.restoreApproval(msg.root, msg.ev)
-		m.cache.get(msg.session).add(kindError, "could not answer the approval: "+msg.err.Error())
+		m.flash = "could not answer the approval: " + msg.err.Error()
 		return nil
 
 	case newSessionMsg:
@@ -450,19 +470,35 @@ func (m *Model) keyNormal(k tea.KeyMsg) tea.Cmd {
 	// An approval on screen takes y/n/s/p first. It is only live here, in
 	// NORMAL: a y typed into the input must never be read as consent.
 	if root, ev, ok := m.cache.approvalFor(m.selected); ok {
-		if cmd, handled := m.answer(root, ev, k.String()); handled {
-			return cmd
+		if m.answer(root, ev, k.String()) {
+			return nil
+		}
+	}
+	if m.focused() == paneSidebar {
+		switch k.String() {
+		case "j", "down":
+			return m.moveSelection(1)
+		case "k", "up":
+			return m.moveSelection(-1)
+		case "enter":
+			if m.sideCursor != "" {
+				return m.enterRow()
+			}
+			return m.enterInsert()
 		}
 	}
 	switch k.String() {
-	case "j", "down":
-		return m.moveSelection(1)
-	case "k", "up":
-		return m.moveSelection(-1)
-	case "enter":
-		if m.sideCursor != "" {
-			return m.enterRow()
+	case "tab", "shift+tab":
+		if m.sidebarOn() {
+			m.focus = 1 - m.focused()
 		}
+	case "j", "down":
+		m.vp.ScrollDown(1)
+		m.follow = m.vp.AtBottom()
+	case "k", "up":
+		m.vp.ScrollUp(1)
+		m.follow = false
+	case "enter":
 		return m.enterInsert()
 	case "i", "a":
 		return m.enterInsert()
@@ -516,6 +552,9 @@ func (m *Model) keyNormal(k tea.KeyMsg) tea.Cmd {
 	case "ctrl+b":
 		on := !m.sidebarOn()
 		m.sidebarPref = &on
+		if !on {
+			m.focus = paneChat
+		}
 	default:
 		if r, ok := resourceByHotkey(k.String()); ok {
 			return m.openView(r)
@@ -526,7 +565,17 @@ func (m *Model) keyNormal(k tea.KeyMsg) tea.Cmd {
 
 func (m *Model) enterInsert() tea.Cmd {
 	m.mode = modeInsert
+	m.focus = paneChat
 	return m.input.Focus()
+}
+
+// focused is the pane NORMAL-mode keys drive. Without a sidebar on screen
+// there is only the chat.
+func (m *Model) focused() pane {
+	if !m.sidebarOn() || m.table != nil {
+		return paneChat
+	}
+	return m.focus
 }
 
 func (m *Model) keyInsert(k tea.KeyMsg) tea.Cmd {
@@ -657,9 +706,9 @@ func (m *Model) keyConfirm(k tea.KeyMsg) tea.Cmd {
 	m.mode = modeNormal
 	switch {
 	case c != nil && k.String() == "y":
-		return c.yes
+		return c.yes()
 	case c != nil && k.String() == "D" && c.alt != nil:
-		return c.alt
+		return c.alt()
 	}
 	return nil
 }
@@ -757,7 +806,9 @@ func (m *Model) drainQueue(id string) tea.Cmd {
 	return m.submit(id, q[0])
 }
 
-func (m *Model) answer(root string, ev daemon.WireEvent, k string) (tea.Cmd, bool) {
+// answer opens the modal that confirms an approval key, reporting whether k
+// was one.
+func (m *Model) answer(root string, ev daemon.WireEvent, k string) bool {
 	var ans policy.Answer
 	switch k {
 	case "y":
@@ -768,22 +819,41 @@ func (m *Model) answer(root string, ev daemon.WireEvent, k string) (tea.Cmd, boo
 		ans = policy.Answer{Allow: true, Scope: policy.ScopeSession}
 	case "p":
 		if ev.Pattern == "" {
-			return nil, true // the option was never offered
+			return true // the option was never offered
 		}
 		ans = policy.Answer{Allow: true, Scope: policy.ScopePattern}
 	default:
-		return nil, false
+		return false
+	}
+	detail := []string{`matched policy rule "` + ev.Rule + `"`}
+	if ev.Origin != "" {
+		detail = append(detail, "asked by sub-agent "+short(ev.Origin))
+	}
+	m.confirm = &confirmState{
+		question: answerQuestion(ev, ans),
+		detail:   detail,
+		yes:      func() tea.Cmd { return m.resolve(root, ev, ans) },
+	}
+	m.mode = modeConfirm
+	return true
+}
+
+// resolve sends a confirmed answer. The approval may have been answered
+// elsewhere while the modal was open; then there is nothing left to send.
+func (m *Model) resolve(root string, ev daemon.WireEvent, ans policy.Answer) tea.Cmd {
+	if !m.cache.pending(root, ev.PendingID) {
+		m.flash = "that approval was already answered"
+		return nil
 	}
 	m.cache.markAnswered(root, ev.PendingID)
-	sel := m.selected
-	m.cache.get(sel).add(kindNotice, answerText(ev, ans))
-	be, ctx := m.be, m.ctx
+	m.flash = answerText(ev, ans)
+	sel, be, ctx := m.selected, m.be, m.ctx
 	return func() tea.Msg {
 		if err := be.Resolve(ctx, root, ev.PendingID, ans); err != nil {
 			return approvalFailedMsg{session: sel, root: root, ev: ev, err: err}
 		}
 		return nil
-	}, true
+	}
 }
 
 func (m *Model) stop() tea.Cmd {
@@ -808,13 +878,14 @@ func (m *Model) confirmCancelAgent() tea.Cmd {
 	}
 	be, ctx := m.be, m.ctx
 	m.confirm = &confirmState{
-		prompt: fmt.Sprintf("stop sub-agent %s? y/n", short(child)),
-		yes: func() tea.Msg {
+		question: fmt.Sprintf("Stop sub-agent %s?", short(child)),
+		yesLabel: "stop",
+		yes: do(func() tea.Msg {
 			if err := be.CancelAgent(ctx, parent, child); err != nil {
 				return noticeMsg{session: child, text: err.Error(), isErr: true}
 			}
 			return nil
-		},
+		}),
 	}
 	m.mode = modeConfirm
 	return nil
@@ -944,7 +1015,7 @@ func (m *Model) keyView(k tea.KeyMsg) tea.Cmd {
 				return m.selectSession(id)
 			}
 		}
-		t.openDetail(m.width, m.bodyHeight())
+		t.openDetail(m.width-2, m.paneHeight())
 	case "o":
 		r, ok := t.selected()
 		if !ok {
@@ -990,7 +1061,7 @@ func (m *Model) runAction(key string) tea.Cmd {
 		if a.Confirm == nil {
 			return run
 		}
-		m.confirm = &confirmState{prompt: a.Confirm(r) + " y/n", yes: run}
+		m.confirm = &confirmState{question: capitalize(a.Confirm(r)), yes: do(run)}
 		m.mode = modeConfirm
 		return nil
 	}
@@ -1165,9 +1236,11 @@ func (m *Model) confirmDelete(all bool) tea.Cmd {
 		}
 	}
 	m.confirm = &confirmState{
-		prompt: "delete " + what + "? y · D also on Discord · n",
-		yes:    del(false),
-		alt:    del(true),
+		question: "Delete " + what + "?",
+		yesLabel: "delete",
+		yes:      do(del(false)),
+		alt:      do(del(true)),
+		altLabel: "also on Discord",
 	}
 	m.mode = modeConfirm
 	m.input.Blur()
@@ -1285,6 +1358,27 @@ func (m *Model) ExitSummary() string {
 		return ""
 	}
 	return strings.Join(out, "\n\n") + "\n"
+}
+
+// answerQuestion is the modal's question for an approval key.
+func answerQuestion(ev daemon.WireEvent, ans policy.Answer) string {
+	switch {
+	case !ans.Allow:
+		return "Deny " + ev.Tool + "?"
+	case ans.Scope == policy.ScopeSession:
+		return "Allow " + ev.Tool + " for this session?"
+	case ans.Scope == policy.ScopePattern:
+		return "Always allow " + ev.Pattern + "?"
+	}
+	return "Allow " + ev.Tool + " once?"
+}
+
+// capitalize upper-cases a sentence's first letter.
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 func answerText(ev daemon.WireEvent, ans policy.Answer) string {

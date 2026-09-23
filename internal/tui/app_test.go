@@ -201,6 +201,8 @@ func keyMsg(k string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyUp}
 	case "down":
 		return tea.KeyMsg{Type: tea.KeyDown}
+	case "ctrl+b":
+		return tea.KeyMsg{Type: tea.KeyCtrlB}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 }
@@ -240,7 +242,7 @@ func TestAYTypedInInsertNeverAnswersAnApproval(t *testing.T) {
 		t.Fatal("the overlay does not tell an INSERT-mode user how to answer")
 	}
 
-	press(m, "esc", "y")
+	press(m, "esc", "y", "y")
 	if len(fb.resolved) != 1 || fb.resolved[0] != "s1:1:true" {
 		t.Fatalf("resolved = %v, want s1:1:true", fb.resolved)
 	}
@@ -303,7 +305,7 @@ func TestASubagentsApprovalIsAnsweredThroughItsRoot(t *testing.T) {
 	if !strings.Contains(m.View(), "sub-agent kid") {
 		t.Fatal("the overlay does not say a sub-agent is asking")
 	}
-	press(m, "esc", "y")
+	press(m, "esc", "y", "y")
 	if len(fb.resolved) != 1 || fb.resolved[0] != "root:9:true" {
 		t.Fatalf("resolved = %v, want root:9:true", fb.resolved)
 	}
@@ -313,7 +315,7 @@ func TestAFailedAnswerKeepsTheApprovalOnScreen(t *testing.T) {
 	fb := &fakeBackend{resolveErr: errors.New("boom")}
 	m := newTestModel(t, fb, "s1")
 	feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireApproval, PendingID: 3, Tool: "shell"})
-	press(m, "esc", "y")
+	press(m, "esc", "y", "y")
 	if _, _, ok := m.cache.approvalFor("s1"); !ok {
 		t.Fatal("the approval disappeared although the answer failed")
 	}
@@ -365,12 +367,13 @@ func TestEscAndAKeyInOneReadActAsEscThenTheKey(t *testing.T) {
 	m2 := newTestModel(t, fb2, "aaaa")
 	run(m2, sessionsMsg{list: fb2.sessions})
 	run(m2, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j"), Alt: true})
-	if m2.mode != modeNormal || m2.selected != "bbbb" {
-		t.Fatalf("alt+j from INSERT: mode=%s selected=%q, want NORMAL on bbbb", m2.mode, m2.selected)
+	if m2.mode != modeNormal || m2.selected != "aaaa" {
+		t.Fatalf("alt+j from INSERT: mode=%s selected=%q, want NORMAL, still on aaaa (j scrolls the chat)", m2.mode, m2.selected)
 	}
-	run(m2, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k"), Alt: true})
-	if m2.selected != "aaaa" {
-		t.Fatalf("alt+k in NORMAL selected %q, want aaaa", m2.selected)
+	press(m2, "tab")
+	run(m2, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j"), Alt: true})
+	if m2.selected != "bbbb" {
+		t.Fatalf("alt+j in the sidebar selected %q, want bbbb", m2.selected)
 	}
 }
 
@@ -455,7 +458,7 @@ func TestJAndKMoveTheSelection(t *testing.T) {
 	}}
 	m := newTestModel(t, fb, "aaaa")
 	run(m, sessionsMsg{list: fb.sessions})
-	press(m, "esc", "j")
+	press(m, "esc", "tab", "j")
 	if m.selected != "bbbb" {
 		t.Fatalf("after j selected = %q, want bbbb", m.selected)
 	}
@@ -544,8 +547,8 @@ func TestAConfirmedActionRunsOnlyOnYesAndRefreshes(t *testing.T) {
 	fb := &fakeBackend{jobs: []daemon.JobJSON{{ID: 7, Kind: "cron", Spec: "0 9 * * *", Prompt: "morning", Enabled: true, NextRun: fixedNow().Add(time.Hour)}}}
 	m := newTestModel(t, fb, "s1")
 	press(m, "esc", "J", "x")
-	if m.mode != modeConfirm || !strings.Contains(m.View(), "cancel job 7? y/n") {
-		t.Fatalf("mode=%s, want the confirmation in the status bar:\n%s", m.mode, m.View())
+	if m.mode != modeConfirm || !strings.Contains(m.View(), "Cancel job 7?") {
+		t.Fatalf("mode=%s, want the confirmation modal:\n%s", m.mode, m.View())
 	}
 	press(m, "n")
 	if len(fb.cancelledJobs) != 0 {
@@ -629,7 +632,7 @@ func jobScene(t *testing.T) (*Model, *fakeBackend) {
 
 func TestOpeningAnUnreadJobRunMarksItSeen(t *testing.T) {
 	m, fb := jobScene(t)
-	press(m, "esc", "z", "k") // open the folder; its run is listed above the chats
+	press(m, "esc", "tab", "z", "k") // open the folder; its run is listed above the chats
 	if m.selected != "r1" {
 		t.Fatalf("selected = %q, want the job run", m.selected)
 	}
@@ -670,7 +673,7 @@ func deleteScene(t *testing.T) (*Model, *fakeBackend) {
 func TestDeleteAsksThenDeletesTheSelectedSessionAndMovesOn(t *testing.T) {
 	m, fb := deleteScene(t)
 	press(m, "esc", "d")
-	if m.mode != modeConfirm || !strings.Contains(m.View(), `delete "first"?`) {
+	if m.mode != modeConfirm || !strings.Contains(m.View(), `Delete "first"?`) {
 		t.Fatalf("mode = %s, want the delete prompt:\n%s", m.mode, m.View())
 	}
 	press(m, "y")
@@ -740,7 +743,7 @@ func TestASessionDeletedElsewhereLeavesTheSidebar(t *testing.T) {
 // the job's label and runs are then reachable with k and j.
 func TestTheCursorReachesTheJobsFolderAndOpensIt(t *testing.T) {
 	m, _ := jobScene(t)
-	press(m, "esc", "k")
+	press(m, "esc", "tab", "k")
 	if m.sideCursor != folderKey || m.selected != "s1" {
 		t.Fatalf("cursor=%q selected=%q; want the folder under the cursor and s1 still shown", m.sideCursor, m.selected)
 	}
@@ -827,7 +830,7 @@ func TestEnterOnAJobLabelInTheSidebarOpensItsRuns(t *testing.T) {
 	fb := runsBackend()
 	m := newTestModel(t, fb, "s1")
 	run(m, sessionsMsg{list: fb.sessions})
-	press(m, "esc", "z")
+	press(m, "esc", "tab", "z")
 	for m.sideCursor != jobKey(7) {
 		before := m.sideCursor + m.selected
 		press(m, "k")
@@ -852,7 +855,7 @@ func TestClosingTheFolderLeavesNoRunsBehind(t *testing.T) {
 	fb := runsBackend()
 	m := newTestModel(t, fb, "s1")
 	run(m, sessionsMsg{list: fb.sessions})
-	press(m, "esc", "z", "k") // open, then up onto a run
+	press(m, "esc", "tab", "z", "k") // open, then up onto a run
 	if m.cache.get(m.selected).info.Source != "job" {
 		t.Fatalf("selected = %q, want a job run", m.selected)
 	}

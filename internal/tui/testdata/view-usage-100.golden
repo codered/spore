@@ -1,24 +1,24 @@
-spore · a1b2 fix flaky test · chat · /work/spore                          <n> new  <:> cmd  <?> help
-                                                                   <S> skills  <A> agents  <U> usage
-                                                                                  <J> jobs  <q> quit
-─ usage(3) ─────────────────────────────────────────────────────────────────────────────────────────
-DAY           MODEL                                        TURNS      IN     OUT  CACHE %       COST
-this session  sonnet-5                                         4    1.2k     300      96%    $0.1200
-2026-09-22    sonnet-5                                        40   12.0k    3.0k      96%    $1.4000
-2026-09-21    haiku-4-5                                       12    4.0k     900        -    $0.0300
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
+ spore   chat  skills S  agents A  usage U  jobs J                                                  
+┏━ usage(3) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃DAY           MODEL                                      TURNS      IN     OUT  CACHE %       COST┃
+┃this session  sonnet-5                                       4    1.2k     300      96%    $0.1200┃
+┃2026-09-22    sonnet-5                                      40   12.0k    3.0k      96%    $1.4000┃
+┃2026-09-21    haiku-4-5                                     12    4.0k     900        -    $0.0300┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
  NORMAL  <enter> open  </> filter  <s> sort  <esc> back                                             

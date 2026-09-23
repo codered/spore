@@ -8,62 +8,69 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// headerRows is the header's height: three rows at 100 columns and wider,
-// one row below.
-func (m *Model) headerRows() int {
-	if m.width >= 100 {
-		return 3
-	}
-	return 1
-}
+// bodyHeight is the rows between the tab bar and the status bar.
+func (m *Model) bodyHeight() int { return max(1, m.height-2) }
 
-// bodyHeight is the rows between the title rule and the status bar.
-func (m *Model) bodyHeight() int { return max(1, m.height-m.headerRows()-2) }
-
-// headerView is the k9s band: where you are on the left, the keys that work
-// on the right.
+// headerView is the top nav: the brand, a tab per screen with the one on
+// show lit, and on the right the signals that concern every session.
 func (m *Model) headerView() string {
-	sv := m.cache.get(m.selected)
-	title := sv.info.Title
-	if title == "" {
-		title = "untitled"
+	right := m.globalFacts()
+	left := m.tabBar(true)
+	if lipgloss.Width(left)+lipgloss.Width(right)+1 > m.width {
+		// Narrow: the names matter more than the letters, which ? lists.
+		left = m.tabBar(false)
 	}
-	src := sv.info.Source
-	if src == "" {
-		src = "unknown"
-	}
-	who := styKey.Render("spore") + styMuted.Render(" · ") + short(m.selected) + " " + oneLine(title) +
-		styMuted.Render(" · "+src+" · "+tildePath(sv.info.Workspace))
-	facts := m.facts()
-	if m.headerRows() == 1 {
-		left := who
-		if facts != "" {
-			left += styMuted.Render(" · ") + facts
-		}
-		return fitRow(left, hint("?", "help")+"  "+hint(":", "cmd"), m.width)
-	}
-	grid := m.hintGrid()
-	lefts := []string{who, facts, ""}
-	rows := make([]string, 3)
-	for i := range rows {
-		rows[i] = fitRow(lefts[i], grid[i], m.width)
-	}
-	return strings.Join(rows, "\n")
+	return fitRow(left, right, m.width)
 }
 
-// facts is the selected session's numbers.
-func (m *Model) facts() string {
-	sv := m.cache.get(m.selected)
+// tabBar is the brand and a tab per screen, with or without hotkeys.
+func (m *Model) tabBar(hotkeys bool) string {
+	active := m.activeTab()
+	tabs := []string{tab("chat", "", active == "chat")}
+	for _, r := range resources() {
+		key := ""
+		if hotkeys {
+			key = r.Hotkey()
+		}
+		tabs = append(tabs, tab(r.Name(), key, active == r.Name()))
+	}
+	return styMode.Render(" spore ") + " " + strings.Join(tabs, "")
+}
+
+// tab is one entry of the top nav: its name and hotkey, reversed when lit.
+func tab(name, hotkey string, on bool) string {
+	if on {
+		label := " " + name + " "
+		if hotkey != "" {
+			label += hotkey + " "
+		}
+		return styTabOn.Render(label)
+	}
+	out := " " + styMuted.Render(name)
+	if hotkey != "" {
+		out += " " + styKey.Render(hotkey)
+	}
+	return out + " "
+}
+
+// tabber is a view that belongs under another view's tab, such as a job's
+// runs under jobs.
+type tabber interface{ Tab() string }
+
+// activeTab names the tab for what the body shows.
+func (m *Model) activeTab() string {
+	if m.table == nil {
+		return "chat"
+	}
+	if t, ok := m.table.res.(tabber); ok {
+		return t.Tab()
+	}
+	return m.table.res.Name()
+}
+
+// globalFacts is what the top nav reports about every session at once.
+func (m *Model) globalFacts() string {
 	var out []string
-	if sv.model != "" {
-		out = append(out, sv.model)
-	}
-	if sv.ctxTokens > 0 {
-		out = append(out, "ctx "+humanTokens(sv.ctxTokens))
-	}
-	if m.opts.ShowCost && sv.cost > 0 {
-		out = append(out, fmt.Sprintf("$%.2f", sv.cost))
-	}
 	if n := m.cache.BlockedCount(); n > 0 {
 		out = append(out, styWarn.Render(fmt.Sprintf("%d blocked", n)))
 	}
@@ -73,28 +80,44 @@ func (m *Model) facts() string {
 	return strings.Join(out, styMuted.Render(" · "))
 }
 
-func hint(key, label string) string {
-	return styKey.Render("<"+key+">") + " " + styMuted.Render(label)
+// sessionFacts is the chat pane's first line: where the selected session
+// runs and what it costs.
+func (m *Model) sessionFacts() string {
+	sv := m.cache.get(m.selected)
+	src := sv.info.Source
+	if src == "" {
+		src = "unknown"
+	}
+	out := []string{src}
+	if ws := sv.info.Workspace; ws != "" {
+		out = append(out, tildePath(ws))
+	}
+	if sv.model != "" {
+		out = append(out, sv.model)
+	}
+	if sv.ctxTokens > 0 {
+		out = append(out, "ctx "+humanTokens(sv.ctxTokens))
+	}
+	if m.opts.ShowCost && sv.cost > 0 {
+		out = append(out, fmt.Sprintf("$%.2f", sv.cost))
+	}
+	return styMuted.Render(strings.Join(out, " · "))
 }
 
-// hintGrid is the header's right block: the global keys, then every view's
-// hotkey, spread over three rows.
-func (m *Model) hintGrid() []string {
-	cells := []string{hint("n", "new"), hint(":", "cmd"), hint("?", "help")}
-	for _, r := range resources() {
-		cells = append(cells, hint(r.Hotkey(), r.Name()))
+// paneTitle is the chat pane's border title: the session's id and title.
+func (m *Model) paneTitle() string {
+	if m.selected == "" {
+		return "no session"
 	}
-	cells = append(cells, hint("q", "quit"))
-	rows := []string{"", "", ""}
-	per := (len(cells) + 2) / 3
-	for i, c := range cells {
-		r := min(2, i/per)
-		if rows[r] != "" {
-			rows[r] += "  "
-		}
-		rows[r] += c
+	title := m.cache.get(m.selected).info.Title
+	if title == "" {
+		title = "untitled"
 	}
-	return rows
+	return short(m.selected) + " " + oneLine(title)
+}
+
+func hint(key, label string) string {
+	return styKey.Render("<"+key+">") + " " + styMuted.Render(label)
 }
 
 // fitRow puts left and right on one line of width cells, cutting left first.
@@ -110,16 +133,6 @@ func fitRow(left, right string, width int) string {
 	return left + strings.Repeat(" ", width-lipgloss.Width(left)-rw) + right
 }
 
-// ruleView is the line between header and body, naming what the body shows.
-func (m *Model) ruleView() string {
-	title := "chat"
-	if m.table != nil {
-		title = m.table.title()
-	}
-	head := "─ " + title + " "
-	return styMuted.Render(ansi.Truncate(head+strings.Repeat("─", max(0, m.width-lipgloss.Width(head))), m.width, ""))
-}
-
 // keyHints is the status bar's left half: the keys that work in this mode.
 func (m *Model) keyHints() string {
 	switch m.mode {
@@ -130,7 +143,10 @@ func (m *Model) keyHints() string {
 	case modeFilter:
 		return hint("enter", "keep") + "  " + hint("esc", "clear")
 	case modeConfirm:
-		return ""
+		if m.confirm == nil {
+			return ""
+		}
+		return confirmKeys(m.confirm)
 	}
 	if m.table != nil {
 		esc := "back"
@@ -146,5 +162,27 @@ func (m *Model) keyHints() string {
 		}
 		return strings.Join(append(parts, hint("esc", esc)), "  ")
 	}
-	return hint("i", "type") + "  " + hint("j/k", "session") + "  " + hint("n", "new") + "  " + hint("?", "help")
+	var parts []string
+	if m.focused() == paneSidebar {
+		parts = []string{hint("tab", "chat"), hint("j/k", "session"), hint("enter", "open"), hint("i", "type"), hint("n", "new")}
+	} else {
+		if m.sidebarOn() {
+			parts = append(parts, hint("tab", "sessions"))
+		}
+		parts = append(parts, hint("i", "type"), hint("j/k", "scroll"), hint("[ ]", "tools"))
+	}
+	return strings.Join(append(parts, hint("?", "help")), "  ")
+}
+
+// confirmKeys is the modal's answer line: y, D when it applies, and esc.
+func confirmKeys(c *confirmState) string {
+	yes := c.yesLabel
+	if yes == "" {
+		yes = "confirm"
+	}
+	parts := []string{hint("y", yes)}
+	if c.alt != nil {
+		parts = append(parts, hint("D", c.altLabel))
+	}
+	return strings.Join(append(parts, hint("esc", "cancel")), "  ")
 }

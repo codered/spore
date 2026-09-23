@@ -1,24 +1,24 @@
-spore · a1b2 fix flaky test · chat · /wor… <?> help  <:> cmd
-─ chat ─────────────────────────────────────────────────────
-› fix the flaky tui test                                    
-  Looking at tui_test.go…                                   
-▸ read {"path":"cmd/spore/tui_test.go"}  ✓ 3 lines          
-▸ bash {"cmd":"go test ./cmd/spore"}  ✗ exit 1              
-                                                            
-                                                            
-                                                            
-                                                            
-                                                            
-                                                            
-                                                            
-                                                            
-                                                            
-                                                            
-                                                            
-                                                            
-                                                            
-                                                            
-╭──────────────────────────────────────────────────────────╮
-│ Ask spore something…                                     │
-╰──────────────────────────────────────────────────────────╯
+ spore   chat  skills  agents  usage  jobs         1 blocked
+┏━ a1b2 fix flaky test ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ chat · /work/spore · sonnet-5 · ctx 38.0k                ┃
+┃ › fix the flaky tui test                                 ┃
+┃   Looking at tui_test.go…                                ┃
+┃ ▸ read {"path":"cmd/spore/tui_test.go"}  ✓ 3 lines       ┃
+┃ ▸ bash {"cmd":"go test ./cmd/spore"}  ✗ exit 1           ┃
+┃                                                          ┃
+┃                                                          ┃
+┃                                                          ┃
+┃                                                          ┃
+┃                                                          ┃
+┃                                                          ┃
+┃                                                          ┃
+┃                                                          ┃
+┃                                                          ┃
+┃                                                          ┃
+┃                                                          ┃
+┃                                                          ┃
+┃ ╭──────────────────────────────────────────────────────╮ ┃
+┃ │ Ask spore something…                                 │ ┃
+┃ ╰──────────────────────────────────────────────────────╯ ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
  INSERT  <enter> send  <ctrl+j> newline  <esc> normal       

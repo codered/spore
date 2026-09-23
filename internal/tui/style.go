@@ -44,10 +44,8 @@ var (
 		Background(colAccent).
 		Bold(true)
 
-	stySidebar = lipgloss.NewStyle().
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderRight(true).
-			BorderForeground(colMuted)
+	// styTabOn is the lit tab in the top nav.
+	styTabOn = lipgloss.NewStyle().Foreground(colAccent).Reverse(true).Bold(true)
 
 	// styInputBox frames the prompt while typing; styInputIdle is the same
 	// frame, dimmed, when the keys are driving navigation instead.
@@ -63,6 +61,13 @@ var (
 			Padding(0, 1)
 
 	styApprovalTitle = lipgloss.NewStyle().Foreground(colWarn).Bold(true)
+
+	// styModal frames a question that must be answered before anything
+	// else: approvals, deletes, stops.
+	styModal = lipgloss.NewStyle().
+			Border(lipgloss.ThickBorder()).
+			BorderForeground(colWarn).
+			Padding(1, 2)
 )
 
 // mdStyleName is resolved once. Asking the terminal for its background

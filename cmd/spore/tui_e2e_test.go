@@ -254,15 +254,15 @@ func TestTheTUIOpensViewsAgainstARealDaemonAndCancelsAJob(t *testing.T) {
 	d.press("esc")
 	d.press("U")
 	d.until("usage(")
-	d.until("this session") // only the usage view renders this; the header already shows the model
+	d.until("this session") // only the usage view renders this; the chat pane already shows the model
 
 	d.press("esc")
-	d.until("─ chat")
+	d.until("─ sessions ") // the sidebar is only on the chat screen
 
 	d.press("J")
 	d.until("morning briefing")
 	d.press("x")
-	d.until("y/n")
+	d.until("Cancel job")
 	d.press("y")
 	d.until("disabled")
 
@@ -300,7 +300,7 @@ func TestTheTUIDeletesASessionOnARealDaemon(t *testing.T) {
 
 	d.press("esc")
 	d.press("d")
-	d.until("? y · D also on Discord · n")
+	d.until("also on Discord")
 	d.press("y")
 	d.until("deleted 1 session")
 
