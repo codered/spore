@@ -61,7 +61,7 @@ func sessionDelete(ctx context.Context, st *store.Store, c *client, args []strin
 		if discord {
 			what += ", and their copies on Discord"
 		}
-		fmt.Fprintf(out, "delete %s? This cannot be undone. type yes to go ahead: ", what)
+		_, _ = fmt.Fprintf(out, "delete %s? This cannot be undone. type yes to go ahead: ", what)
 		line, _ := bufio.NewReader(in).ReadString('\n')
 		if strings.TrimSpace(line) != "yes" {
 			return errors.New("cancelled: nothing was deleted")
@@ -92,9 +92,9 @@ func sessionDelete(ctx context.Context, st *store.Store, c *client, args []strin
 	if len(res.Deleted) == 1 {
 		noun = "session"
 	}
-	fmt.Fprintf(out, "deleted %d %s\n", len(res.Deleted), noun)
+	_, _ = fmt.Fprintf(out, "deleted %d %s\n", len(res.Deleted), noun)
 	for _, n := range res.Notes {
-		fmt.Fprintln(out, "  "+n)
+		_, _ = fmt.Fprintln(out, "  "+n)
 	}
 	return nil
 }

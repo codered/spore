@@ -200,9 +200,13 @@ func TestTheJobsFolderIsThereWhenEmptyAndBadgesUnreadRuns(t *testing.T) {
 	if f, _ := folderRow(c.rows(false, "", "")); !f.busy {
 		t.Fatalf("folder = %+v, want it marked busy while a run is going", f)
 	}
-	out := ansi.Strip(renderSidebar(c, c.rows(false, "", ""), "", 30, 10))
-	if first := strings.Split(out, "\n")[0]; !strings.Contains(first, "jobs") || !strings.Contains(first, " 2 ") {
+	out := ansi.Strip(renderSidebar(c, c.rows(false, "", ""), "", 12, 10))
+	first := strings.Split(out, "\n")[0]
+	if !strings.Contains(first, "jobs") || !strings.Contains(first, " 2 ") {
 		t.Fatalf("first line = %q, want the folder with a badge of 2", first)
+	}
+	if w := ansi.StringWidth(first); w > 12 {
+		t.Fatalf("the badged folder line is %d cells wide in a 12-cell sidebar: %q", w, first)
 	}
 }
 

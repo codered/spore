@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"fmt"
-	"strings"
 )
 
 // SessionTree is a session's id and every descendant's: the sub-agents it
@@ -105,29 +104,27 @@ type Binding struct {
 // BindingsForSessions is every channel the named bridge has bound to any of
 // the sessions: what a bridge must clean up when they are deleted.
 func (s *Store) BindingsForSessions(ctx context.Context, bridge string, sessionIDs []string) ([]Binding, error) {
-	if len(sessionIDs) == 0 {
-		return nil, nil
-	}
-	args := []any{bridge}
-	for _, id := range sessionIDs {
-		args = append(args, id)
-	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT external_id, session_id FROM bridge_bindings WHERE bridge = ? AND session_id IN (?`+
-			strings.Repeat(", ?", len(sessionIDs)-1)+`) ORDER BY external_id`, args...)
-	if err != nil {
-		return nil, fmt.Errorf("read bindings: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
 	var out []Binding
-	for rows.Next() {
-		var b Binding
-		if err := rows.Scan(&b.ExternalID, &b.SessionID); err != nil {
+	for _, id := range sessionIDs {
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT external_id FROM bridge_bindings WHERE bridge = ? AND session_id = ? ORDER BY external_id`, bridge, id)
+		if err != nil {
+			return nil, fmt.Errorf("read bindings for %s: %w", id, err)
+		}
+		for rows.Next() {
+			b := Binding{SessionID: id}
+			if err := rows.Scan(&b.ExternalID); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			out = append(out, b)
+		}
+		_ = rows.Close()
+		if err := rows.Err(); err != nil {
 			return nil, err
 		}
-		out = append(out, b)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // SetSessionJob records which scheduled job a job run belongs to.
