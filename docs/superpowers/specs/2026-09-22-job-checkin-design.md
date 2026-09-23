@@ -44,8 +44,8 @@ the hub) calls one function, `afterJobRun(job, runSession, outcome)`:
 
 1. **No origin, or origin deleted:** nothing to do.
 2. **First success (`!checked_in`, outcome ok):** deliver the check-in (below), then set `checked_in = 1`.
-3. **Later runs:** `each` delivers the run's reply; `failures` delivers only when the outcome is not ok;
-   `none` and `ask` deliver nothing.
+3. **Later runs:** `each` sends a notification that the job ran (see below, no reply text); `failures`
+   sends one only when the outcome is not ok; `none` and `ask` send nothing.
 
 ## Delivering into the origin chat — the one real decision
 
