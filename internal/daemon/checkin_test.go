@@ -338,7 +338,10 @@ func TestHubEnqueueRunsNowWhenIdleAndAfterTheTurnOtherwise(t *testing.T) {
 	if !h.Begin("s") {
 		t.Fatal("Begin on an idle session failed")
 	}
-	h.Enqueue("s", func() { ran <- "first"; h.End("s") })
+	// first holds the slot until release closes, so the check below sees
+	// the handed-over slot rather than one already given back.
+	release := make(chan struct{})
+	h.Enqueue("s", func() { ran <- "first"; <-release; h.End("s") })
 	h.Enqueue("s", func() { ran <- "second"; h.End("s") })
 	select {
 	case got := <-ran:
@@ -347,12 +350,13 @@ func TestHubEnqueueRunsNowWhenIdleAndAfterTheTurnOtherwise(t *testing.T) {
 	}
 	// The slot passes straight to the queue: a client cannot claim it.
 	h.End("s")
-	if h.Begin("s") {
-		t.Fatal("a client claimed the slot handed to queued work")
-	}
 	if got := <-ran; got != "first" {
 		t.Fatalf("got %s, want first", got)
 	}
+	if h.Begin("s") {
+		t.Fatal("a client claimed the slot handed to queued work")
+	}
+	close(release)
 	if got := <-ran; got != "second" {
 		t.Fatalf("got %s, want second", got)
 	}
