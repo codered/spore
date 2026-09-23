@@ -9,3 +9,5 @@
 coverage.out
 coverage_subagent.out
 __pycache__/
+.agents/
+/fix_task1.py
