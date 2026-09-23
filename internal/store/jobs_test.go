@@ -244,3 +244,122 @@ func TestSetJobLastSession(t *testing.T) {
 		t.Errorf("SetJobLastSession on unknown id: %v, want no error", err)
 	}
 }
+
+// A jobs table written before the check-in columns existed gains them on
+// Open, and its jobs come back with no origin: they must never check in.
+func TestOpenAddsTheCheckInColumnsToAnOlderJobsTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spore.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := s.db.Exec(`DROP TABLE jobs`); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	if _, err := s.db.Exec(`CREATE TABLE jobs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, spec TEXT NOT NULL,
+		prompt TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, next_run TEXT NOT NULL,
+		last_run TEXT, last_session_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)`); err != nil {
+		t.Fatalf("recreate older table: %v", err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO jobs (kind, spec, prompt, next_run, created_at)
+		VALUES ('cron', '0 9 * * *', 'old job', '2026-09-01T09:00:00Z', '2026-09-01T08:00:00Z')`); err != nil {
+		t.Fatalf("insert old job: %v", err)
+	}
+	s.Close()
+
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s2.Close()
+	jobs, err := s2.ListJobs(context.Background())
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("got %d jobs, want the old one", len(jobs))
+	}
+	j := jobs[0]
+	if j.Prompt != "old job" || j.OriginSessionID != "" || j.Notify != NotifyAsk || j.CheckedIn {
+		t.Errorf("old job migrated as %+v; want no origin, notify ask, not checked in", j)
+	}
+}
+
+func TestJobOriginNotifyAndCheckIn(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	origin, err := s.CreateSessionFrom(ctx, "chat", "", SourceChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.CreateJob(ctx, Job{Kind: "cron", Spec: "* * * * *", Prompt: "p", Enabled: true,
+		NextRun: time.Now().UTC(), OriginSessionID: origin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, ok, err := s.Job(ctx, id)
+	if err != nil || !ok {
+		t.Fatalf("Job(%d) = %v, %v", id, ok, err)
+	}
+	if j.OriginSessionID != origin || j.Notify != NotifyAsk || j.CheckedIn {
+		t.Fatalf("new job = %+v", j)
+	}
+	if _, ok, _ := s.Job(ctx, 999); ok {
+		t.Error("Job found an id that does not exist")
+	}
+
+	if err := s.SetJobNotify(ctx, id, NotifyFailures); err != nil {
+		t.Fatalf("SetJobNotify: %v", err)
+	}
+	if err := s.SetJobNotify(ctx, id, NotifyAsk); err == nil {
+		t.Error("SetJobNotify accepted ask, which is not a choice")
+	}
+	if err := s.SetJobNotify(ctx, 999, NotifyEach); err == nil {
+		t.Error("SetJobNotify accepted a job that does not exist")
+	}
+
+	first, err := s.ClaimJobCheckIn(ctx, id)
+	if err != nil || !first {
+		t.Fatalf("first claim = %v, %v; want true", first, err)
+	}
+	again, err := s.ClaimJobCheckIn(ctx, id)
+	if err != nil || again {
+		t.Fatalf("second claim = %v, %v; want false", again, err)
+	}
+	j, _, _ = s.Job(ctx, id)
+	if j.Notify != NotifyFailures || !j.CheckedIn {
+		t.Errorf("job after notify and claim = %+v", j)
+	}
+}
+
+// Deleting the chat a job was created in leaves the job running, reporting
+// only to the Jobs folder.
+func TestDeletingTheOriginClearsIt(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	origin, _ := s.CreateSessionFrom(ctx, "chat", "", SourceChat)
+	other, _ := s.CreateSessionFrom(ctx, "other", "", SourceChat)
+	gone, _ := s.CreateJob(ctx, Job{Kind: "cron", Spec: "* * * * *", Prompt: "a", Enabled: true, NextRun: time.Now().UTC(), OriginSessionID: origin})
+	kept, _ := s.CreateJob(ctx, Job{Kind: "cron", Spec: "* * * * *", Prompt: "b", Enabled: true, NextRun: time.Now().UTC(), OriginSessionID: other})
+
+	if _, err := s.DeleteSessions(ctx, []string{origin}); err != nil {
+		t.Fatalf("DeleteSessions: %v", err)
+	}
+	j, _, _ := s.Job(ctx, gone)
+	if j.OriginSessionID != "" || !j.Enabled {
+		t.Errorf("job of the deleted chat = %+v; want enabled with no origin", j)
+	}
+	j, _, _ = s.Job(ctx, kept)
+	if j.OriginSessionID != other {
+		t.Errorf("another chat's job lost its origin: %+v", j)
+	}
+
+	if _, err := s.DeleteAllSessions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	j, _, _ = s.Job(ctx, kept)
+	if j.OriginSessionID != "" {
+		t.Errorf("delete all left an origin: %+v", j)
+	}
+}

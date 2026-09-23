@@ -34,7 +34,10 @@ type Server struct {
 	// cleaner is the chat surface a delete may ask to clean up; nil when no
 	// bridge is connected.
 	cleaner Cleaner
-	broker  *Broker
+	// notifier is the chat surface job reports reach besides the TUI; nil
+	// when no bridge is connected.
+	notifier Notifier
+	broker   *Broker
 
 	// subagents is the supervisor the sub-agent tools launch through. It is
 	// nil in tests that do not exercise sub-agents.
@@ -127,6 +130,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/jobs", s.handleListJobs)
 	mux.HandleFunc("POST /api/jobs", s.handleCreateJob)
 	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleCancelJob)
+	mux.HandleFunc("GET /api/jobs/{id}/runs", s.handleJobRuns)
 	mux.HandleFunc("GET /api/usage", s.handleUsage)
 	mux.HandleFunc("GET /static/{file}", s.handleStatic)
 	mux.HandleFunc("GET /", s.handleIndex)

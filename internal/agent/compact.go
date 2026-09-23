@@ -53,11 +53,12 @@ func (a *Agent) Compact(ctx context.Context, sessionID string) (folded, before, 
 		return 0, before, before, err
 	}
 
-	// live rows are those not already folded into the summary; they line up
-	// one-for-one with snap.Messages, which Snapshot built the same way.
+	// live rows are those not already folded into the summary, less notes;
+	// they line up one-for-one with snap.Messages, which Snapshot built the
+	// same way.
 	var live []store.Message
 	for _, r := range rows {
-		if r.Seq > through {
+		if r.Seq > through && r.Role != store.RoleNote {
 			live = append(live, r)
 		}
 	}

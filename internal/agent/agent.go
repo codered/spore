@@ -177,6 +177,9 @@ func (a *Agent) Snapshot(ctx context.Context, sessionID string) (Snapshot, error
 		if r.Seq <= through {
 			continue // folded into the summary already
 		}
+		if r.Role == store.RoleNote {
+			continue // written for the person, not the model
+		}
 		var blocks []provider.Block
 		if err := json.Unmarshal(r.BlocksJSON, &blocks); err != nil {
 			return Snapshot{}, fmt.Errorf("decode message %d: %w", r.ID, err)

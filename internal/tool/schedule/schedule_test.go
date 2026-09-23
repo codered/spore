@@ -120,8 +120,8 @@ func TestDefaultPolicyGating(t *testing.T) {
 		t.Fatalf("policy.NewEngine: %v", err)
 	}
 
-	// schedule_list and job_output should resolve to allow
-	for _, name := range []string{"schedule_list", "job_output"} {
+	// schedule_list, job_output and schedule_notify should resolve to allow
+	for _, name := range []string{"schedule_list", "job_output", "schedule_notify"} {
 		result := engine.Evaluate(policy.Session{ID: "test", Profile: policy.ProfileLocal, Workspace: "."}, policy.Call{Tool: name, Args: json.RawMessage(`{"id":1}`)})
 		if result.Decision != policy.DecisionAllow {
 			t.Errorf("%s: got decision %v, want %v", name, result.Decision, policy.DecisionAllow)
@@ -224,5 +224,77 @@ func TestScheduleListShowsWhenEachJobLastRan(t *testing.T) {
 	}
 	if !strings.Contains(out, "last 2026-09-23T02:25:00Z") || !strings.Contains(out, "last never") {
 		t.Fatalf("schedule_list = %q, want each job's last run", out)
+	}
+}
+
+// A job created inside a sub-agent reports to the chat the person is
+// reading, which is the root of the sub-agent's tree.
+func TestScheduleCreateRecordsTheRootSessionAsOrigin(t *testing.T) {
+	tools, st := newTools(t)
+	ctx := context.Background()
+	root, _ := st.CreateSessionFrom(ctx, "chat", "", store.SourceChat)
+	child, err := st.CreateChildSession(ctx, "child", "", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grandchild, err := st.CreateChildSession(ctx, "grandchild", "", child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, from := range []string{root, grandchild} {
+		callCtx := policy.WithSession(ctx, policy.Session{ID: from, Profile: policy.ProfileLocal})
+		if _, err := tools["schedule_create"].Call(callCtx, json.RawMessage(`{"spec":"* * * * *","prompt":"p"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// No session on the context: no origin.
+	if _, err := tools["schedule_create"].Call(ctx, json.RawMessage(`{"spec":"* * * * *","prompt":"p"}`)); err != nil {
+		t.Fatal(err)
+	}
+	jobs, _ := st.ListJobs(ctx)
+	if len(jobs) != 3 {
+		t.Fatalf("got %d jobs", len(jobs))
+	}
+	for i, want := range []string{root, root, ""} {
+		if jobs[i].OriginSessionID != want {
+			t.Errorf("job %d origin = %q, want %q", jobs[i].ID, jobs[i].OriginSessionID, want)
+		}
+	}
+}
+
+func TestScheduleNotifySetsTheMode(t *testing.T) {
+	tools, st := newTools(t)
+	ctx := context.Background()
+	root, _ := st.CreateSessionFrom(ctx, "chat", "", store.SourceChat)
+	callCtx := policy.WithSession(ctx, policy.Session{ID: root, Profile: policy.ProfileLocal})
+	id := createJob(t, tools)
+	if _, err := tools["schedule_create"].Call(callCtx, json.RawMessage(`{"spec":"* * * * *","prompt":"p"}`)); err != nil {
+		t.Fatal(err)
+	}
+	withOrigin := id + 1
+
+	out, err := tools["schedule_notify"].Call(ctx, json.RawMessage(fmt.Sprintf(`{"id":%d,"mode":"failures"}`, withOrigin)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "no chat") {
+		t.Errorf("a job with an origin was reported as having none: %q", out)
+	}
+	j, _, _ := st.Job(ctx, withOrigin)
+	if j.Notify != store.NotifyFailures {
+		t.Errorf("notify = %q, want failures", j.Notify)
+	}
+
+	out, err = tools["schedule_notify"].Call(ctx, json.RawMessage(fmt.Sprintf(`{"id":%d,"mode":"each"}`, id)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "no chat") {
+		t.Errorf("a job with no origin should say its runs go only to the Jobs folder: %q", out)
+	}
+	for _, bad := range []string{`{"id":%d,"mode":"ask"}`, `{"id":%d,"mode":"sometimes"}`, `{"id":999%d,"mode":"none"}`} {
+		if _, err := tools["schedule_notify"].Call(ctx, json.RawMessage(fmt.Sprintf(bad, id))); err == nil {
+			t.Errorf("schedule_notify accepted %s", fmt.Sprintf(bad, id))
+		}
 	}
 }

@@ -9,7 +9,10 @@ import (
 	"github.com/codered/spore/internal/store"
 )
 
-var _ daemon.Cleaner = (*Bridge)(nil)
+var (
+	_ daemon.Cleaner  = (*Bridge)(nil)
+	_ daemon.Notifier = (*Bridge)(nil)
+)
 
 // ChannelKind is what a bound channel is, which decides what deleting its
 // session can do there.

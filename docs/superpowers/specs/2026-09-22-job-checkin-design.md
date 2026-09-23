@@ -1,6 +1,7 @@
 # Job check-in and notifications — design
 
-**Status:** decisions made 2026-09-22; awaiting spec review. Nothing here is built.
+**Status:** built 2026-09-22 on `sessions-delete-jobs`; see "As built" at the end for where the build
+departs from this text.
 **Depends on:** branch `sessions-delete-jobs` (jobs folder, `job_output`, job runs tagged with their job).
 
 ## Goal
@@ -115,3 +116,23 @@ interleave with the turn's history.
 - **Check-in:** once, after the first successful run, as a model turn in the origin chat (Approach A).
 - **Later runs:** a plain notification that the job ran, with no reply text and no model turn.
 - **Where:** only the chat that created the job.
+
+## As built
+
+- **Run outcome.** The turn's end is taken inside the daemon's own pump (`startTurnThen`), not from a
+  hub subscription. A subscriber can drop events when its buffer is full, and the pump cannot.
+  `afterJobRun` runs after the run's slot is released.
+- **Check-in claim.** `checked_in` is set when the check-in is *claimed*, before its turn runs. Two
+  runs that end together therefore cannot both check in. The cost: a daemon that stops while a
+  check-in waits on a busy origin loses that check-in, and the job stays in `ask`.
+- **Busy origin.** `Hub.Enqueue` queues the check-in, and `Hub.End` hands the slot straight to it. A
+  client post cannot slip in between.
+- **Profile.** The check-in turn runs as `local` only when the origin's source is `chat` or `job`.
+  Any other origin, Discord included, runs as `remote`.
+- **Compaction.** `Compact` pairs stored rows with snapshot messages by position, so it skips `note`
+  rows as `Snapshot` does.
+- **Clients.** The TUI shows `job_note` events and `note` rows as notices. It shows the scheduler's
+  check-in message (prefixed `[spore scheduler]`) as a short notice, never as something the user
+  typed. The web UI shows a `note` row under its role label.
+- **Policy.** `schedule_notify` is in the default `allow` list. A config with its own `allow` list
+  must add it, or the tool asks for approval.

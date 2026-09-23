@@ -91,6 +91,11 @@ func (s *Store) deleteRows(ctx context.Context, ids []string) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id); err != nil {
 			return fmt.Errorf("delete session %s: %w", id, err)
 		}
+		// A job outlives the chat that created it, and then reports only to
+		// the Jobs folder.
+		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET origin_session_id = '' WHERE origin_session_id = ?`, id); err != nil {
+			return fmt.Errorf("clear job origin %s: %w", id, err)
+		}
 	}
 	return tx.Commit()
 }
@@ -144,4 +149,23 @@ func (s *Store) MarkSessionSeen(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("mark session %s seen: %w", sessionID, err)
 	}
 	return nil
+}
+
+// JobRuns is every session a job's runs opened, newest first.
+func (s *Store) JobRuns(ctx context.Context, jobID int64) ([]Session, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+sessionCols+` FROM sessions WHERE job_id = ? ORDER BY created_at DESC, id`, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("list runs of job %d: %w", jobID, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Session
+	for rows.Next() {
+		sess, err := scanSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sess)
+	}
+	return out, rows.Err()
 }

@@ -23,6 +23,9 @@ type sessionHub struct {
 	// context exists and cleared by End; a slot claimed by /clear or
 	// /compact never has one.
 	cancel context.CancelCauseFunc
+	// queued is work waiting for the slot. End hands the slot straight to
+	// the first of it, so nothing a client posts can slip in between.
+	queued []func()
 }
 
 // Hub fans one turn's events out to every client attached to a session, and
@@ -145,16 +148,44 @@ func (h *Hub) Begin(sessionID string) bool {
 	return true
 }
 
+// End releases the session's turn slot. When work is queued for the slot it
+// is handed over instead: the session stays running and the first queued
+// function runs on its own goroutine, holding the slot.
 func (h *Hub) End(sessionID string) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	sh, ok := h.sessions[sessionID]
 	if !ok {
+		h.mu.Unlock()
+		return
+	}
+	sh.cancel = nil
+	if len(sh.queued) > 0 {
+		next := sh.queued[0]
+		sh.queued = sh.queued[1:]
+		h.mu.Unlock()
+		go next()
 		return
 	}
 	sh.running = false
-	sh.cancel = nil
 	h.gc(sessionID, sh)
+	h.mu.Unlock()
+}
+
+// Enqueue runs fn holding the session's turn slot: now, on the caller's
+// goroutine, when the slot is free, or when the running turn ends. fn owns
+// the slot and must release it with End (startTurn's pump does), including
+// when it decides to do nothing.
+func (h *Hub) Enqueue(sessionID string, fn func()) {
+	h.mu.Lock()
+	sh := h.get(sessionID)
+	if sh.running {
+		sh.queued = append(sh.queued, fn)
+		h.mu.Unlock()
+		return
+	}
+	sh.running = true
+	h.mu.Unlock()
+	fn()
 }
 
 // Running reports whether a turn is in flight for the session.

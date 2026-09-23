@@ -28,6 +28,13 @@ const (
 	SourceUnknown  = "unknown"
 )
 
+// RoleNote is a message spore writes into a chat for the person reading it,
+// such as "job 1 ran". It is part of the transcript but never of the model's
+// history, so it cannot break the user/assistant alternation.
+const (
+	RoleNote = "note"
+)
+
 type Store struct {
 	db *sql.DB
 	// dataDir is the directory holding the database file. It is where a
@@ -267,6 +274,10 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 	if err := migrateMessages(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := migrateJobColumns(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

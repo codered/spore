@@ -25,6 +25,9 @@ const (
 	WireAgentState  = "agent_state"
 	// WireSessionDeleted says the session is gone: clients drop it.
 	WireSessionDeleted = "session_deleted"
+	// WireJobNote is a note spore wrote into the chat, such as "job 1 ran",
+	// carried in Text. It is not part of any turn.
+	WireJobNote = "job_note"
 )
 
 // WireEvent is one server-sent event. It is comparable on purpose — tests

@@ -104,8 +104,10 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 // job. Both the HTTP API and the schedule builtin go through it, so a job
 // the model created and a job a human created are indistinguishable
 // afterwards and there is exactly one place that decides what a valid
-// schedule is.
-func CreateJob(ctx context.Context, st *store.Store, spec, prompt string, now time.Time) (store.Job, error) {
+// schedule is. origin is the session the job was created from, or "" for
+// none; the root of its sub-agent tree is recorded, because the root is the
+// chat a person is reading.
+func CreateJob(ctx context.Context, st *store.Store, spec, prompt, origin string, now time.Time) (store.Job, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return store.Job{}, ErrPromptRequired
@@ -118,9 +120,18 @@ func CreateJob(ctx context.Context, st *store.Store, spec, prompt string, now ti
 	if next.IsZero() {
 		return store.Job{}, ErrNoFutureRun
 	}
+	if origin != "" {
+		anc, err := st.SessionAncestors(ctx, origin)
+		if err != nil {
+			return store.Job{}, fmt.Errorf("find the chat this job belongs to: %w", err)
+		}
+		if len(anc) > 0 {
+			origin = anc[len(anc)-1]
+		}
+	}
 	job := store.Job{
 		Kind: sched.Kind(), Spec: strings.TrimSpace(spec), Prompt: prompt,
-		Enabled: true, NextRun: next,
+		Enabled: true, NextRun: next, OriginSessionID: origin, Notify: store.NotifyAsk,
 	}
 	id, err := st.CreateJob(ctx, job)
 	if err != nil {
