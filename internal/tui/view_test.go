@@ -156,3 +156,17 @@ func TestGoldenViews(t *testing.T) {
 	press(m, "ctrl+r")
 	golden(t, "view-stale-100", m.View())
 }
+
+func TestGoldenJobsFolder(t *testing.T) {
+	m := scene(t, 100, 24)
+	run(m, sessionsMsg{list: []daemon.SessionJSON{
+		{ID: "a1b2c3", Title: "fix flaky test", Workspace: "/work/spore", Source: "chat", UpdatedAt: t0.Add(3 * time.Minute)},
+		{ID: "e5f6bb", Title: "notes", Workspace: "/work/web", Source: "chat", UpdatedAt: t0},
+		{ID: "j0b111", Title: "Send me a joke", Workspace: "/s/j0b111", Source: "job", JobID: 1, Unread: true, UpdatedAt: t0.Add(4 * time.Minute)},
+		{ID: "j0b222", Title: "Send me a joke", Workspace: "/s/j0b222", Source: "job", JobID: 1, Unread: true, UpdatedAt: t0.Add(2 * time.Minute)},
+		{ID: "j0b333", Title: "nightly backup", Workspace: "/s/j0b333", Source: "job", JobID: 2, UpdatedAt: t0.Add(time.Minute)},
+	}})
+	golden(t, "jobs-badge-100", m.View())
+	press(m, "esc", "z")
+	golden(t, "jobs-open-100", m.View())
+}

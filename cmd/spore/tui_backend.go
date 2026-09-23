@@ -162,3 +162,13 @@ func (b tuiBackend) Usage(ctx context.Context, sessionID string) (daemon.UsageJS
 func (b tuiBackend) CancelJob(ctx context.Context, id int64) error {
 	return viewErr(b.c.do(ctx, "DELETE", "/api/jobs/"+strconv.FormatInt(id, 10), nil, nil))
 }
+
+func (b tuiBackend) DeleteSessions(ctx context.Context, ids []string, all, discord bool) (daemon.DeleteSessionsJSON, error) {
+	var out daemon.DeleteSessionsJSON
+	err := b.c.do(ctx, "POST", "/api/sessions/delete", map[string]any{"ids": ids, "all": all, "discord": discord}, &out)
+	return out, err
+}
+
+func (b tuiBackend) MarkSeen(ctx context.Context, id string) error {
+	return b.c.do(ctx, "POST", "/api/sessions/"+id+"/seen", nil, nil)
+}

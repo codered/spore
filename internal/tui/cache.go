@@ -106,6 +106,8 @@ type cache struct {
 	answered map[int64]bool
 	now      func() time.Time
 	showCost bool
+	// jobsOpen is whether the sidebar's jobs folder is expanded.
+	jobsOpen bool
 }
 
 func newCache(now func() time.Time) *cache {
@@ -166,6 +168,11 @@ func (c *cache) Apply(ev daemon.WireEvent) string {
 	case daemon.WireTurnDone:
 		sv.endStreaming()
 		sv.working = false
+		if sv.info.Source == "job" {
+			// Unread until someone opens it; the model clears it at once
+			// when the run is the session on screen.
+			sv.info.Unread = true
+		}
 		sv.model = ev.Model
 		sv.ctxTokens = ev.TokensIn + ev.TokensCacheRead + ev.TokensCacheWrite
 		sv.cost += ev.CostUSD
@@ -330,4 +337,24 @@ func (c *cache) restoreApproval(root string, ev daemon.WireEvent) {
 	delete(c.answered, ev.PendingID)
 	sv := c.get(root)
 	sv.approvals = append([]daemon.WireEvent{ev}, sv.approvals...)
+}
+
+// remove forgets a deleted session.
+func (c *cache) remove(id string) { delete(c.sessions, id) }
+
+// descendants counts the sessions below id: its sub-agents, theirs, and so on.
+func (c *cache) descendants(id string) int {
+	n := 0
+	for _, sv := range c.sessions {
+		for p := sv.info.ParentID; p != ""; p = c.sessions[p].info.ParentID {
+			if p == id {
+				n++
+				break
+			}
+			if c.sessions[p] == nil {
+				break
+			}
+		}
+	}
+	return n
 }

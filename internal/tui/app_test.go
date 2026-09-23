@@ -38,6 +38,10 @@ type fakeBackend struct {
 	viewErr       error
 	fetches       int
 	cancelledJobs []int64
+
+	deletes     []deleteCall
+	deleteNotes []string
+	seen        []string
 }
 
 func (f *fakeBackend) Sessions(context.Context) ([]daemon.SessionJSON, error) { return f.sessions, nil }
@@ -77,6 +81,31 @@ func (f *fakeBackend) CancelAgent(_ context.Context, parent, child string) error
 func (f *fakeBackend) NewSession(context.Context, string) (string, error) { return f.created, nil }
 func (f *fakeBackend) Slash(_ context.Context, _, cmd string) (string, error) {
 	return "did " + cmd, nil
+}
+
+type deleteCall struct {
+	ids          []string
+	all, discord bool
+}
+
+func (f *fakeBackend) DeleteSessions(_ context.Context, ids []string, all, discord bool) (daemon.DeleteSessionsJSON, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deletes = append(f.deletes, deleteCall{ids: ids, all: all, discord: discord})
+	gone := ids
+	if all {
+		gone = nil
+		for _, s := range f.sessions {
+			gone = append(gone, s.ID)
+		}
+	}
+	return daemon.DeleteSessionsJSON{Deleted: gone, Notes: f.deleteNotes}, nil
+}
+func (f *fakeBackend) MarkSeen(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seen = append(f.seen, id)
+	return nil
 }
 func (f *fakeBackend) fetched() {
 	f.mu.Lock()
@@ -567,5 +596,137 @@ func TestSlashUsageInInsertStillPrintsText(t *testing.T) {
 	press(m, "enter")
 	if m.table != nil || !strings.Contains(m.View(), "did usage") {
 		t.Fatal("/usage typed into the input must print the report, not open the view")
+	}
+}
+
+func TestZTogglesTheJobsFolder(t *testing.T) {
+	m := newTestModel(t, &fakeBackend{}, "s1")
+	press(m, "esc", "z")
+	if !m.cache.jobsOpen {
+		t.Fatal("z did not open the jobs folder")
+	}
+	press(m, "z")
+	if m.cache.jobsOpen {
+		t.Fatal("z did not close the jobs folder again")
+	}
+}
+
+func jobScene(t *testing.T) (*Model, *fakeBackend) {
+	t.Helper()
+	fb := &fakeBackend{sessions: []daemon.SessionJSON{
+		{ID: "s1", Title: "chat", Source: "chat", Workspace: "/w"},
+		{ID: "r1", Title: "joke", Source: "job", JobID: 7, Unread: true, Workspace: "/s/r1"},
+	}}
+	m := newTestModel(t, fb, "s1")
+	run(m, sessionsMsg{list: fb.sessions})
+	return m, fb
+}
+
+func TestOpeningAnUnreadJobRunMarksItSeen(t *testing.T) {
+	m, fb := jobScene(t)
+	press(m, "esc", "z", "k") // open the folder; its run is listed above the chats
+	if m.selected != "r1" {
+		t.Fatalf("selected = %q, want the job run", m.selected)
+	}
+	if len(fb.seen) != 1 || fb.seen[0] != "r1" {
+		t.Fatalf("seen = %v, want r1 marked seen on the daemon", fb.seen)
+	}
+	if m.cache.get("r1").info.Unread {
+		t.Fatal("the run still reads unread after it was opened")
+	}
+}
+
+func TestAJobRunFinishingWhileAwayBadgesTheFolder(t *testing.T) {
+	m, fb := jobScene(t)
+	m.cache.get("r1").info.Unread = false
+	feed(m, wev("r1", daemon.WireTurnDone))
+	if !m.cache.get("r1").info.Unread {
+		t.Fatal("a job run that finished while another session was open must read unread")
+	}
+	if !strings.Contains(m.View(), "jobs") {
+		t.Fatalf("view:\n%s", m.View())
+	}
+	if len(fb.seen) != 0 {
+		t.Fatalf("seen = %v, want nothing marked while the run was not open", fb.seen)
+	}
+}
+
+func deleteScene(t *testing.T) (*Model, *fakeBackend) {
+	t.Helper()
+	fb := &fakeBackend{sessions: []daemon.SessionJSON{
+		{ID: "s1", Title: "first", Source: "chat", Workspace: "/w"},
+		{ID: "s2", Title: "second", Source: "chat", Workspace: "/w"},
+	}}
+	m := newTestModel(t, fb, "s1")
+	run(m, sessionsMsg{list: fb.sessions})
+	return m, fb
+}
+
+func TestDeleteAsksThenDeletesTheSelectedSessionAndMovesOn(t *testing.T) {
+	m, fb := deleteScene(t)
+	press(m, "esc", "d")
+	if m.mode != modeConfirm || !strings.Contains(m.View(), `delete "first"?`) {
+		t.Fatalf("mode = %s, want the delete prompt:\n%s", m.mode, m.View())
+	}
+	press(m, "y")
+	if len(fb.deletes) != 1 || fb.deletes[0].all || fb.deletes[0].discord || len(fb.deletes[0].ids) != 1 || fb.deletes[0].ids[0] != "s1" {
+		t.Fatalf("deletes = %+v, want s1 only, not on Discord", fb.deletes)
+	}
+	if _, still := m.cache.sessions["s1"]; still {
+		t.Fatal("the deleted session is still in the sidebar")
+	}
+	if m.selected != "s2" {
+		t.Fatalf("selected = %q, want the next session", m.selected)
+	}
+	if !strings.Contains(m.View(), "deleted 1 session") {
+		t.Fatalf("view does not report the delete:\n%s", m.View())
+	}
+}
+
+func TestCapitalDAlsoDeletesOnDiscordAndShowsWhatItDid(t *testing.T) {
+	m, fb := deleteScene(t)
+	fb.deleteNotes = []string{"deleted the Discord thread 42"}
+	press(m, "esc", "d", "D")
+	if len(fb.deletes) != 1 || !fb.deletes[0].discord {
+		t.Fatalf("deletes = %+v, want the Discord copy deleted too", fb.deletes)
+	}
+	if !strings.Contains(m.View(), "deleted the Discord thread 42") {
+		t.Fatalf("view does not show the bridge's report:\n%s", m.View())
+	}
+}
+
+func TestAnythingButYOrDKeepsTheSession(t *testing.T) {
+	m, fb := deleteScene(t)
+	press(m, "esc", "d", "n")
+	if len(fb.deletes) != 0 || m.selected != "s1" {
+		t.Fatalf("deletes = %+v, selected = %q; want nothing deleted", fb.deletes, m.selected)
+	}
+}
+
+func TestColonDeleteAllAsksAboutEverySession(t *testing.T) {
+	m, fb := deleteScene(t)
+	press(m, "esc", ":")
+	typeText(m, "delete all")
+	press(m, "enter")
+	if m.mode != modeConfirm || !strings.Contains(m.View(), "EVERY session") {
+		t.Fatalf("mode = %s, want the delete-all prompt:\n%s", m.mode, m.View())
+	}
+	press(m, "y")
+	if len(fb.deletes) != 1 || !fb.deletes[0].all {
+		t.Fatalf("deletes = %+v, want one delete-all", fb.deletes)
+	}
+	if len(m.selectable()) != 0 || m.selected != "" {
+		t.Fatalf("selectable = %v, selected = %q; want an empty sidebar", m.selectable(), m.selected)
+	}
+}
+
+func TestASessionDeletedElsewhereLeavesTheSidebar(t *testing.T) {
+	m, _ := deleteScene(t)
+	feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireSessionDeleted})
+	if _, still := m.cache.sessions["s1"]; still {
+		t.Fatal("a session deleted from another client is still listed")
+	}
+	if m.selected != "s2" {
+		t.Fatalf("selected = %q, want the selection moved off the deleted session", m.selected)
 	}
 }

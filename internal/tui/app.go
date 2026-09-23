@@ -81,6 +81,10 @@ type (
 	}
 	viewTickMsg   struct{ gen int }
 	actionDoneMsg struct{ err error }
+	deletedMsg    struct {
+		res daemon.DeleteSessionsJSON
+		err error
+	}
 )
 
 // Options configure a Model.
@@ -91,11 +95,13 @@ type Options struct {
 }
 
 // commandNames are the `:` commands, for completion.
-var commandNames = []string{"agents", "chat", "clear", "compact", "context", "jobs", "new", "q", "quit", "sessions", "skills", "usage"}
+var commandNames = []string{"agents", "chat", "clear", "compact", "context", "delete", "jobs", "new", "q", "quit", "sessions", "skills", "usage"}
 
 type confirmState struct {
 	prompt string
 	yes    tea.Cmd
+	// alt, when set, is what D does: the delete prompt's "and on Discord".
+	alt tea.Cmd
 }
 
 // Model is the Bubble Tea model behind `spore chat`.
@@ -140,6 +146,9 @@ type Model struct {
 	viewGen  int
 	viewErr  string
 	viewTick func(gen int) tea.Cmd
+	// flash is a one-line report in the status bar, such as what a delete
+	// did; the next key clears it.
+	flash string
 
 	history []string
 	histIdx int
@@ -239,12 +248,32 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		if msg.ev.Session == "" {
 			return nil
 		}
+		if msg.ev.Type == daemon.WireSessionDeleted {
+			// Before Apply, which would bring the session back to life.
+			return m.removeSessions([]string{msg.ev.Session})
+		}
 		id := m.cache.Apply(msg.ev)
 		switch msg.ev.Type {
 		case daemon.WireTurnDone, daemon.WireStopped, daemon.WireError:
-			return m.drainQueue(id)
+			var seen tea.Cmd
+			if id == m.selected {
+				seen = m.markSeen(id)
+			}
+			return tea.Batch(seen, m.drainQueue(id))
 		}
 		return nil
+
+	case deletedMsg:
+		if msg.err != nil {
+			m.flash = "delete failed: " + msg.err.Error()
+			return nil
+		}
+		noun := "sessions"
+		if len(msg.res.Deleted) == 1 {
+			noun = "session"
+		}
+		m.flash = strings.Join(append([]string{fmt.Sprintf("deleted %d %s", len(msg.res.Deleted), noun)}, msg.res.Notes...), " · ")
+		return m.removeSessions(msg.res.Deleted)
 
 	case sessionsMsg:
 		if msg.err != nil {
@@ -356,6 +385,7 @@ func (m *Model) loadTranscript(id string) tea.Cmd {
 }
 
 func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
+	m.flash = ""
 	s := k.String()
 	if s == "ctrl+c" {
 		if m.mode == modeInsert && m.input.Value() != "" {
@@ -453,6 +483,10 @@ func (m *Model) keyNormal(k tea.KeyMsg) tea.Cmd {
 		return m.nextBlocked()
 	case "x":
 		return m.confirmCancelAgent()
+	case "d":
+		return m.confirmDelete(false)
+	case "z":
+		m.cache.jobsOpen = !m.cache.jobsOpen
 	case "esc":
 		if m.cache.get(m.selected).info.ParentID != "" {
 			return m.confirmCancelAgent()
@@ -604,8 +638,11 @@ func (m *Model) keyConfirm(k tea.KeyMsg) tea.Cmd {
 	c := m.confirm
 	m.confirm = nil
 	m.mode = modeNormal
-	if c != nil && k.String() == "y" {
+	switch {
+	case c != nil && k.String() == "y":
 		return c.yes
+	case c != nil && k.String() == "D" && c.alt != nil:
+		return c.alt
 	}
 	return nil
 }
@@ -632,6 +669,8 @@ func (m *Model) command(line string) tea.Cmd {
 	case "chat":
 		m.closeView()
 		return nil
+	case "delete":
+		return m.confirmDelete(len(args) > 0 && args[0] == "all")
 	case "clear", "compact", "context":
 		return m.slash(name)
 	}
@@ -936,10 +975,109 @@ func (m *Model) selectSession(id string) tea.Cmd {
 		return nil
 	}
 	m.selected, m.toolCursor, m.follow, m.unseen = id, -1, true, false
+	seen := m.markSeen(id)
 	if !m.cache.get(id).loaded {
-		return m.loadTranscript(id)
+		return tea.Batch(seen, m.loadTranscript(id))
 	}
+	return seen
+}
+
+// markSeen clears a job run's unread mark here and on the daemon, so the
+// jobs folder's badge stays right across restarts. Only job runs are
+// counted, so only they are marked.
+func (m *Model) markSeen(id string) tea.Cmd {
+	sv := m.cache.get(id)
+	if !sv.info.Unread || sv.info.Source != "job" {
+		return nil
+	}
+	sv.info.Unread = false
+	be, ctx := m.be, m.ctx
+	return func() tea.Msg {
+		if err := be.MarkSeen(ctx, id); err != nil {
+			return noticeMsg{session: id, text: "could not mark the run seen: " + err.Error(), isErr: true}
+		}
+		return nil
+	}
+}
+
+// confirmDelete asks before deleting the selected session (and its
+// sub-agents), or every session. y deletes here; D deletes the Discord copy
+// too.
+func (m *Model) confirmDelete(all bool) tea.Cmd {
+	id := m.selected
+	var what string
+	var ids []string
+	switch {
+	case all:
+		n := 0
+		for sid := range m.cache.sessions {
+			if sid != "" {
+				n++
+			}
+		}
+		what = fmt.Sprintf("EVERY session (%d)", n)
+	case id == "":
+		return nil
+	default:
+		ids = []string{id}
+		title := m.cache.get(id).info.Title
+		if title == "" {
+			title = short(id)
+		}
+		what = fmt.Sprintf("%q", oneLine(title))
+		if n := m.cache.descendants(id); n > 0 {
+			what += fmt.Sprintf(" and its %d sub-agent(s)", n)
+		}
+	}
+	be, ctx := m.be, m.ctx
+	del := func(discord bool) tea.Cmd {
+		return func() tea.Msg {
+			res, err := be.DeleteSessions(ctx, ids, all, discord)
+			return deletedMsg{res: res, err: err}
+		}
+	}
+	m.confirm = &confirmState{
+		prompt: "delete " + what + "? y · D also on Discord · n",
+		yes:    del(false),
+		alt:    del(true),
+	}
+	m.mode = modeConfirm
+	m.input.Blur()
 	return nil
+}
+
+// removeSessions drops deleted sessions, moving the selection to the next
+// session still listed when the selected one went.
+func (m *Model) removeSessions(ids []string) tea.Cmd {
+	gone := map[string]bool{}
+	for _, id := range ids {
+		gone[id] = true
+	}
+	next := ""
+	if gone[m.selected] {
+		list := m.selectable()
+		at := indexOf(list, m.selected)
+		for d := 1; d < len(list) && next == ""; d++ {
+			for _, j := range []int{at + d, at - d} {
+				if j >= 0 && j < len(list) && !gone[list[j]] {
+					next = list[j]
+					break
+				}
+			}
+		}
+	}
+	for id := range gone {
+		m.cache.remove(id)
+		delete(m.queued, id)
+	}
+	if !gone[m.selected] {
+		return nil
+	}
+	m.selected = ""
+	if next == "" {
+		return nil
+	}
+	return m.selectSession(next)
 }
 
 func (m *Model) nextBlocked() tea.Cmd {

@@ -36,6 +36,7 @@ var (
 	styKey      = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
 	styHeader   = lipgloss.NewStyle().Foreground(colMuted).Bold(true)
 	stySelected = lipgloss.NewStyle().Reverse(true)
+	styBadge    = lipgloss.NewStyle().Foreground(colAccent).Reverse(true).Bold(true)
 
 	// styMode is the vim-style mode badge at the left of the status bar.
 	styMode = lipgloss.NewStyle().

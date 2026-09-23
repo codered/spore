@@ -277,3 +277,38 @@ func TestTheTUIOpensViewsAgainstARealDaemonAndCancelsAJob(t *testing.T) {
 		t.Fatalf("jobs = %+v, want the job disabled", jobs)
 	}
 }
+
+func TestTheTUIDeletesASessionOnARealDaemon(t *testing.T) {
+	ws := t.TempDir()
+	c := e2eDaemon(t, ws)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	keep, err := c.createSession(ctx, "chat", ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doomed, err := c.createSession(ctx, "chat", ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	be := tuiBackend{c: c}
+	d := &driver{t: t, m: tui.New(ctx, be, doomed, tui.Options{}), msgs: make(chan tea.Msg, 256)}
+	d.apply(tea.WindowSizeMsg{Width: 120, Height: 40})
+	go tui.Pump(ctx, be, func(msg tea.Msg) { d.msgs <- msg })
+	d.apply(<-d.msgs) // connected
+
+	d.press("esc")
+	d.press("d")
+	d.until("? y · D also on Discord · n")
+	d.press("y")
+	d.until("deleted 1 session")
+
+	list, err := c.sessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ID != keep {
+		t.Fatalf("daemon sessions = %+v, want only %s", list, keep)
+	}
+}

@@ -197,6 +197,9 @@ func (m *Model) statusView() string {
 	if m.viewErr != "" {
 		right = append(right, styDanger.Render(m.viewErr))
 	}
+	if m.flash != "" {
+		right = append(right, styAccent.Render(m.flash))
+	}
 	return fitRow(left, strings.Join(right, styMuted.Render(" · ")), m.width)
 }
 
@@ -210,6 +213,8 @@ func helpText() string {
 		"  n         new session here             b          next blocked session",
 		"  x         stop the selected sub-agent  esc        stop the running turn",
 		"  ctrl+b    toggle the sidebar           q          quit",
+		"  d         delete the session (y here, D also on Discord)   :delete all  delete every session",
+		"  z         open / close the jobs folder",
 		"",
 		styKey.Render("APPROVAL") + "  (normal mode, while one is showing)",
 		"  y allow once · n deny · s allow the tool this session · p always allow the pattern",

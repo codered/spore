@@ -11,13 +11,21 @@ import (
 	"github.com/codered/spore/internal/daemon"
 )
 
-// row is one sidebar line: a workspace heading, a session, or a "+N more"
-// marker. Only session rows are selectable.
+// row is one sidebar line: the jobs folder, a job's label inside it, a
+// workspace heading, a session, or a "+N more" marker. Only session rows are
+// selectable.
 type row struct {
 	header string
 	id     string
 	depth  int
 	more   int
+	// folder marks the jobs folder row: runs is how many job runs it holds,
+	// unread how many of them nobody has opened.
+	folder       bool
+	runs, unread int
+	busy         bool // a run is in progress
+	// label names a job inside the open folder.
+	label string
 }
 
 // idleShownPerWorkspace bounds how many idle top-level sessions a workspace
@@ -32,14 +40,19 @@ const idleShownPerWorkspace = 10
 // the sidebar has hidden.
 func (c *cache) rows(showAll bool, filter, selected string) []row {
 	kids := map[string][]*sessionView{}
-	var roots []*sessionView
+	var roots, jobRuns []*sessionView
 	for _, sv := range c.sessions {
 		if sv.info.ID == "" {
 			continue
 		}
-		if p := sv.info.ParentID; p != "" && c.sessions[p] != nil {
+		switch p := sv.info.ParentID; {
+		case p != "" && c.sessions[p] != nil:
 			kids[p] = append(kids[p], sv)
-		} else {
+		case sv.info.Source == "job":
+			// A job run lives in the jobs folder, not under its workspace:
+			// its workspace is a throwaway session directory.
+			jobRuns = append(jobRuns, sv)
+		default:
 			roots = append(roots, sv)
 		}
 	}
@@ -52,6 +65,7 @@ func (c *cache) rows(showAll bool, filter, selected string) []row {
 		})
 	}
 	byRecent(roots)
+	byRecent(jobRuns)
 	for k := range kids {
 		byRecent(kids[k])
 	}
@@ -100,6 +114,8 @@ func (c *cache) rows(showAll bool, filter, selected string) []row {
 		}
 	}
 
+	out = append(out, c.jobFolder(jobRuns, filter, selected, visible, subtree, addKids)...)
+
 	groups := map[string][]*sessionView{}
 	var order []string
 	for _, r := range roots {
@@ -145,6 +161,10 @@ func renderSidebar(c *cache, rows []row, selected string, width, height int) str
 	sel := -1
 	for _, r := range rows {
 		switch {
+		case r.folder:
+			lines = append(lines, folderLine(r, c.jobsOpen, width))
+		case r.label != "":
+			lines = append(lines, styMuted.Render(clip("  "+oneLine(r.label), width)))
 		case r.header != "":
 			lines = append(lines, styHeader.Render(clip(tildePath(r.header), width)))
 		case r.more > 0:
@@ -218,4 +238,78 @@ func sourceTag(src string) string {
 		return "job"
 	}
 	return ""
+}
+
+// jobFolder is the jobs folder: its row, always, and inside it, while it is
+// open or a filter is searching it, each job's runs under the job's label,
+// newest job first. A selected run always shows, open or not, so the chat
+// pane never displays a session the sidebar has hidden.
+func (c *cache) jobFolder(runs []*sessionView, filter, selected string,
+	visible, subtree func(*sessionView) bool, addKids func(*sessionView, int, bool)) []row {
+	folder := row{folder: true, runs: len(runs)}
+	for _, r := range runs {
+		if r.info.Unread {
+			folder.unread++
+		}
+		if r.working {
+			folder.busy = true
+		}
+	}
+	out := []row{folder}
+	open := c.jobsOpen || filter != ""
+
+	byJob := map[int64][]*sessionView{}
+	var order []int64
+	for _, r := range runs {
+		shown := r.info.ID == selected || (open && (filter == "" || subtree(r)))
+		if !shown {
+			continue
+		}
+		if _, seen := byJob[r.info.JobID]; !seen {
+			order = append(order, r.info.JobID)
+		}
+		byJob[r.info.JobID] = append(byJob[r.info.JobID], r)
+	}
+	for _, job := range order {
+		group := byJob[job]
+		label := "earlier runs"
+		if job > 0 {
+			label = fmt.Sprintf("job %d · %s", job, group[0].info.Title)
+		}
+		out = append(out, row{label: label})
+		hidden := 0
+		for i, r := range group {
+			if filter == "" && i >= idleShownPerWorkspace && r.info.ID != selected {
+				hidden++
+				continue
+			}
+			out = append(out, row{id: r.info.ID, depth: 1})
+			addKids(r, 2, filter == "" && visible(r))
+		}
+		if hidden > 0 {
+			out = append(out, row{more: hidden})
+		}
+	}
+	return out
+}
+
+// folderLine draws the jobs folder: muted while it has never held a run,
+// the accent colour while a run is going, and with a count badge while
+// finished runs wait unopened.
+func folderLine(r row, open bool, width int) string {
+	arrow := "▸"
+	if open {
+		arrow = "▾"
+	}
+	text := arrow + " jobs"
+	switch {
+	case r.unread > 0:
+		badge := styBadge.Render(fmt.Sprintf(" %d ", r.unread))
+		return clip(styAccent.Bold(true).Render(text)+" "+badge, width)
+	case r.busy:
+		return styAccent.Render(clip(text, width))
+	case r.runs == 0:
+		return styMuted.Render(clip(text, width))
+	}
+	return styHeader.Render(clip(text, width))
 }

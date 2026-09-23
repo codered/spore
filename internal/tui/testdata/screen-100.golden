@@ -2,13 +2,13 @@ spore · a1b2 fix flaky test · chat · /work/spore                          <n>
 sonnet-5 · ctx 38.0k · 1 blocked                                   <S> skills  <A> agents  <U> usage
                                                                                   <J> jobs  <q> quit
 ─ chat ─────────────────────────────────────────────────────────────────────────────────────────────
-/work/spore                   │› fix the flaky tui test                                             
-◐ c9d0 lint audit         disc│  Looking at tui_test.go…                                            
-○ a1b2 fix flaky test     chat│▸ read {"path":"cmd/spore/tui_test.go"}  ✓ 3 lines                   
-└ ○ 7f3e audit the tests      │▸ bash {"cmd":"go test ./cmd/spore"}  ✗ exit 1                       
+▸ jobs                        │› fix the flaky tui test                                             
+/work/spore                   │  Looking at tui_test.go…                                            
+◐ c9d0 lint audit         disc│▸ read {"path":"cmd/spore/tui_test.go"}  ✓ 3 lines                   
+○ a1b2 fix flaky test     chat│▸ bash {"cmd":"go test ./cmd/spore"}  ✗ exit 1                       
+└ ○ 7f3e audit the tests      │                                                                     
 /work/web                     │                                                                     
 ○ e5f6 notes              chat│                                                                     
-                              │                                                                     
                               │                                                                     
                               │                                                                     
                               │                                                                     

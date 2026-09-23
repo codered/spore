@@ -22,4 +22,9 @@ type Backend interface {
 	// Slash runs clear, compact, context, usage, skills or agents and
 	// returns the text to show.
 	Slash(ctx context.Context, id, cmd string) (string, error)
+	// DeleteSessions deletes the named sessions (or all of them) with their
+	// sub-agents; discord asks the bridge to delete its copy too.
+	DeleteSessions(ctx context.Context, ids []string, all, discord bool) (daemon.DeleteSessionsJSON, error)
+	// MarkSeen records that the session has been opened.
+	MarkSeen(ctx context.Context, id string) error
 }
