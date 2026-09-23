@@ -352,6 +352,20 @@ func (c *cache) markAnswered(root string, pendingID int64) {
 	c.get(root).dropApproval(pendingID)
 }
 
+// pending reports whether the approval is still waiting under root.
+func (c *cache) pending(root string, pendingID int64) bool {
+	sv, ok := c.sessions[root]
+	if !ok || c.answered[pendingID] {
+		return false
+	}
+	for _, a := range sv.approvals {
+		if a.PendingID == pendingID {
+			return true
+		}
+	}
+	return false
+}
+
 // restoreApproval puts back an approval whose answer failed to send, so the
 // overlay stays up and the human can try again.
 func (c *cache) restoreApproval(root string, ev daemon.WireEvent) {

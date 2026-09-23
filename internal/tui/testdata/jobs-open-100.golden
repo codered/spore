@@ -1,24 +1,24 @@
-spore · a1b2 fix flaky test · chat · /work/spore                          <n> new  <:> cmd  <?> help
-sonnet-5 · ctx 38.0k · 1 blocked                                   <S> skills  <A> agents  <U> usage
-                                                                                  <J> jobs  <q> quit
-─ chat ─────────────────────────────────────────────────────────────────────────────────────────────
-▾ jobs  2                     │› fix the flaky tui test                                             
-  job 1 · Send me a joke      │  Looking at tui_test.go…                                            
-└ ○ j0b1 Send me a joke    job│▸ read {"path":"cmd/spore/tui_test.go"}  ✓ 3 lines                   
-└ ○ j0b2 Send me a joke    job│▸ bash {"cmd":"go test ./cmd/spore"}  ✗ exit 1                       
-  job 2 · nightly backup      │                                                                     
-└ ○ j0b3 nightly backup    job│                                                                     
-/work/spore                   │                                                                     
-○ a1b2 fix flaky test     chat│                                                                     
-└ ○ 7f3e audit the tests      │                                                                     
-◐ c9d0 lint audit         disc│                                                                     
-/work/web                     │                                                                     
-○ e5f6 notes              chat│                                                                     
-                              │                                                                     
-                              │                                                                     
-                              │                                                                     
-                              │                                                                     
-                              │╭───────────────────────────────────────────────────────────────────╮
-                              ││ Ask spore something…                                              │
-                              │╰───────────────────────────────────────────────────────────────────╯
- NORMAL  <i> type  <j/k> session  <n> new  <?> help                                                 
+ spore   chat  skills S  agents A  usage U  jobs J                                         1 blocked
+╭─ sessions ───────────────────╮┏━ a1b2 fix flaky test ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+│▾ jobs  2                     │┃ chat · /work/spore · sonnet-5 · ctx 38.0k                        ┃
+│  job 1 · Send me a joke      │┃ › fix the flaky tui test                                         ┃
+│└ ○ j0b1 Send me a joke    job│┃   Looking at tui_test.go…                                        ┃
+│└ ○ j0b2 Send me a joke    job│┃ ▸ read {"path":"cmd/spore/tui_test.go"}  ✓ 3 lines               ┃
+│  job 2 · nightly backup      │┃ ▸ bash {"cmd":"go test ./cmd/spore"}  ✗ exit 1                   ┃
+│└ ○ j0b3 nightly backup    job│┃                                                                  ┃
+│/work/spore                   │┃                                                                  ┃
+│○ a1b2 fix flaky test     chat│┃                                                                  ┃
+│└ ○ 7f3e audit the tests      │┃                                                                  ┃
+│◐ c9d0 lint audit         disc│┃                                                                  ┃
+│/work/web                     │┃                                                                  ┃
+│○ e5f6 notes              chat│┃                                                                  ┃
+│                              │┃                                                                  ┃
+│                              │┃                                                                  ┃
+│                              │┃                                                                  ┃
+│                              │┃                                                                  ┃
+│                              │┃                                                                  ┃
+│                              │┃ ╭──────────────────────────────────────────────────────────────╮ ┃
+│                              │┃ │ Ask spore something…                                         │ ┃
+│                              │┃ ╰──────────────────────────────────────────────────────────────╯ ┃
+╰──────────────────────────────╯┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+ NORMAL  <tab> sessions  <i> type  <j/k> scroll  <[ ]> tools  <?> help                              

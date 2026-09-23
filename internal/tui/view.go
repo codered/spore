@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/codered/spore/internal/daemon"
 )
@@ -17,14 +18,22 @@ func (m *Model) sidebarOn() bool {
 	return m.width >= sidebarMinTerm
 }
 
-// mainWidth is the width of the chat pane: the terminal minus the sidebar
-// and its one-column border.
-func (m *Model) mainWidth() int {
+// sidebarOuter is the sidebar pane's width with its border.
+const sidebarOuter = sidebarWidth + 2
+
+// chatOuter is the chat pane's width with its border.
+func (m *Model) chatOuter() int {
 	if m.sidebarOn() {
-		return max(20, m.width-sidebarWidth-1)
+		return max(24, m.width-sidebarOuter)
 	}
-	return max(20, m.width)
+	return max(24, m.width)
 }
+
+// mainWidth is the width inside the chat pane's border and padding.
+func (m *Model) mainWidth() int { return m.chatOuter() - 4 }
+
+// paneHeight is the rows inside a pane's border.
+func (m *Model) paneHeight() int { return max(1, m.bodyHeight()-2) }
 
 // sync re-lays-out after every update: input width, viewport size, and the
 // transcript of the selected session.
@@ -36,7 +45,8 @@ func (m *Model) sync() {
 		m.md, m.mdWidth = newMarkdown(w), w
 	}
 	m.vp.Width = w
-	m.vp.Height = max(1, m.bodyHeight()-lipgloss.Height(m.inputView())-m.overlayHeight())
+	// One row inside the pane is the session's facts.
+	m.vp.Height = max(1, m.paneHeight()-1-lipgloss.Height(m.inputView())-m.overlayHeight())
 
 	content := m.transcript(w)
 	if content != m.lastContent {
@@ -98,31 +108,96 @@ func (m *Model) View() string {
 	if m.sidebarOn() && m.table == nil {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, m.sidebarView(), body)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), m.ruleView(), body, m.statusView())
+	if m.mode == modeConfirm && m.confirm != nil {
+		body = placeOver(body, m.modalView(), m.width)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), body, m.statusView())
 }
 
 func (m *Model) mainView() string {
 	if m.table != nil && !m.help {
-		h := m.bodyHeight()
-		return lipgloss.NewStyle().Width(m.width).Height(h).MaxHeight(h).Render(m.table.render(m.width, h))
+		w, h := m.width-2, m.paneHeight()
+		body := lipgloss.NewStyle().Width(w).Height(h).MaxHeight(h).Render(m.table.render(w, h))
+		return paneBox(m.table.title(), body, m.width, m.bodyHeight(), true, 0)
 	}
-	w, h := m.mainWidth(), m.bodyHeight()
-	box := lipgloss.NewStyle().Width(w).Height(h).MaxHeight(h)
+	on := m.focused() == paneChat
 	if m.help {
-		return box.Render(helpText())
+		return paneBox("help", helpText(), m.chatOuter(), m.bodyHeight(), on, 1)
 	}
-	parts := []string{m.vp.View()}
+	parts := []string{clip(m.sessionFacts(), m.mainWidth()), m.vp.View()}
 	if ov := m.overlayView(); ov != "" {
 		parts = append(parts, ov)
 	}
 	parts = append(parts, m.inputView())
-	return box.Render(strings.Join(parts, "\n"))
+	return paneBox(m.paneTitle(), strings.Join(parts, "\n"), m.chatOuter(), m.bodyHeight(), on, 1)
 }
 
 func (m *Model) sidebarView() string {
-	h := m.bodyHeight()
-	body := renderSidebar(m.cache, m.cache.rows(m.showAll, m.filter, m.selected), m.selected, m.sideCursor, sidebarWidth, h)
-	return stySidebar.Width(sidebarWidth).Height(h).MaxHeight(h).Render(body)
+	body := renderSidebar(m.cache, m.cache.rows(m.showAll, m.filter, m.selected), m.selected, m.sideCursor, sidebarWidth, m.paneHeight())
+	return paneBox("sessions", body, sidebarOuter, m.bodyHeight(), m.focused() == paneSidebar, 0)
+}
+
+// paneBox frames body in w x h cells with title in the top border and pad
+// blank columns inside each side. The focused pane gets a heavy accent
+// border, the other a light muted one, so the difference survives a
+// terminal without colour.
+func paneBox(title, body string, w, h int, focused bool, pad int) string {
+	iw, ih := max(1, w-2), max(1, h-2)
+	cw := max(1, iw-2*pad)
+	gap := strings.Repeat(" ", pad)
+	b, sty, tsty := lipgloss.RoundedBorder(), styMuted, styMuted
+	if focused {
+		b, sty, tsty = lipgloss.ThickBorder(), styAccent, styKey
+	}
+	head := " " + clip(oneLine(title), max(0, iw-3)) + " "
+	top := sty.Render(b.TopLeft+b.Top) + tsty.Render(head) +
+		sty.Render(strings.Repeat(b.Top, max(0, iw-1-lipgloss.Width(head)))+b.TopRight)
+	inner := lipgloss.NewStyle().Width(cw).Height(ih).MaxHeight(ih).Render(body)
+	lines := []string{top}
+	for _, l := range strings.Split(inner, "\n") {
+		l = ansi.Truncate(l, cw, "")
+		l += strings.Repeat(" ", max(0, cw-lipgloss.Width(l)))
+		lines = append(lines, sty.Render(b.Left)+gap+l+gap+sty.Render(b.Right))
+	}
+	lines = append(lines, sty.Render(b.BottomLeft+strings.Repeat(b.Bottom, iw)+b.BottomRight))
+	return strings.Join(lines, "\n")
+}
+
+// modalView is the confirmation on screen: the question, what it concerns,
+// and the keys that answer it.
+func (m *Model) modalView() string {
+	c := m.confirm
+	lines := []string{styApprovalTitle.Render(c.question)}
+	for _, d := range c.detail {
+		lines = append(lines, styMuted.Render(d))
+	}
+	lines = append(lines, "", confirmKeys(c))
+	cw := 0
+	for _, l := range lines {
+		cw = max(cw, lipgloss.Width(l))
+	}
+	// The border and padding take six columns; keep two spare each side.
+	cw = min(cw, max(10, m.width-10))
+	return styModal.Width(cw + 4).Render(strings.Join(lines, "\n"))
+}
+
+// placeOver draws fg centred on bg, which is width cells wide.
+func placeOver(bg, fg string, width int) string {
+	rows, over := strings.Split(bg, "\n"), strings.Split(fg, "\n")
+	fw := lipgloss.Width(fg)
+	x, y := max(0, (width-fw)/2), max(0, (len(rows)-len(over))/2)
+	for i, f := range over {
+		j := y + i
+		if j >= len(rows) {
+			break
+		}
+		left := ansi.Truncate(rows[j], x, "")
+		left += strings.Repeat(" ", max(0, x-lipgloss.Width(left)))
+		f += strings.Repeat(" ", max(0, fw-lipgloss.Width(f)))
+		// Reset after each cut so a style open in bg does not bleed.
+		rows[j] = left + "\x1b[m" + f + "\x1b[m" + ansi.TruncateLeft(rows[j], x+fw, "")
+	}
+	return strings.Join(rows, "\n")
 }
 
 func (m *Model) inputView() string {
@@ -132,12 +207,6 @@ func (m *Model) inputView() string {
 		return styInputBox.Width(w).Render(":" + m.line.View())
 	case modeFilter:
 		return styInputBox.Width(w).Render("/" + m.line.View())
-	case modeConfirm:
-		prompt := ""
-		if m.confirm != nil {
-			prompt = m.confirm.prompt
-		}
-		return styApprovalBox.Width(w).Render(prompt)
 	case modeInsert:
 		return styInputBox.Width(w).Render(m.input.View())
 	}
@@ -157,7 +226,7 @@ func (m *Model) overlayView() string {
 	b.WriteString(styApprovalTitle.Render(title) + "\n")
 	b.WriteString(styMuted.Render(`matched policy rule "`+ev.Rule+`"`) + "\n")
 	b.WriteString(prettyArgs(ev.Args, 8) + "\n")
-	if m.mode != modeNormal {
+	if m.mode != modeNormal && m.mode != modeConfirm {
 		b.WriteString(styKey.Render("esc") + styMuted.Render(", then y/n/s/p"))
 	} else {
 		keys := []string{
@@ -183,9 +252,6 @@ func (m *Model) overlayHeight() int {
 // statusView is the mode badge and the keys that work here, with the few
 // signals that need the user now on the right.
 func (m *Model) statusView() string {
-	if m.mode == modeConfirm && m.table != nil && m.confirm != nil {
-		return fitRow(styMode.Render(" "+m.mode.String()+" ")+" "+styWarn.Render(m.confirm.prompt), "", m.width)
-	}
 	left := styMode.Render(" "+m.mode.String()+" ") + " " + m.keyHints()
 	var right []string
 	if m.unseen {
@@ -206,7 +272,8 @@ func (m *Model) statusView() string {
 func helpText() string {
 	return strings.Join([]string{
 		styKey.Render("NORMAL"),
-		"  j/k       move between sessions        i/a/enter  type into the session",
+		"  tab       sidebar / chat focus         i/a/enter  type into the session",
+		"  j/k       sessions in the sidebar, scroll in the chat",
 		"  ctrl+d/u  half page                    g/G        top / bottom",
 		"  [ ]       previous / next tool call    o / O      expand one / all",
 		"  /         filter sessions              :          command",
@@ -218,6 +285,7 @@ func helpText() string {
 		"",
 		styKey.Render("APPROVAL") + "  (normal mode, while one is showing)",
 		"  y allow once · n deny · s allow the tool this session · p always allow the pattern",
+		"  each asks first: y confirms, esc cancels",
 		"  n answers the approval, not \"new session\", until it is answered",
 		"",
 		styKey.Render("INSERT"),

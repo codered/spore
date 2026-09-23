@@ -87,3 +87,6 @@ func jobIDOf(r Row) (int64, bool) {
 	id, err := strconv.ParseInt(r.ID, 10, 64)
 	return id, err == nil
 }
+
+// Tab lights the jobs tab: a job's runs are reached from there.
+func (jobRunsRes) Tab() string { return "jobs" }

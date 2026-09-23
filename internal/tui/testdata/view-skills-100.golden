@@ -1,24 +1,24 @@
-spore · a1b2 fix flaky test · chat · /work/spore                          <n> new  <:> cmd  <?> help
-                                                                   <S> skills  <A> agents  <U> usage
-                                                                                  <J> jobs  <q> quit
-─ skills(3) ────────────────────────────────────────────────────────────────────────────────────────
-NAME              LOADED  TOKENS  DESCRIPTION                                                       
-debug             ✓         1.2k  systematic debugging                                              
-deploy                       800  ship to fly.io                                                    
-!                                 gamma: unknown frontmatter key "bad"                              
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
+ spore   chat  skills S  agents A  usage U  jobs J                                                  
+┏━ skills(3) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃NAME              LOADED  TOKENS  DESCRIPTION                                                     ┃
+┃debug             ✓         1.2k  systematic debugging                                            ┃
+┃deploy                       800  ship to fly.io                                                  ┃
+┃!                                 gamma: unknown frontmatter key "bad"                            ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
  NORMAL  <enter> open  </> filter  <s> sort  <esc> back                                             
