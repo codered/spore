@@ -38,6 +38,8 @@ const (
 	minWidth       = 60
 	minHeight      = 15
 	inputMaxHeight = 8
+	// refreshEvery is how often an open view refetches.
+	refreshEvery = 2 * time.Second
 )
 
 // Messages. Everything that changes the model arrives as one of these, so
@@ -72,6 +74,17 @@ type (
 		id  string
 		err error
 	}
+	viewRowsMsg struct {
+		name, session string
+		rows          []Row
+		err           error
+	}
+	viewTickMsg   struct{ gen int }
+	actionDoneMsg struct{ err error }
+	deletedMsg    struct {
+		res daemon.DeleteSessionsJSON
+		err error
+	}
 )
 
 // Options configure a Model.
@@ -82,11 +95,13 @@ type Options struct {
 }
 
 // commandNames are the `:` commands, for completion.
-var commandNames = []string{"agents", "clear", "compact", "context", "new", "q", "quit", "sessions", "skills", "usage"}
+var commandNames = []string{"agents", "chat", "clear", "compact", "context", "delete", "jobs", "new", "q", "quit", "sessions", "skills", "usage"}
 
 type confirmState struct {
 	prompt string
 	yes    tea.Cmd
+	// alt, when set, is what D does: the delete prompt's "and on Discord".
+	alt tea.Cmd
 }
 
 // Model is the Bubble Tea model behind `spore chat`.
@@ -122,6 +137,24 @@ type Model struct {
 	help         bool
 	confirm      *confirmState
 	reconnecting bool
+	// views serves the resource views; nil when the backend cannot.
+	views Views
+	// table is the open view; nil means the chat screen. back holds the
+	// views it was opened over, innermost last: esc returns to them.
+	table *table
+	back  []*table
+	// sideCursor is the sidebar row under the cursor when it is not a
+	// session: the jobs folder or a job's label (see row.key). Empty while
+	// the cursor is on the selected session.
+	sideCursor string
+	// viewGen increments whenever a view opens or closes, so a tick from an
+	// earlier view is ignored.
+	viewGen  int
+	viewErr  string
+	viewTick func(gen int) tea.Cmd
+	// flash is a one-line report in the status bar, such as what a delete
+	// did; the next key clears it.
+	flash string
 
 	history []string
 	histIdx int
@@ -164,6 +197,12 @@ func New(ctx context.Context, be Backend, sessionID string, opts Options) *Model
 	}
 	if sessionID != "" {
 		c.get(sessionID)
+	}
+	if v, ok := be.(Views); ok {
+		m.views = v
+	}
+	m.viewTick = func(gen int) tea.Cmd {
+		return tea.Tick(refreshEvery, func(time.Time) tea.Msg { return viewTickMsg{gen: gen} })
 	}
 	m.mode = modeInsert
 	m.input.Focus()
@@ -215,12 +254,32 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		if msg.ev.Session == "" {
 			return nil
 		}
+		if msg.ev.Type == daemon.WireSessionDeleted {
+			// Before Apply, which would bring the session back to life.
+			return m.removeSessions([]string{msg.ev.Session})
+		}
 		id := m.cache.Apply(msg.ev)
 		switch msg.ev.Type {
 		case daemon.WireTurnDone, daemon.WireStopped, daemon.WireError:
-			return m.drainQueue(id)
+			var seen tea.Cmd
+			if id == m.selected {
+				seen = m.markSeen(id)
+			}
+			return tea.Batch(seen, m.drainQueue(id))
 		}
 		return nil
+
+	case deletedMsg:
+		if msg.err != nil {
+			m.flash = "delete failed: " + msg.err.Error()
+			return nil
+		}
+		noun := "sessions"
+		if len(msg.res.Deleted) == 1 {
+			noun = "session"
+		}
+		m.flash = strings.Join(append([]string{fmt.Sprintf("deleted %d %s", len(msg.res.Deleted), noun)}, msg.res.Notes...), " · ")
+		return m.removeSessions(msg.res.Deleted)
 
 	case sessionsMsg:
 		if msg.err != nil {
@@ -228,6 +287,12 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		m.cache.SetSessions(msg.list)
+		if m.cache.get(m.selected).info.Source == "job" {
+			// Started on a run: its folder must be open to show it. Closing
+			// the folder moves the selection off runs, so this never
+			// reopens one the user closed.
+			m.cache.jobsOpen = true
+		}
 		if m.selected == "" {
 			if ids := m.selectable(); len(ids) > 0 {
 				return m.selectSession(ids[0])
@@ -280,6 +345,25 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		cmd := m.selectSession(msg.id)
 		return tea.Batch(cmd, m.enterInsert(), m.loadSessions())
 
+	case viewRowsMsg:
+		if m.table != nil && m.table.res.Name() == msg.name && m.table.session == msg.session {
+			m.table.setRows(msg.rows, msg.err)
+		}
+		return nil
+
+	case viewTickMsg:
+		if m.table == nil || msg.gen != m.viewGen {
+			return nil
+		}
+		return tea.Batch(m.fetchView(), m.viewTick(msg.gen))
+
+	case actionDoneMsg:
+		m.viewErr = ""
+		if msg.err != nil {
+			m.viewErr = msg.err.Error()
+		}
+		return m.fetchView()
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -313,6 +397,7 @@ func (m *Model) loadTranscript(id string) tea.Cmd {
 }
 
 func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
+	m.flash = ""
 	s := k.String()
 	if s == "ctrl+c" {
 		if m.mode == modeInsert && m.input.Value() != "" {
@@ -332,6 +417,19 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 		m.help = false
 		return nil
 	}
+	// A multiplexer that holds a lone Esc to see whether a sequence follows
+	// (tmux's escape-time) delivers Esc and the next key as one read, which
+	// arrives as alt+<key>. Read it as vim does: Esc, then the key. alt+enter
+	// is not a rune key, so it stays the INSERT newline.
+	if k.Alt && k.Type == tea.KeyRunes && (m.mode == modeInsert || m.mode == modeNormal) {
+		m.mode = modeNormal
+		m.input.Blur()
+		plain := tea.KeyMsg{Type: tea.KeyRunes, Runes: k.Runes}
+		if m.table != nil {
+			return m.keyView(plain)
+		}
+		return m.keyNormal(plain)
+	}
 	switch m.mode {
 	case modeInsert:
 		return m.keyInsert(k)
@@ -341,6 +439,9 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 		return m.keyFilter(k)
 	case modeConfirm:
 		return m.keyConfirm(k)
+	}
+	if m.table != nil {
+		return m.keyView(k)
 	}
 	return m.keyNormal(k)
 }
@@ -358,7 +459,12 @@ func (m *Model) keyNormal(k tea.KeyMsg) tea.Cmd {
 		return m.moveSelection(1)
 	case "k", "up":
 		return m.moveSelection(-1)
-	case "i", "a", "enter":
+	case "enter":
+		if m.sideCursor != "" {
+			return m.enterRow()
+		}
+		return m.enterInsert()
+	case "i", "a":
 		return m.enterInsert()
 	case "ctrl+d":
 		m.vp.HalfPageDown()
@@ -394,6 +500,10 @@ func (m *Model) keyNormal(k tea.KeyMsg) tea.Cmd {
 		return m.nextBlocked()
 	case "x":
 		return m.confirmCancelAgent()
+	case "d":
+		return m.confirmDelete(false)
+	case "z":
+		return m.toggleJobs()
 	case "esc":
 		if m.cache.get(m.selected).info.ParentID != "" {
 			return m.confirmCancelAgent()
@@ -406,6 +516,10 @@ func (m *Model) keyNormal(k tea.KeyMsg) tea.Cmd {
 	case "ctrl+b":
 		on := !m.sidebarOn()
 		m.sidebarPref = &on
+	default:
+		if r, ok := resourceByHotkey(k.String()); ok {
+			return m.openView(r)
+		}
 	}
 	return nil
 }
@@ -432,7 +546,7 @@ func (m *Model) keyInsert(k tea.KeyMsg) tea.Cmd {
 		m.histIdx = len(m.history)
 		m.draft = ""
 		if strings.HasPrefix(text, "/") {
-			return m.command(strings.TrimPrefix(text, "/"))
+			return m.slashLine(strings.TrimPrefix(text, "/"))
 		}
 		return m.submit(m.selected, text)
 	case "up":
@@ -513,9 +627,16 @@ func complete(v string) string {
 }
 
 func (m *Model) keyFilter(k tea.KeyMsg) tea.Cmd {
+	set := func(v string) {
+		if m.table != nil {
+			m.table.setFilter(v)
+		} else {
+			m.filter = v
+		}
+	}
 	switch k.String() {
 	case "esc":
-		m.filter = ""
+		set("")
 		m.mode = modeNormal
 		m.line.Blur()
 		return nil
@@ -526,7 +647,7 @@ func (m *Model) keyFilter(k tea.KeyMsg) tea.Cmd {
 	}
 	var cmd tea.Cmd
 	m.line, cmd = m.line.Update(k)
-	m.filter = m.line.Value()
+	set(m.line.Value())
 	return cmd
 }
 
@@ -534,13 +655,16 @@ func (m *Model) keyConfirm(k tea.KeyMsg) tea.Cmd {
 	c := m.confirm
 	m.confirm = nil
 	m.mode = modeNormal
-	if c != nil && k.String() == "y" {
+	switch {
+	case c != nil && k.String() == "y":
 		return c.yes
+	case c != nil && k.String() == "D" && c.alt != nil:
+		return c.alt
 	}
 	return nil
 }
 
-// command runs a `:` command, or a slash command typed into the input.
+// command runs a `:` command. A view's name opens that view.
 func (m *Model) command(line string) tea.Cmd {
 	fields := strings.Fields(line)
 	if len(fields) == 0 {
@@ -559,11 +683,33 @@ func (m *Model) command(line string) tea.Cmd {
 	case "sessions":
 		m.showAll = len(args) > 0 && args[0] == "all"
 		return nil
-	case "clear", "compact", "context", "usage", "skills", "agents":
+	case "chat":
+		m.leaveViews()
+		return nil
+	case "delete":
+		return m.confirmDelete(len(args) > 0 && args[0] == "all")
+	case "clear", "compact", "context":
 		return m.slash(name)
+	}
+	if r, ok := resourceByName(name); ok {
+		return m.openView(r)
 	}
 	m.errorf("unknown command: %s", name)
 	return nil
+}
+
+// slashLine runs a /command typed into the input. /usage, /skills and
+// /agents keep printing the text report they print on every other surface.
+func (m *Model) slashLine(line string) tea.Cmd {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return nil
+	}
+	switch fields[0] {
+	case "clear", "compact", "context", "usage", "skills", "agents":
+		return m.slash(fields[0])
+	}
+	return m.command(line)
 }
 
 func (m *Model) slash(name string) tea.Cmd {
@@ -682,6 +828,175 @@ func (m *Model) newSession(workspace string) tea.Cmd {
 	}
 }
 
+// openView replaces the body with a resource's table. A scoped view is for
+// the selected session.
+func (m *Model) openView(r Resource) tea.Cmd {
+	if m.views == nil {
+		m.errorf("views need the daemon")
+		return nil
+	}
+	m.back = nil
+	return m.showView(newTable(r, m.selected))
+}
+
+// pushView opens r over the open view; esc returns to it.
+func (m *Model) pushView(r Resource) tea.Cmd {
+	if m.table != nil {
+		m.back = append(m.back, m.table)
+	}
+	return m.showView(newTable(r, m.selected))
+}
+
+func (m *Model) showView(t *table) tea.Cmd {
+	m.mode = modeNormal
+	m.input.Blur()
+	m.table = t
+	m.viewErr = ""
+	m.viewGen++
+	return tea.Batch(m.fetchView(), m.viewTick(m.viewGen))
+}
+
+// closeView returns to the view this one was opened over, or to the chat.
+func (m *Model) closeView() tea.Cmd {
+	if n := len(m.back); n > 0 {
+		t := m.back[n-1]
+		m.back = m.back[:n-1]
+		return m.showView(t)
+	}
+	m.table = nil
+	m.viewErr = ""
+	m.viewGen++
+	return nil
+}
+
+// leaveViews closes every view and returns to the chat.
+func (m *Model) leaveViews() {
+	m.back = nil
+	m.closeView()
+}
+
+func (m *Model) fetchView() tea.Cmd {
+	t := m.table
+	if t == nil || m.views == nil {
+		return nil
+	}
+	res, session, v, ctx := t.res, t.session, m.views, m.ctx
+	return func() tea.Msg {
+		rows, err := res.Fetch(ctx, v, session)
+		return viewRowsMsg{name: res.Name(), session: session, rows: rows, err: err}
+	}
+}
+
+// keyView handles a key while a view is open, innermost layer first: the
+// detail pane, then the view itself.
+func (m *Model) keyView(k tea.KeyMsg) tea.Cmd {
+	t := m.table
+	s := k.String()
+	if t.detail != nil {
+		switch s {
+		case "esc", "q", "enter", "d":
+			t.detail = nil
+			return nil
+		}
+		var cmd tea.Cmd
+		*t.detail, cmd = t.detail.Update(k)
+		return cmd
+	}
+	switch s {
+	case "esc":
+		if t.filter != "" {
+			t.setFilter("")
+			return nil
+		}
+		return m.closeView()
+	case "j", "down":
+		t.move(1)
+	case "k", "up":
+		t.move(-1)
+	case "g":
+		t.moveTo(false)
+	case "G":
+		t.moveTo(true)
+	case "ctrl+d":
+		t.move(m.bodyHeight() / 2)
+	case "ctrl+u":
+		t.move(-m.bodyHeight() / 2)
+	case "/":
+		m.mode = modeFilter
+		m.line.SetValue(t.filter)
+		m.line.CursorEnd()
+		return m.line.Focus()
+	case "s":
+		t.cycleSort()
+	case "enter", "d":
+		r, ok := t.selected()
+		if !ok {
+			return nil
+		}
+		if d, ok := t.res.(driller); ok && s == "enter" {
+			if next, ok := d.Drill(r); ok {
+				return m.pushView(next)
+			}
+		}
+		if o, isOpener := t.res.(opener); isOpener && s == "enter" {
+			if id := o.Open(r); id != "" {
+				m.leaveViews()
+				return m.selectSession(id)
+			}
+		}
+		t.openDetail(m.width, m.bodyHeight())
+	case "o":
+		r, ok := t.selected()
+		if !ok {
+			return nil
+		}
+		if o, isOpener := t.res.(sessionOpener); isOpener {
+			m.leaveViews()
+			return m.selectSession(o.OpenSession(r))
+		}
+		return m.runAction(s)
+	case "ctrl+r":
+		return m.fetchView()
+	case ":":
+		m.mode = modeCommand
+		m.line.SetValue("")
+		return m.line.Focus()
+	case "?":
+		m.help = true
+	case "q":
+		return tea.Quit
+	default:
+		if r, ok := resourceByHotkey(s); ok {
+			return m.openView(r)
+		}
+		return m.runAction(s)
+	}
+	return nil
+}
+
+// runAction runs the selected row's action for key, asking first when the
+// action has a confirmation.
+func (m *Model) runAction(key string) tea.Cmd {
+	r, ok := m.table.selected()
+	if !ok {
+		return nil
+	}
+	for _, a := range m.table.res.Actions() {
+		if a.Key != key || (a.Applies != nil && !a.Applies(r)) {
+			continue
+		}
+		v, ctx := m.views, m.ctx
+		run := func() tea.Msg { return actionDoneMsg{err: a.Run(ctx, v, r)} }
+		if a.Confirm == nil {
+			return run
+		}
+		m.confirm = &confirmState{prompt: a.Confirm(r) + " y/n", yes: run}
+		m.mode = modeConfirm
+		return nil
+	}
+	return nil
+}
+
 func (m *Model) selectable() []string {
 	var ids []string
 	for _, r := range m.cache.rows(m.showAll, m.filter, m.selected) {
@@ -701,16 +1016,82 @@ func indexOf(ids []string, id string) int {
 	return -1
 }
 
+// navigable is every sidebar row the cursor can rest on, top to bottom:
+// sessions, and the jobs folder and each job's label.
+func (m *Model) navigable() []string {
+	var keys []string
+	for _, r := range m.cache.rows(m.showAll, m.filter, m.selected) {
+		switch {
+		case r.key != "":
+			keys = append(keys, r.key)
+		case r.id != "":
+			keys = append(keys, r.id)
+		}
+	}
+	return keys
+}
+
+// moveSelection moves the sidebar cursor. Landing on a session selects it;
+// landing on the jobs folder or a job's label leaves the chat pane on the
+// session it shows, and enter then acts on that row.
 func (m *Model) moveSelection(d int) tea.Cmd {
-	ids := m.selectable()
-	if len(ids) == 0 {
+	keys := m.navigable()
+	if len(keys) == 0 {
 		return nil
 	}
-	j := indexOf(ids, m.selected) + d
-	if indexOf(ids, m.selected) < 0 {
+	at := m.selected
+	if m.sideCursor != "" {
+		at = m.sideCursor
+	}
+	j := indexOf(keys, at) + d
+	if indexOf(keys, at) < 0 {
 		j = 0
 	}
-	return m.selectSession(ids[max(0, min(len(ids)-1, j))])
+	next := keys[max(0, min(len(keys)-1, j))]
+	if isRowKey(next) {
+		m.sideCursor = next
+		return nil
+	}
+	m.sideCursor = ""
+	return m.selectSession(next)
+}
+
+// toggleJobs opens or closes the jobs folder. Closing it hides every run in
+// it, so a selected run gives way to the first chat and the cursor rests on
+// the folder: nothing of the folder's contents stays on screen.
+func (m *Model) toggleJobs() tea.Cmd {
+	m.cache.jobsOpen = !m.cache.jobsOpen
+	if m.cache.jobsOpen {
+		return nil
+	}
+	inside := m.sideCursor != "" && m.sideCursor != folderKey
+	if m.cache.get(m.selected).info.Source == "job" {
+		inside = true
+		for _, key := range m.navigable() {
+			if !isRowKey(key) && m.cache.get(key).info.Source != "job" {
+				m.sideCursor = ""
+				cmd := m.selectSession(key)
+				m.sideCursor = folderKey
+				return cmd
+			}
+		}
+	}
+	if inside {
+		m.sideCursor = folderKey
+	}
+	return nil
+}
+
+// enterRow acts on the sidebar row under the cursor when it is not a
+// session: enter opens or closes the jobs folder, and opens a job's runs.
+func (m *Model) enterRow() tea.Cmd {
+	if m.sideCursor == folderKey {
+		return m.toggleJobs()
+	}
+	if id, ok := jobOfKey(m.sideCursor); ok {
+		return m.openView(jobRunsRes{job: id})
+	}
+	return nil
 }
 
 func (m *Model) selectSession(id string) tea.Cmd {
@@ -718,10 +1099,113 @@ func (m *Model) selectSession(id string) tea.Cmd {
 		return nil
 	}
 	m.selected, m.toolCursor, m.follow, m.unseen = id, -1, true, false
-	if !m.cache.get(id).loaded {
-		return m.loadTranscript(id)
+	if m.cache.get(id).info.Source == "job" {
+		// A run lives in the jobs folder; showing one opens it.
+		m.cache.jobsOpen = true
 	}
+	seen := m.markSeen(id)
+	if !m.cache.get(id).loaded {
+		return tea.Batch(seen, m.loadTranscript(id))
+	}
+	return seen
+}
+
+// markSeen clears a job run's unread mark here and on the daemon, so the
+// jobs folder's badge stays right across restarts. Only job runs are
+// counted, so only they are marked.
+func (m *Model) markSeen(id string) tea.Cmd {
+	sv := m.cache.get(id)
+	if !sv.info.Unread || sv.info.Source != "job" {
+		return nil
+	}
+	sv.info.Unread = false
+	be, ctx := m.be, m.ctx
+	return func() tea.Msg {
+		if err := be.MarkSeen(ctx, id); err != nil {
+			return noticeMsg{session: id, text: "could not mark the run seen: " + err.Error(), isErr: true}
+		}
+		return nil
+	}
+}
+
+// confirmDelete asks before deleting the selected session (and its
+// sub-agents), or every session. y deletes here; D deletes the Discord copy
+// too.
+func (m *Model) confirmDelete(all bool) tea.Cmd {
+	id := m.selected
+	var what string
+	var ids []string
+	switch {
+	case all:
+		n := 0
+		for sid := range m.cache.sessions {
+			if sid != "" {
+				n++
+			}
+		}
+		what = fmt.Sprintf("EVERY session (%d)", n)
+	case id == "":
+		return nil
+	default:
+		ids = []string{id}
+		title := m.cache.get(id).info.Title
+		if title == "" {
+			title = short(id)
+		}
+		what = fmt.Sprintf("%q", oneLine(title))
+		if n := m.cache.descendants(id); n > 0 {
+			what += fmt.Sprintf(" and its %d sub-agent(s)", n)
+		}
+	}
+	be, ctx := m.be, m.ctx
+	del := func(discord bool) tea.Cmd {
+		return func() tea.Msg {
+			res, err := be.DeleteSessions(ctx, ids, all, discord)
+			return deletedMsg{res: res, err: err}
+		}
+	}
+	m.confirm = &confirmState{
+		prompt: "delete " + what + "? y · D also on Discord · n",
+		yes:    del(false),
+		alt:    del(true),
+	}
+	m.mode = modeConfirm
+	m.input.Blur()
 	return nil
+}
+
+// removeSessions drops deleted sessions, moving the selection to the next
+// session still listed when the selected one went.
+func (m *Model) removeSessions(ids []string) tea.Cmd {
+	gone := map[string]bool{}
+	for _, id := range ids {
+		gone[id] = true
+	}
+	next := ""
+	if gone[m.selected] {
+		list := m.selectable()
+		at := indexOf(list, m.selected)
+		for d := 1; d < len(list) && next == ""; d++ {
+			for _, j := range []int{at + d, at - d} {
+				if j >= 0 && j < len(list) && !gone[list[j]] {
+					next = list[j]
+					break
+				}
+			}
+		}
+	}
+	for id := range gone {
+		m.cache.remove(id)
+		delete(m.queued, id)
+	}
+	if !gone[m.selected] {
+		return nil
+	}
+	m.selected = ""
+	if next == "" {
+		return nil
+	}
+	return m.selectSession(next)
 }
 
 func (m *Model) nextBlocked() tea.Cmd {

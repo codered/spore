@@ -1,0 +1,24 @@
+spore · a1b2 fix flaky test · chat · /work/spore                          <n> new  <:> cmd  <?> help
+sonnet-5 · ctx 38.0k · 1 blocked                                   <S> skills  <A> agents  <U> usage
+                                                                                  <J> jobs  <q> quit
+─ chat ─────────────────────────────────────────────────────────────────────────────────────────────
+▸ jobs  2                     │› fix the flaky tui test                                             
+/work/spore                   │  Looking at tui_test.go…                                            
+○ a1b2 fix flaky test     chat│▸ read {"path":"cmd/spore/tui_test.go"}  ✓ 3 lines                   
+└ ○ 7f3e audit the tests      │▸ bash {"cmd":"go test ./cmd/spore"}  ✗ exit 1                       
+◐ c9d0 lint audit         disc│                                                                     
+/work/web                     │                                                                     
+○ e5f6 notes              chat│                                                                     
+                              │                                                                     
+                              │                                                                     
+                              │                                                                     
+                              │                                                                     
+                              │                                                                     
+                              │                                                                     
+                              │                                                                     
+                              │                                                                     
+                              │                                                                     
+                              │╭───────────────────────────────────────────────────────────────────╮
+                              ││ Ask spore something…                                              │
+                              │╰───────────────────────────────────────────────────────────────────╯
+ INSERT  <enter> send  <ctrl+j> newline  <esc> normal                                               

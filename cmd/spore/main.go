@@ -23,6 +23,8 @@ usage:
   spore serve --stop           stop a running daemon
   spore session list           list recent sessions
   spore session show <id>      print a session transcript
+  spore session delete <id>... | --all [--discord] [--yes]
+                               delete sessions (and their sub-agents)
   spore policy check <tool> [json-args]
                                print the decision a tool call would get
   spore mcp list               dial the configured MCP servers and print their tools
@@ -124,6 +126,9 @@ func dispatch(ctx context.Context, cfg *config.Config, args []string) error {
 			return err
 		}
 		defer func() { _ = st.Close() }()
+		if len(args) > 1 && args[1] == "delete" {
+			return runSessionDelete(ctx, cfg, st, args[2:], os.Stdin, os.Stdout)
+		}
 		return cmdSession(ctx, st, args[1:])
 	case "policy":
 		// spore policy check <tool> [json-args] [-profile local|remote] [-workspace <dir>]

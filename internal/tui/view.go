@@ -1,11 +1,9 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/codered/spore/internal/daemon"
 )
@@ -38,7 +36,7 @@ func (m *Model) sync() {
 		m.md, m.mdWidth = newMarkdown(w), w
 	}
 	m.vp.Width = w
-	m.vp.Height = max(1, m.height-1-lipgloss.Height(m.inputView())-m.overlayHeight())
+	m.vp.Height = max(1, m.bodyHeight()-lipgloss.Height(m.inputView())-m.overlayHeight())
 
 	content := m.transcript(w)
 	if content != m.lastContent {
@@ -97,14 +95,18 @@ func (m *Model) View() string {
 		return "terminal too small"
 	}
 	body := m.mainView()
-	if m.sidebarOn() {
+	if m.sidebarOn() && m.table == nil {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, m.sidebarView(), body)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, body, m.statusView())
+	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), m.ruleView(), body, m.statusView())
 }
 
 func (m *Model) mainView() string {
-	w, h := m.mainWidth(), m.height-1
+	if m.table != nil && !m.help {
+		h := m.bodyHeight()
+		return lipgloss.NewStyle().Width(m.width).Height(h).MaxHeight(h).Render(m.table.render(m.width, h))
+	}
+	w, h := m.mainWidth(), m.bodyHeight()
 	box := lipgloss.NewStyle().Width(w).Height(h).MaxHeight(h)
 	if m.help {
 		return box.Render(helpText())
@@ -118,8 +120,8 @@ func (m *Model) mainView() string {
 }
 
 func (m *Model) sidebarView() string {
-	h := m.height - 1
-	body := renderSidebar(m.cache, m.cache.rows(m.showAll, m.filter, m.selected), m.selected, sidebarWidth, h)
+	h := m.bodyHeight()
+	body := renderSidebar(m.cache, m.cache.rows(m.showAll, m.filter, m.selected), m.selected, m.sideCursor, sidebarWidth, h)
 	return stySidebar.Width(sidebarWidth).Height(h).MaxHeight(h).Render(body)
 }
 
@@ -178,43 +180,27 @@ func (m *Model) overlayHeight() int {
 	return 0
 }
 
+// statusView is the mode badge and the keys that work here, with the few
+// signals that need the user now on the right.
 func (m *Model) statusView() string {
-	sv := m.cache.get(m.selected)
-	src := sv.info.Source
-	if src == "" {
-		src = "unknown"
+	if m.mode == modeConfirm && m.table != nil && m.confirm != nil {
+		return fitRow(styMode.Render(" "+m.mode.String()+" ")+" "+styWarn.Render(m.confirm.prompt), "", m.width)
 	}
-	left := styMode.Render(" "+m.mode.String()+" ") + " " + short(m.selected) +
-		styMuted.Render(" · "+src+" · "+tildePath(sv.info.Workspace))
-
+	left := styMode.Render(" "+m.mode.String()+" ") + " " + m.keyHints()
 	var right []string
-	if sv.model != "" {
-		right = append(right, sv.model)
-	}
-	if sv.ctxTokens > 0 {
-		right = append(right, "ctx "+humanTokens(sv.ctxTokens))
-	}
-	if m.opts.ShowCost && sv.cost > 0 {
-		right = append(right, fmt.Sprintf("$%.2f", sv.cost))
-	}
-	if n := m.cache.BlockedCount(); n > 0 {
-		right = append(right, styWarn.Render(fmt.Sprintf("%d blocked", n)))
-	}
 	if m.unseen {
 		right = append(right, styAccent.Render("↓ new"))
 	}
-	if m.mode == modeNormal && m.cache.State(m.selected) != daemon.SessionIdle {
-		right = append(right, styKey.Render("esc")+" stop")
+	if m.mode == modeNormal && m.table == nil && m.cache.State(m.selected) != daemon.SessionIdle {
+		right = append(right, hint("esc", "stop"))
 	}
-	if m.reconnecting {
-		right = append(right, styDanger.Render("reconnecting…"))
+	if m.viewErr != "" {
+		right = append(right, styDanger.Render(m.viewErr))
 	}
-	r := strings.Join(right, styMuted.Render(" · "))
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(r)
-	if gap < 1 {
-		return ansi.Truncate(left+" "+r, m.width, "…")
+	if m.flash != "" {
+		right = append(right, styAccent.Render(m.flash))
 	}
-	return left + strings.Repeat(" ", gap) + r
+	return fitRow(left, strings.Join(right, styMuted.Render(" · ")), m.width)
 }
 
 func helpText() string {
@@ -227,6 +213,8 @@ func helpText() string {
 		"  n         new session here             b          next blocked session",
 		"  x         stop the selected sub-agent  esc        stop the running turn",
 		"  ctrl+b    toggle the sidebar           q          quit",
+		"  d         delete the session (y here, D also on Discord)   :delete all  delete every session",
+		"  z         open / close the jobs folder     enter on the folder opens / closes it; on a job, lists its runs",
 		"",
 		styKey.Render("APPROVAL") + "  (normal mode, while one is showing)",
 		"  y allow once · n deny · s allow the tool this session · p always allow the pattern",
@@ -234,6 +222,11 @@ func helpText() string {
 		"",
 		styKey.Render("INSERT"),
 		"  enter send · ctrl+j newline · ↑↓ history · esc normal mode",
+		"",
+		styKey.Render("VIEWS") + "  (normal mode)",
+		"  S skills · A agents · U usage · J jobs · or :skills :agents :usage :jobs",
+		"  in a view: j/k move · / filter · s sort · enter open · x act on the row · ctrl+r refresh · esc back",
+		"  jobs: enter lists a job's runs · runs: enter shows a run's output · o opens the run in the chat",
 		"",
 		styKey.Render("COMMANDS"),
 		"  :new [dir]  :sessions [all]  :clear  :compact  :context  :usage  :skills  :agents  :q",

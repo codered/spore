@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // fakeClient records what the bridge asked Discord to do and lets a test
@@ -29,6 +30,11 @@ type fakeClient struct {
 
 	onMessage     func(Inbound)
 	onInteraction func(Interaction)
+
+	kinds           map[string]ChannelKind
+	own             map[string][]ownMessage
+	deletedChannels []string
+	deletedMessages []string
 
 	// failNext makes the next call of the named method return an error, so
 	// tests can exercise the bridge's error paths. Keyed by method name
@@ -343,4 +349,80 @@ func (f *fakeClient) typingCount(channelID string) int {
 		}
 	}
 	return n
+}
+
+type ownMessage struct {
+	ID string
+	At time.Time
+}
+
+func (f *fakeClient) setKind(channelID string, k ChannelKind) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.kinds == nil {
+		f.kinds = map[string]ChannelKind{}
+	}
+	f.kinds[channelID] = k
+}
+
+func (f *fakeClient) addOwnMessage(channelID, id string, at time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.own == nil {
+		f.own = map[string][]ownMessage{}
+	}
+	f.own[channelID] = append(f.own[channelID], ownMessage{ID: id, At: at})
+}
+
+func (f *fakeClient) deletedChannelIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.deletedChannels...)
+}
+
+func (f *fakeClient) deletedMessageIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.deletedMessages...)
+}
+
+func (f *fakeClient) ChannelKind(ctx context.Context, channelID string) (ChannelKind, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.take("ChannelKind"); err != nil {
+		return ChannelOther, err
+	}
+	return f.kinds[channelID], nil
+}
+
+func (f *fakeClient) DeleteChannel(ctx context.Context, channelID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.take("DeleteChannel"); err != nil {
+		return err
+	}
+	f.deletedChannels = append(f.deletedChannels, channelID)
+	return nil
+}
+
+func (f *fakeClient) OwnMessages(ctx context.Context, channelID string, after, before time.Time) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, m := range f.own[channelID] {
+		if m.At.After(after) && m.At.Before(before) {
+			out = append(out, m.ID)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeClient) DeleteMessage(ctx context.Context, channelID, messageID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.take("DeleteMessage"); err != nil {
+		return err
+	}
+	f.deletedMessages = append(f.deletedMessages, messageID)
+	return nil
 }

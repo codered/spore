@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestSessionUsageGroupsByModel(t *testing.T) {
@@ -135,5 +136,47 @@ func TestSetSummaryWithEmptyTextIndexesNothing(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("clearing a summary must leave no indexed document, got %d", n)
+	}
+}
+
+func TestDailyUsageGroupsByDayAndModelInsideTheWindow(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	id, err := st.CreateSession(ctx, "t", "/ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	add := func(model string, in, out, read int, cost float64, at time.Time) {
+		t.Helper()
+		mid, err := st.AppendMessage(ctx, Message{
+			SessionID: id, Role: "assistant", BlocksJSON: []byte(`[]`), Model: model,
+			TokensIn: in, TokensOut: out, TokensCacheRead: read, CostUSD: cost,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.db.ExecContext(ctx, `UPDATE messages SET created_at = ? WHERE id = ?`,
+			at.UTC().Format(timeFormat), mid); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	add("a/one", 10, 1, 90, 0.01, now)
+	add("a/one", 20, 2, 0, 0.02, now.Add(-time.Hour))
+	add("b/two", 5, 5, 0, 0.05, now.Add(-24*time.Hour))
+	add("a/one", 99, 99, 0, 9.99, now.Add(-40*24*time.Hour)) // outside the window
+
+	rows, err := st.DailyUsage(ctx, now.Add(-30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v, want two (one per day in the window)", rows)
+	}
+	if r := rows[0]; r.Day != "2026-09-22" || r.Model != "a/one" || r.Turns != 2 || r.TokensIn != 30 || r.TokensCacheRead != 90 {
+		t.Errorf("first row = %+v, want 2026-09-22 a/one with 2 turns, 30 in, 90 cache read", r)
+	}
+	if r := rows[1]; r.Day != "2026-09-21" || r.Model != "b/two" || r.Turns != 1 {
+		t.Errorf("second row = %+v, want 2026-09-21 b/two with 1 turn", r)
 	}
 }

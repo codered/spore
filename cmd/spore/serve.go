@@ -126,9 +126,6 @@ func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []s
 		}
 	}
 
-	sched := scheduler.New(st, srv, nil)
-	go func() { _ = sched.Run(ctx, time.Duration(cfg.Daemon.TickSeconds)*time.Second) }()
-
 	if recallMirror != nil {
 		// The mirror runs for the daemon's lifetime and never inside a turn:
 		// a turn must not wait on a sidecar. Catching up immediately covers
@@ -147,6 +144,16 @@ func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []s
 		// silently serving without the surface you asked for is worse.
 		return err
 	}
+
+	if bridge != nil {
+		// Set before Run and before the scheduler starts: the server reads
+		// both without a lock, and a job's report goes through the notifier.
+		srv.SetCleaner(bridge)
+		srv.SetNotifier(bridge)
+	}
+
+	sched := scheduler.New(st, srv, nil)
+	go func() { _ = sched.Run(ctx, time.Duration(cfg.Daemon.TickSeconds)*time.Second) }()
 
 	bridgeDone := make(chan struct{})
 	if bridge != nil {

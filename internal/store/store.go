@@ -28,6 +28,13 @@ const (
 	SourceUnknown  = "unknown"
 )
 
+// RoleNote is a message spore writes into a chat for the person reading it,
+// such as "job 1 ran". It is part of the transcript but never of the model's
+// history, so it cannot break the user/assistant alternation.
+const (
+	RoleNote = "note"
+)
+
 type Store struct {
 	db *sql.DB
 	// dataDir is the directory holding the database file. It is where a
@@ -52,6 +59,34 @@ type Session struct {
 	Source    string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// JobID is the scheduled job a job run belongs to, 0 for anything else.
+	JobID int64
+	// SeenSeq is the newest message a human has opened; LastSeq is the
+	// newest message there is. A job run is unread while they differ.
+	SeenSeq int
+	LastSeq int
+}
+
+// Unread reports whether the session has messages nobody has opened yet.
+func (s Session) Unread() bool { return s.LastSeq > s.SeenSeq }
+
+// sessionCols is every column a full Session row is scanned from, in
+// scanSession's order.
+const sessionCols = `id, title, workspace, parent_id, source, created_at, updated_at, job_id, seen_seq,
+	(SELECT coalesce(max(seq), 0) FROM messages WHERE session_id = sessions.id)`
+
+type rowScanner interface{ Scan(dest ...any) error }
+
+func scanSession(r rowScanner) (Session, error) {
+	var sess Session
+	var created, updated string
+	if err := r.Scan(&sess.ID, &sess.Title, &sess.Workspace, &sess.ParentID, &sess.Source, &created, &updated,
+		&sess.JobID, &sess.SeenSeq, &sess.LastSeq); err != nil {
+		return Session{}, err
+	}
+	sess.CreatedAt, _ = time.Parse(timeFormat, created)
+	sess.UpdatedAt, _ = time.Parse(timeFormat, updated)
+	return sess, nil
 }
 
 type Message struct {
@@ -167,6 +202,13 @@ func migrateSessions(db *sql.DB) error {
 			return fmt.Errorf("backfill sessions.source: %w", err)
 		}
 	}
+	for _, col := range []string{"job_id", "seen_seq"} {
+		if !have[col] {
+			if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN ` + col + ` INTEGER NOT NULL DEFAULT 0`); err != nil {
+				return fmt.Errorf("add sessions.%s: %w", col, err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -235,6 +277,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := migrateJobColumns(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	// This one runs after the schema rather than before it, unlike the two
 	// above: recall_sync is created by schemaSQL on a fresh database, so the
 	// column has to be added to a table that already exists either way.
@@ -298,10 +344,10 @@ func (s *Store) CreateSessionFrom(ctx context.Context, title, workspace, source 
 // sessions are hidden unless includeChildren: a fan-out leaves one row per
 // child, and `session list` is a human's view of their own conversations.
 func (s *Store) ListSessions(ctx context.Context, limit int, includeChildren bool) ([]Session, error) {
-	q := `SELECT id, title, workspace, parent_id, source, created_at, updated_at FROM sessions
+	q := `SELECT ` + sessionCols + ` FROM sessions
 	      WHERE parent_id = '' ORDER BY updated_at DESC LIMIT ?`
 	if includeChildren {
-		q = `SELECT id, title, workspace, parent_id, source, created_at, updated_at FROM sessions
+		q = `SELECT ` + sessionCols + ` FROM sessions
 		     ORDER BY updated_at DESC LIMIT ?`
 	}
 	rows, err := s.db.QueryContext(ctx, q, limit)
@@ -311,13 +357,10 @@ func (s *Store) ListSessions(ctx context.Context, limit int, includeChildren boo
 	defer func() { _ = rows.Close() }()
 	var out []Session
 	for rows.Next() {
-		var sess Session
-		var created, updated string
-		if err := rows.Scan(&sess.ID, &sess.Title, &sess.Workspace, &sess.ParentID, &sess.Source, &created, &updated); err != nil {
+		sess, err := scanSession(rows)
+		if err != nil {
 			return nil, err
 		}
-		sess.CreatedAt, _ = time.Parse(timeFormat, created)
-		sess.UpdatedAt, _ = time.Parse(timeFormat, updated)
 		out = append(out, sess)
 	}
 	return out, rows.Err()
@@ -325,19 +368,14 @@ func (s *Store) ListSessions(ctx context.Context, limit int, includeChildren boo
 
 // Session returns a session by ID, or (Session{}, false, nil) if not found.
 func (s *Store) Session(ctx context.Context, id string) (Session, bool, error) {
-	var sess Session
-	var created, updated string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, title, workspace, parent_id, source, created_at, updated_at FROM sessions WHERE id = ?`, id).
-		Scan(&sess.ID, &sess.Title, &sess.Workspace, &sess.ParentID, &sess.Source, &created, &updated)
+	sess, err := scanSession(s.db.QueryRowContext(ctx,
+		`SELECT `+sessionCols+` FROM sessions WHERE id = ?`, id))
 	if err == sql.ErrNoRows {
 		return Session{}, false, nil
 	}
 	if err != nil {
 		return Session{}, false, fmt.Errorf("read session: %w", err)
 	}
-	sess.CreatedAt, _ = time.Parse(timeFormat, created)
-	sess.UpdatedAt, _ = time.Parse(timeFormat, updated)
 	return sess, true, nil
 }
 

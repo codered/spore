@@ -20,6 +20,7 @@ import (
 	"github.com/codered/spore/internal/store"
 	"github.com/codered/spore/internal/tool"
 	"github.com/codered/spore/internal/tool/fs"
+	"github.com/codered/spore/internal/tool/schedule"
 )
 
 // newFullServerWithPolicy wires the real thing: real store, real registry, real fs
@@ -65,7 +66,8 @@ func newFullServerWithPolicy(t *testing.T, policyTOML string, turns ...provider.
 	srv := New(Options{Store: st, Cfg: cfg})
 
 	reg := tool.NewRegistry(cfg.Policy.MaxOutput)
-	for _, tl := range fs.New(cfg.Policy.MaxOutput) {
+	tools := append(fs.New(cfg.Policy.MaxOutput), schedule.New(st)...)
+	for _, tl := range tools {
 		if err := reg.Register(tl); err != nil {
 			t.Fatalf("register %s: %v", tl.Name(), err)
 		}

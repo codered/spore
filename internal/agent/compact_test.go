@@ -224,3 +224,65 @@ func TestCompactWithNothingOutsideTheProtectedWindow(t *testing.T) {
 		t.Fatal("a no-op compaction must not change the estimate")
 	}
 }
+
+func appendNote(t *testing.T, st *store.Store, sid, text string) {
+	t.Helper()
+	blocks, _ := json.Marshal([]provider.Block{{Type: provider.BlockText, Text: text}})
+	if _, err := st.AppendMessage(context.Background(), store.Message{SessionID: sid, Role: store.RoleNote, BlocksJSON: blocks}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A note is written for the person reading the chat. The model never sees
+// it, so the user/assistant alternation every provider checks is untouched.
+func TestSnapshotLeavesNotesOut(t *testing.T) {
+	a := newTestAgent(t)
+	ctx := context.Background()
+	sid, _ := a.Store.CreateSession(ctx, "t", "")
+	seedMessages(t, a.Store, sid, 1)
+	appendNote(t, a.Store, sid, "⏰ job 1 ran at 02:30 UTC — ok")
+	snap, err := a.Snapshot(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Messages) != 1 || snap.Messages[0].Role != provider.RoleUser {
+		t.Fatalf("snapshot messages = %+v; want only the user message", snap.Messages)
+	}
+}
+
+// Compact pairs stored rows with snapshot messages by position, so a note
+// among the rows must be left out of both, or the fold cuts in the wrong
+// place and summarises what the model never saw.
+func TestCompactSkipsNotes(t *testing.T) {
+	script := provider.NewScript(provider.ScriptTurn{Text: "SUMMARY: conversation summary"})
+	a, st := harness(t, script, nil)
+	a.Cfg.Context.KeepRecent = 4
+	ctx := context.Background()
+	id, _ := st.CreateSession(ctx, "t", "")
+	for i := 0; i < 10; i++ {
+		seedMessages(t, st, id, 1)
+		appendNote(t, st, id, "NOTE-TEXT job ran")
+	}
+	folded, _, _, err := a.Compact(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if folded != 6 {
+		t.Fatalf("folded %d, want 6: notes must not count toward the window", folded)
+	}
+	// The boundary is the sixth model message, seq 11, not the sixth row.
+	if _, through, _ := st.Summary(ctx, id); through != 11 {
+		t.Errorf("summary boundary = %d, want 11", through)
+	}
+	reqs := script.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("provider called %d times", len(reqs))
+	}
+	for _, m := range reqs[0].Messages {
+		for _, b := range m.Blocks {
+			if strings.Contains(b.Text, "NOTE-TEXT") {
+				t.Fatal("a note reached the compaction model")
+			}
+		}
+	}
+}

@@ -40,6 +40,10 @@ type SessionJSON struct {
 	// State and Pending are filled by the listing only.
 	State   string `json:"state,omitempty"`
 	Pending int    `json:"pending,omitempty"`
+	// JobID is the scheduled job a job run belongs to; Unread is set while
+	// the session holds messages nobody has opened.
+	JobID  int64 `json:"job_id,omitempty"`
+	Unread bool  `json:"unread,omitempty"`
 }
 
 type MessageJSON struct {
@@ -67,7 +71,8 @@ type TranscriptJSON struct {
 func toSessionJSON(s store.Session) SessionJSON {
 	return SessionJSON{ID: s.ID, Title: s.Title, Workspace: s.Workspace,
 		Source: s.Source, ParentID: s.ParentID,
-		CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt}
+		CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt,
+		JobID: s.JobID, Unread: s.Unread()}
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
@@ -407,6 +412,13 @@ func (s *Server) handleCompact(w http.ResponseWriter, r *http.Request) {
 // decides which ruleset the policy engine applies — an HTTP client on
 // loopback is local, a chat bridge is remote.
 func (s *Server) startTurn(sessionID, text, client string, profile policy.Profile) error {
+	return s.startTurnThen(sessionID, text, client, profile, nil)
+}
+
+// startTurnThen is startTurn with a hook for the turn's end. then receives
+// the event that ended it -- turn_done, error or stopped -- and runs after the
+// slot is released. It is not called when the turn fails to start.
+func (s *Server) startTurnThen(sessionID, text, client string, profile policy.Profile, then func(end WireEvent)) error {
 	var turn sporetrace.Span
 	// Recover before any operations so panics in policy.WithSession or
 	// sporetrace.StartTurn are also caught.
@@ -457,6 +469,22 @@ func (s *Server) startTurn(sessionID, text, client string, profile policy.Profil
 	// Published before the pump starts, so it precedes every event of the turn.
 	s.hub.Publish(sessionID, WireEvent{Type: WireTurnStarted})
 	go func() {
+		// end is the last event that can end a turn. A channel that closes
+		// without one is a turn that ended without saying how: an error.
+		end := WireEvent{Type: WireError, Error: "the turn ended without finishing"}
+		if then != nil {
+			// Deferred first so it runs last, after the slot is released. It
+			// runs outside the recover below, so it carries its own: a hook
+			// that panics must not take the daemon with it.
+			defer func() {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("panic after turn", "session", sessionID, "panic", r)
+					}
+				}()
+				then(end)
+			}()
+		}
 		defer s.hub.End(sessionID)
 		defer cancel(nil)
 		defer turn.End()
@@ -466,10 +494,11 @@ func (s *Server) startTurn(sessionID, text, client string, profile policy.Profil
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("panic in turn pump", "session", sessionID, "panic", r)
-				s.hub.Publish(sessionID, WireEvent{
+				end = WireEvent{
 					Type:  WireError,
 					Error: "turn crashed: " + fmt.Sprint(r),
-				})
+				}
+				s.hub.Publish(sessionID, end)
 			}
 		}()
 
@@ -477,7 +506,12 @@ func (s *Server) startTurn(sessionID, text, client string, profile policy.Profil
 			if ev.Type == agent.EvError && ev.Err != nil {
 				turn.RecordError(ev.Err)
 			}
-			s.hub.Publish(sessionID, FromAgent(ev))
+			w := FromAgent(ev)
+			switch w.Type {
+			case WireTurnDone, WireError, WireStopped:
+				end = w
+			}
+			s.hub.Publish(sessionID, w)
 		}
 	}()
 	return nil

@@ -10,6 +10,7 @@ func TestMain(m *testing.M) {
 	// Pin a markdown style that does not ask the terminal anything: in a
 	// test nothing answers, and the query would wait out its timeout.
 	mdStyleName = func() string { return "notty" }
+	clock = fixedNow
 	os.Exit(m.Run())
 }
 

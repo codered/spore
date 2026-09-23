@@ -156,8 +156,13 @@ func New(o Options) (*Bridge, error) {
 // lifetime of every render goroutine the bridge spawns afterward — never a
 // per-message context, since a turn outlives the message that started it.
 func (b *Bridge) Start(ctx context.Context) error {
+	// Under closeMu because the daemon reaches the bridge (Follow, Deliver)
+	// from its own goroutines, not only from the client's callbacks.
+	b.closeMu.Lock()
 	b.ctx, b.cancel = context.WithCancel(ctx)
-	return b.client.Open(b.ctx, b.handleMessage, b.handleInteraction)
+	live := b.ctx
+	b.closeMu.Unlock()
+	return b.client.Open(live, b.handleMessage, b.handleInteraction)
 }
 
 // Close stops accepting new work and waits for every render goroutine the
@@ -170,10 +175,11 @@ func (b *Bridge) Start(ctx context.Context) error {
 func (b *Bridge) Close() error {
 	b.closeMu.Lock()
 	b.closing = true
+	cancel := b.cancel
 	b.closeMu.Unlock()
 
-	if b.cancel != nil {
-		b.cancel()
+	if cancel != nil {
+		cancel()
 	}
 	err := b.client.Close()
 	b.wg.Wait()
@@ -185,6 +191,8 @@ func (b *Bridge) Close() error {
 // close the client or wait for goroutines — it only cancels the context,
 // which is safe even if no goroutines were ever started.
 func (b *Bridge) cancelContext() {
+	b.closeMu.Lock()
+	defer b.closeMu.Unlock()
 	if b.cancel != nil {
 		b.cancel()
 	}
@@ -365,49 +373,12 @@ func (b *Bridge) resolveSession(in Inbound) (sessionID, replyChannel string, err
 // are lost forever — the hub does not buffer for a subscriber that has not
 // yet attached.
 func (b *Bridge) startTurn(sessionID, replyChannel string, in Inbound, text string) {
-	events, cancel := b.turns.Subscribe(sessionID)
-
-	r := newRenderer(b.client, replyChannel, b.throttle)
-	// detailID names this turn's transcript before the turn runs, because
-	// the button carrying it is rendered while the turn is still going.
-	r.detailID = b.details.mintID()
-	r.recordTools = b.details.put
-	r.typingFn = func(ctx context.Context) {
-		if err := b.client.Typing(ctx, replyChannel); err != nil {
-			slog.Debug("discord typing failed", "err", err)
-		}
-	}
-	// onApproval and stopAfterTurn must both be set before the Consume
-	// goroutine starts: renderer.approvalFn has no synchronisation of its
-	// own, so setting either concurrently with Consume's read of them is a
-	// data race.
-	r.onApproval(func(ev daemon.WireEvent) { b.postApproval(sessionID, replyChannel, ev) })
-	r.stopAfterTurn = true
-
-	// See closeMu's doc on Bridge: this check-then-Add, both under closeMu,
-	// is what keeps a wg.Add from ever landing after Close has moved on to
-	// wg.Wait. If Close already flipped closing, there is nothing left to
-	// join a turn to — detach the subscription and give up on this message
-	// rather than starting work the bridge is already shutting down.
-	b.closeMu.Lock()
-	if b.closing {
-		b.closeMu.Unlock()
-		cancel()
+	// Settling on the turn's end is the one place that knows the prompt
+	// has been answered.
+	cancel, ok := b.follow(sessionID, replyChannel, func() { b.settle(in) })
+	if !ok {
 		return
 	}
-	b.wg.Add(1)
-	b.closeMu.Unlock()
-
-	go func() {
-		defer b.wg.Done()
-		defer cancel()
-		// b.ctx, never a per-message context: the turn outlives the message
-		// that started it, and so must the goroutine rendering it.
-		r.Consume(b.ctx, events)
-		// Consume returns when the turn ends, so this is the one place that
-		// knows the prompt has been answered.
-		b.settle(in)
-	}()
 
 	if err := b.turns.StartTurn(sessionID, text, bridgeName, policy.ProfileRemote); err != nil {
 		// The subscription was for a turn that never ran; detach it. cancel
@@ -421,6 +392,110 @@ func (b *Bridge) startTurn(sessionID, replyChannel string, in Inbound, text stri
 		b.say(replyChannel, "could not start the turn: "+err.Error())
 		return
 	}
+}
+
+// follow renders the session's next turn into channelID: it subscribes,
+// then starts a goroutine that renders until the turn ends and then calls
+// done. It reports false, having started nothing, when the bridge is
+// closing. cancel detaches the subscription; call it when the turn never
+// starts.
+func (b *Bridge) follow(sessionID, channelID string, done func()) (cancel func(), ok bool) {
+	events, cancel := b.turns.Subscribe(sessionID)
+
+	r := newRenderer(b.client, channelID, b.throttle)
+	// detailID names this turn's transcript before the turn runs, because
+	// the button carrying it is rendered while the turn is still going.
+	r.detailID = b.details.mintID()
+	r.recordTools = b.details.put
+	r.typingFn = func(ctx context.Context) {
+		if err := b.client.Typing(ctx, channelID); err != nil {
+			slog.Debug("discord typing failed", "err", err)
+		}
+	}
+	// onApproval and stopAfterTurn must both be set before the Consume
+	// goroutine starts: renderer.approvalFn has no synchronisation of its
+	// own, so setting either concurrently with Consume's read of them is a
+	// data race.
+	r.onApproval(func(ev daemon.WireEvent) { b.postApproval(sessionID, channelID, ev) })
+	r.stopAfterTurn = true
+
+	// See closeMu's doc on Bridge: this check-then-Add, both under closeMu,
+	// is what keeps a wg.Add from ever landing after Close has moved on to
+	// wg.Wait. If Close already flipped closing (or Start never ran), there
+	// is nothing to join a turn to — detach the subscription and give up
+	// rather than starting work the bridge is already shutting down.
+	b.closeMu.Lock()
+	if b.closing || b.ctx == nil {
+		b.closeMu.Unlock()
+		cancel()
+		return nil, false
+	}
+	ctx := b.ctx
+	b.wg.Add(1)
+	b.closeMu.Unlock()
+
+	go func() {
+		defer b.wg.Done()
+		defer cancel()
+		// The bridge's context, never a per-message one: the turn outlives
+		// the message that started it, and so must the goroutine rendering it.
+		r.Consume(ctx, events)
+		if done != nil {
+			done()
+		}
+	}()
+	return cancel, true
+}
+
+// boundChannel is the Discord channel a session is bound to, if any.
+func (b *Bridge) boundChannel(ctx context.Context, sessionID string) (string, bool) {
+	bindings, err := b.store.BindingsForSessions(ctx, bridgeName, []string{sessionID})
+	if err != nil {
+		slog.Warn("discord: read the session's channel", "session", sessionID, "err", err)
+		return "", false
+	}
+	if len(bindings) == 0 {
+		return "", false
+	}
+	return bindings[0].ExternalID, true
+}
+
+// Follow implements daemon.Notifier: it renders a turn spore starts itself
+// — a job's check-in — into the session's own channel. A session with no
+// Discord channel is not followed: a chat opened in the TUI never reaches
+// Discord.
+func (b *Bridge) Follow(sessionID string) func() {
+	channelID, ok := b.boundChannel(b.liveCtx(), sessionID)
+	if !ok {
+		return func() {}
+	}
+	cancel, ok := b.follow(sessionID, channelID, nil)
+	if !ok {
+		return func() {}
+	}
+	return cancel
+}
+
+// Deliver implements daemon.Notifier: it posts a note to the session's own
+// channel, and nowhere else.
+func (b *Bridge) Deliver(ctx context.Context, sessionID, text string) {
+	channelID, ok := b.boundChannel(ctx, sessionID)
+	if !ok {
+		return
+	}
+	if _, err := b.client.Send(ctx, channelID, Message{Content: text}); err != nil {
+		slog.Warn("discord note failed", "session", sessionID, "err", err)
+	}
+}
+
+// liveCtx is the bridge's context once started, or a background one before.
+func (b *Bridge) liveCtx() context.Context {
+	b.closeMu.Lock()
+	defer b.closeMu.Unlock()
+	if b.ctx == nil {
+		return context.Background()
+	}
+	return b.ctx
 }
 
 // postApproval renders one approval request as a message with buttons. It is

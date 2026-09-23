@@ -126,3 +126,36 @@ func TestSkillsEndpoint(t *testing.T) {
 		t.Error("alpha must not be loaded after its tool result is folded out of the live context")
 	}
 }
+
+func TestSkillsIncludeTheirBodyOnlyWhenAsked(t *testing.T) {
+	s, ts := newTestServer(t)
+	dir := t.TempDir()
+	if err := skill.Write(dir, skill.Skill{Name: "alpha", Description: "the alpha skill", Body: "do alpha things"}); err != nil {
+		t.Fatal(err)
+	}
+	s.agent.Skills = skill.NewCaches()
+	s.cfg.Skills.Dir = dir
+	sid, err := s.store.CreateSession(context.Background(), "test", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fetch := func(q string) SkillsJSON {
+		res, err := http.Get(ts.URL + "/api/sessions/" + sid + "/skills" + q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var out SkillsJSON
+		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	if got := fetch(""); len(got.Skills) != 1 || got.Skills[0].Body != "" {
+		t.Fatalf("without ?body=1 = %+v, want no body", got.Skills)
+	}
+	if got := fetch("?body=1"); len(got.Skills) != 1 || got.Skills[0].Body == "" {
+		t.Fatalf("with ?body=1 = %+v, want the body", got.Skills)
+	}
+}

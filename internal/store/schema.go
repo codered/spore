@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   workspace  TEXT NOT NULL DEFAULT '',
   parent_id  TEXT NOT NULL DEFAULT '',
   source     TEXT NOT NULL DEFAULT '',
+  job_id     INTEGER NOT NULL DEFAULT 0,
+  seen_seq   INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -88,6 +90,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   last_run        TEXT,
   last_session_id TEXT NOT NULL DEFAULT '',
   created_at      TEXT NOT NULL
+  -- origin_session_id, notify and checked_in are added by migrateJobColumns,
+  -- for a fresh database and an upgraded one alike.
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_due ON jobs(enabled, next_run);
