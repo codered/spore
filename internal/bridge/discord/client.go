@@ -14,6 +14,8 @@ package discord
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -120,6 +122,14 @@ type Client interface {
 	// requires an acknowledgement within three seconds or the button shows
 	// as failed, so this is called before any slow work.
 	Respond(ctx context.Context, interactionID, token, content string) error
+	// ChannelKind says whether a channel is a guild thread, a DM, or neither.
+	ChannelKind(ctx context.Context, channelID string) (ChannelKind, error)
+	// DeleteChannel deletes a channel; for a thread, every message in it.
+	DeleteChannel(ctx context.Context, channelID string) error
+	// OwnMessages lists the ids of the bot's own messages in a channel sent
+	// strictly between after and before.
+	OwnMessages(ctx context.Context, channelID string, after, before time.Time) ([]string, error)
+	DeleteMessage(ctx context.Context, channelID, messageID string) error
 }
 
 // gatewayClient is the real Client, over discordgo. It is the only place in
@@ -402,4 +412,88 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return string(r[:max])
+}
+
+// ChannelKind asks Discord what a channel is.
+func (c *gatewayClient) ChannelKind(ctx context.Context, channelID string) (ChannelKind, error) {
+	ch, err := c.sess.Channel(channelID, discordgo.WithContext(ctx))
+	if err != nil {
+		return ChannelOther, fmt.Errorf("read discord channel: %w", err)
+	}
+	switch ch.Type {
+	case discordgo.ChannelTypeDM:
+		return ChannelDM, nil
+	case discordgo.ChannelTypeGuildPublicThread, discordgo.ChannelTypeGuildPrivateThread:
+		return ChannelThread, nil
+	}
+	return ChannelOther, nil
+}
+
+// DeleteChannel deletes a channel. Deleting a thread needs Manage Threads.
+func (c *gatewayClient) DeleteChannel(ctx context.Context, channelID string) error {
+	if _, err := c.sess.ChannelDelete(channelID, discordgo.WithContext(ctx)); err != nil {
+		return fmt.Errorf("delete discord channel: %w", err)
+	}
+	return nil
+}
+
+// discordEpochMs is the start of Discord's snowflake clock.
+const discordEpochMs = 1420070400000
+
+// snowflakeAt is the smallest message id Discord could assign at t, which is
+// how a time bound becomes a history cursor.
+func snowflakeAt(t time.Time) string {
+	ms := t.UnixMilli() - discordEpochMs
+	if ms < 0 {
+		ms = 0
+	}
+	return strconv.FormatInt(ms<<22, 10)
+}
+
+// OwnMessages pages through the channel's history after `after`, oldest
+// first, and keeps the bot's own messages sent before `before`.
+func (c *gatewayClient) OwnMessages(ctx context.Context, channelID string, after, before time.Time) ([]string, error) {
+	me := ""
+	if c.sess.State != nil && c.sess.State.User != nil {
+		me = c.sess.State.User.ID
+	}
+	if me == "" {
+		return nil, fmt.Errorf("the bot's own user id is not known yet")
+	}
+	var out []string
+	cursor := snowflakeAt(after)
+	for {
+		page, err := c.sess.ChannelMessages(channelID, 100, "", cursor, "", discordgo.WithContext(ctx))
+		if err != nil {
+			return out, fmt.Errorf("read discord history: %w", err)
+		}
+		if len(page) == 0 {
+			return out, nil
+		}
+		// Discord returns a page newest first; walk it oldest first.
+		newest := page[0].ID
+		done := false
+		for i := len(page) - 1; i >= 0; i-- {
+			m := page[i]
+			if !m.Timestamp.Before(before) {
+				done = true
+				break
+			}
+			if m.Author != nil && m.Author.ID == me {
+				out = append(out, m.ID)
+			}
+		}
+		if done || len(page) < 100 {
+			return out, nil
+		}
+		cursor = newest
+	}
+}
+
+// DeleteMessage deletes one message.
+func (c *gatewayClient) DeleteMessage(ctx context.Context, channelID, messageID string) error {
+	if err := c.sess.ChannelMessageDelete(channelID, messageID, discordgo.WithContext(ctx)); err != nil {
+		return fmt.Errorf("delete discord message: %w", err)
+	}
+	return nil
 }

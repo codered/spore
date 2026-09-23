@@ -148,6 +148,11 @@ func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []s
 		return err
 	}
 
+	if bridge != nil {
+		// Set before Run: the server reads it without a lock.
+		srv.SetCleaner(bridge)
+	}
+
 	bridgeDone := make(chan struct{})
 	if bridge != nil {
 		go func() {
