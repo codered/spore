@@ -37,6 +37,7 @@ type Config struct {
 	Recall    RecallConfig              `toml:"recall"`
 	Skills    SkillsConfig              `toml:"skills"`
 	Subagents SubagentConfig            `toml:"subagents"`
+	Kernel    KernelConfig              `toml:"kernel"`
 }
 
 // SkillsConfig chooses where skills are read from and installed to.
@@ -221,6 +222,29 @@ type WebConfig struct {
 type ShellConfig struct {
 	// TimeoutSeconds bounds one shell_exec call when it names no timeout.
 	TimeoutSeconds int `toml:"timeout_seconds"`
+}
+
+// Kernel modes. In code mode the model is offered only go_run and reaches
+// every other tool through the spore package inside its program; in tools
+// mode it sees every tool, go_run included.
+const (
+	KernelModeCode  = "code"
+	KernelModeTools = "tools"
+)
+
+// KernelConfig configures go_run, the Go kernel.
+type KernelConfig struct {
+	Mode string `toml:"mode"`
+	// TimeoutSeconds is the default interpreter budget for one program. Time
+	// spent inside a spore.* helper (an approval wait included) is not
+	// charged to it.
+	TimeoutSeconds int `toml:"timeout_seconds"`
+	// MaxTimeoutSeconds caps what a program may ask for.
+	MaxTimeoutSeconds int `toml:"max_timeout_seconds"`
+	// CeilingSeconds is a wall-clock stop with no pauses.
+	CeilingSeconds int `toml:"ceiling_seconds"`
+	// HelperMaxBytes caps one helper result handed to a program.
+	HelperMaxBytes int `toml:"helper_max_bytes"`
 }
 
 // DaemonConfig configures the HTTP + SSE server. Addr is validated to be a
@@ -484,6 +508,28 @@ func Default() *Config {
 		Shell:     ShellConfig{TimeoutSeconds: 120},
 		Daemon:    DaemonConfig{Addr: "127.0.0.1:7777", TickSeconds: 30},
 		Subagents: SubagentConfig{MaxDepth: 2, MaxCostUSD: 1.00, MaxConcurrent: 4},
+		Kernel: KernelConfig{Mode: KernelModeCode, TimeoutSeconds: 60, MaxTimeoutSeconds: 300,
+			CeilingSeconds: 1800, HelperMaxBytes: 4 << 20},
+	}
+}
+
+// fillKernelDefaults replaces each zero field with its default. A negative
+// value is left for Validate to reject.
+func fillKernelDefaults(k *KernelConfig, d KernelConfig) {
+	if k.Mode == "" {
+		k.Mode = d.Mode
+	}
+	if k.TimeoutSeconds == 0 {
+		k.TimeoutSeconds = d.TimeoutSeconds
+	}
+	if k.MaxTimeoutSeconds == 0 {
+		k.MaxTimeoutSeconds = d.MaxTimeoutSeconds
+	}
+	if k.CeilingSeconds == 0 {
+		k.CeilingSeconds = d.CeilingSeconds
+	}
+	if k.HelperMaxBytes == 0 {
+		k.HelperMaxBytes = d.HelperMaxBytes
 	}
 }
 
@@ -616,6 +662,7 @@ func Load(path string) (*Config, error) {
 		cfg.Skills.Dir = expanded
 	}
 	d := Default()
+	fillKernelDefaults(&cfg.Kernel, d.Kernel)
 	if cfg.Policy.Workspace == "" {
 		cfg.Policy.Workspace = d.Policy.Workspace
 	}
@@ -771,6 +818,14 @@ func (c *Config) Validate() error {
 		if _, err := url.Parse(c.Recall.URL); err != nil {
 			return fmt.Errorf("recall.url: %w", err)
 		}
+	}
+	switch c.Kernel.Mode {
+	case KernelModeCode, KernelModeTools:
+	default:
+		return fmt.Errorf("kernel.mode must be %s or %s, got %q", KernelModeCode, KernelModeTools, c.Kernel.Mode)
+	}
+	if c.Kernel.TimeoutSeconds < 0 || c.Kernel.MaxTimeoutSeconds < 0 || c.Kernel.CeilingSeconds < 0 || c.Kernel.HelperMaxBytes < 0 {
+		return fmt.Errorf("kernel: timeouts and helper_max_bytes must not be negative")
 	}
 	if c.Subagents.MaxDepth < 0 || c.Subagents.MaxCostUSD < 0 || c.Subagents.MaxConcurrent < 0 {
 		return fmt.Errorf("subagents: max_depth, max_cost_usd and max_concurrent must not be negative")
