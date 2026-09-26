@@ -446,3 +446,39 @@ func TestARunnerPanicFailsOnlyThatCall(t *testing.T) {
 		t.Errorf("Output = %q, want the program to see the panic as an error", res.Output)
 	}
 }
+
+// Models regularly call spore.* and forget the import. The kernel adds it,
+// on the package line so every later line keeps its number.
+func TestMissingSporeImportIsAdded(t *testing.T) {
+	src := "package main\n\nimport \"fmt\"\n\nfunc main() {\n\ts, err := spore.Fetch(\"https://x.test\")\n\tfmt.Println(s, err)\n}\n"
+	res, err := Run(context.Background(), src, &fakeRunner{}, opts())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Output != "ran web_fetch <nil>\n" {
+		t.Errorf("Output = %q", res.Output)
+	}
+}
+
+func TestAddedImportKeepsLineNumbers(t *testing.T) {
+	// undefinedThing is on line 6 of what the model wrote. (A compile error
+	// is used because yaegi reports every panic at main's first statement.)
+	src := "package main\n\nfunc main() {\n\tspore.Fetch(\"x\")\n\tx := 1\n\tx = x + undefinedThing\n}\n"
+	_, err := Run(context.Background(), src, &fakeRunner{}, opts())
+	if err == nil || !strings.HasPrefix(err.Error(), "6:") {
+		t.Errorf("err = %v, want it reported at line 6", err)
+	}
+}
+
+// A program that declares its own identifier named spore must not get the
+// package imported over it.
+func TestLocalSporeIdentifierIsLeftAlone(t *testing.T) {
+	src := "package main\n\nimport \"fmt\"\n\ntype T struct{ Fetch string }\n\nvar spore = T{Fetch: \"local\"}\n\nfunc main() { fmt.Println(spore.Fetch) }\n"
+	res, err := Run(context.Background(), src, &fakeRunner{}, opts())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Output != "local\n" {
+		t.Errorf("Output = %q", res.Output)
+	}
+}

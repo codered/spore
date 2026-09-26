@@ -81,7 +81,8 @@ const crashReportBytes = 2048
 // errors, panics, crashes or runs out of time returns an error together with
 // whatever output it produced.
 func Run(ctx context.Context, src string, r Runner, opt Options) (Result, error) {
-	if err := validate(src); err != nil {
+	src, err := prepare(src)
+	if err != nil {
 		return Result{}, err
 	}
 	runID, err := newRunID()
@@ -221,22 +222,56 @@ func stoppedErr(cause error, opt Options) error {
 	}
 }
 
-// validate refuses what yaegi would either reject with a worse message or
-// run in a way the model did not intend.
-func validate(src string) error {
-	f, err := parser.ParseFile(token.NewFileSet(), "main.go", src, 0)
+// prepare refuses what yaegi would either reject with a worse message or
+// run in a way the model did not intend, and adds a forgotten spore import.
+func prepare(src string) (string, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "main.go", src, 0)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if f.Name.Name != "main" {
-		return fmt.Errorf("go_run programs must be package main, got package %s", f.Name.Name)
+		return "", fmt.Errorf("go_run programs must be package main, got package %s", f.Name.Name)
 	}
+	hasMain := false
 	for _, d := range f.Decls {
 		if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "main" {
-			return nil
+			hasMain = true
 		}
 	}
-	return errors.New("go_run programs must declare func main()")
+	if !hasMain {
+		return "", errors.New("go_run programs must declare func main()")
+	}
+	if needsSporeImport(f) {
+		// Insert on the package line itself, so every line the model wrote
+		// keeps its number and error positions still point at its code.
+		at := fset.Position(f.Name.End()).Offset
+		src = src[:at] + `; import "spore"` + src[at:]
+	}
+	return src, nil
+}
+
+// needsSporeImport reports whether the program uses spore.X with no import
+// and no declaration of its own named spore. Measured on a local model,
+// forgetting the import cost a round trip in a quarter of the file tasks.
+func needsSporeImport(f *ast.File) bool {
+	for _, imp := range f.Imports {
+		if imp.Path.Value == `"spore"` {
+			return false
+		}
+	}
+	used := false
+	ast.Inspect(f, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok {
+			// Obj is nil only for an identifier the parser could not
+			// resolve in the file: a local var named spore resolves.
+			if id, ok := sel.X.(*ast.Ident); ok && id.Name == "spore" && id.Obj == nil {
+				used = true
+			}
+		}
+		return !used
+	})
+	return used
 }
 
 func newRunID() (string, error) {
