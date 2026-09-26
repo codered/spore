@@ -71,7 +71,8 @@ func TestReferenceCatalogue(t *testing.T) {
 }
 
 func TestReferenceIsDeterministic(t *testing.T) {
-	if Reference(referenceSpecs()) != Reference(referenceSpecs()) {
+	first, second := Reference(referenceSpecs()), Reference(referenceSpecs())
+	if first != second {
 		t.Error("two calls over the same specs differ, which breaks the cached prefix")
 	}
 }

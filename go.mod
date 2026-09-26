@@ -15,6 +15,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24
 	github.com/mattn/go-sqlite3 v1.14.50
 	github.com/modelcontextprotocol/go-sdk v1.7.0
+	github.com/traefik/yaegi v0.16.1
 	github.com/weaviate/weaviate v1.38.0-rc.0
 	github.com/weaviate/weaviate-go-client/v5 v5.7.3
 	go.opentelemetry.io/otel v1.46.0
@@ -82,7 +83,6 @@ require (
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
-	github.com/traefik/yaegi v0.16.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/yuin/goldmark v1.7.17 // indirect
