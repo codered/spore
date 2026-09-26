@@ -179,5 +179,12 @@ func (e *Engine) Evaluate(s Session, c Call) Result {
 			return Result{Decision: r.Decision, Rule: r.Raw}
 		}
 	}
+	// go_run has no effect of its own: everything a program does arrives
+	// as a separate call through the guard and is judged there. Falling
+	// back to the profile default would put an approval on every program
+	// under any profile that lists its own allow rules.
+	if c.Tool == KernelTool {
+		return Result{Decision: DecisionAllow, Rule: "policy.kernel"}
+	}
 	return Result{Decision: rs.fallback, Rule: "policy.default"}
 }
