@@ -429,3 +429,20 @@ func TestCallIDsAreUniqueAcrossRuns(t *testing.T) {
 		t.Errorf("%d distinct ids, want 4", len(ids))
 	}
 }
+
+// The runner is the policy guard, which runs in the daemon. A panic in it
+// while serving a helper must fail that one call, not the process.
+func TestARunnerPanicFailsOnlyThatCall(t *testing.T) {
+	r := &fakeRunner{fn: func(context.Context, provider.Block) provider.Block { panic("guard bug") }}
+	src := prog(`func main() {
+	_, err := spore.Fetch("https://x.test")
+	fmt.Println("err:", err)
+}`, "fmt", "spore")
+	res, err := Run(context.Background(), src, r, opts())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res.Output, "err:") || !strings.Contains(res.Output, "guard bug") {
+		t.Errorf("Output = %q, want the program to see the panic as an error", res.Output)
+	}
+}

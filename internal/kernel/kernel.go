@@ -22,6 +22,7 @@ import (
 	"go/token"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -182,8 +183,17 @@ func Run(ctx context.Context, src string, r Runner, opt Options) (Result, error)
 	}
 }
 
-func serveCall(ctx context.Context, r Runner, opt Options, runID string, m msg) provider.Block {
+func serveCall(ctx context.Context, r Runner, opt Options, runID string, m msg) (res provider.Block) {
 	id := fmt.Sprintf("gorun_%s_%d", runID, m.ID)
+	// This runs on a bare goroutine in the daemon, and r is the policy
+	// guard. A panic there must fail this one call, not take down every
+	// session -- the child process exists to prevent exactly that.
+	defer func() {
+		if rec := recover(); rec != nil {
+			res = provider.Block{Type: provider.BlockToolResult, ID: id, IsError: true,
+				Content: fmt.Sprintf("%s panicked: %v", m.Tool, rec)}
+		}
+	}()
 	if m.Tool == ToolName {
 		return provider.Block{Type: provider.BlockToolResult, ID: id, IsError: true,
 			Content: "go_run cannot be called from inside a go_run program"}
@@ -195,7 +205,7 @@ func serveCall(ctx context.Context, r Runner, opt Options, runID string, m msg) 
 	hctx := tool.WithOutputLimit(ctx, opt.HelperMax)
 	hctx, span := sporetrace.StartTool(hctx, m.Tool, args)
 	defer span.End()
-	res := r.Run(hctx, provider.Block{Type: provider.BlockToolUse, ID: id, Name: m.Tool, Input: args})
+	res = r.Run(hctx, provider.Block{Type: provider.BlockToolUse, ID: id, Name: m.Tool, Input: args})
 	sporetrace.RecordToolResult(span, res.Content, res.IsError, res.Truncated)
 	return res
 }
@@ -247,6 +257,12 @@ type proc struct {
 }
 
 func startChild() (*proc, error) {
+	// os/exec does not support ExtraFiles on Windows, so the child would
+	// never receive its program. Fail at once rather than hang; Windows
+	// is not a supported target (CI excludes it).
+	if runtime.GOOS == "windows" {
+		return nil, errors.New("go_run is not supported on Windows; set kernel.mode = \"tools\"")
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("kernel: find own binary: %w", err)
