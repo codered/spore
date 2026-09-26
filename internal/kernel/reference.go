@@ -59,6 +59,11 @@ func Reference(specs []provider.ToolSpec) string {
 	b.WriteString("Importable packages: " + strings.Join(Allowed, ", ") + ", and spore. " +
 		"Nothing else — no os, net/http or os/exec; use spore.* for files, network and shell.\n\n")
 
+	b.WriteString("The interpreter is Go 1.21 without three builtins: min, max and clear " +
+		"are undefined, so write them out, and range over an integer " +
+		"(for i := range n) is not supported; use a counted loop. When you do not know a JSON " +
+		"API's exact shape, decode into map[string]any, or print a slice of the body " +
+		"first, instead of guessing struct types.\n\n")
 	b.WriteString("### package spore\n\n")
 	for _, h := range Helpers {
 		fmt.Fprintf(&b, "- `%s` — %s\n", h.Signature, h.Doc)

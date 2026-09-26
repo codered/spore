@@ -8,6 +8,8 @@ Each program starts fresh: nothing survives between runs. A spore.* call that po
 
 Importable packages: bytes, encoding/base64, encoding/csv, encoding/hex, encoding/json, errors, fmt, html, math, math/rand, net/url, regexp, sort, strconv, strings, sync, sync/atomic, text/tabwriter, text/template, time, unicode, unicode/utf8, and spore. Nothing else — no os, net/http or os/exec; use spore.* for files, network and shell.
 
+The interpreter is Go 1.21 without three builtins: min, max and clear are undefined, so write them out, and range over an integer (for i := range n) is not supported; use a counted loop. When you do not know a JSON API's exact shape, decode into map[string]any, or print a slice of the body first, instead of guessing struct types.
+
 ### package spore
 
 - `func Fetch(url string) (string, error)` — GET an http(s) URL; HTML comes back as text, anything else as the raw body.

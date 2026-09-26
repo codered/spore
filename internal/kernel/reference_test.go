@@ -76,3 +76,15 @@ func TestReferenceIsDeterministic(t *testing.T) {
 		t.Error("two calls over the same specs differ, which breaks the cached prefix")
 	}
 }
+
+// yaegi v0.16.1 lacks the min, max and clear builtins and crashes on range
+// over an int. A model writing modern Go reaches for all four, and each
+// costs a round trip, so the prompt must say so up front.
+func TestReferenceWarnsAboutMissingLanguageFeatures(t *testing.T) {
+	got := Reference(referenceSpecs())
+	for _, want := range []string{"min", "max", "clear", "range over an integer", "map[string]any"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("reference does not mention %q", want)
+		}
+	}
+}
