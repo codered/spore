@@ -63,6 +63,9 @@ func harness(t *testing.T, script *provider.Script, tools ToolRunner) (*Agent, *
 	cfg := config.Default()
 	cfg.DefaultModel = "test/model-a"
 	cfg.SystemPrompt = "you are spore"
+	// The suite predates code mode and asserts on the tool list as sent;
+	// code mode has its own tests in kernel_test.go.
+	cfg.Kernel.Mode = config.KernelModeTools
 
 	rt, err := router.New(nil, cfg.DefaultModel)
 	if err != nil {

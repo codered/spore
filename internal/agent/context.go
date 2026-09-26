@@ -31,9 +31,13 @@ type Snapshot struct {
 	// agent.md: standing instructions for this one workspace. Neither is a
 	// fact -- they carry no frontmatter and are not indexed -- and both are
 	// empty when the file does not exist, which renders no section at all.
-	Soul     string
-	Agent    string
-	Summary  string
+	Soul    string
+	Agent   string
+	Summary string
+	// Kernel is the go_run section: the spore package and every tool a
+	// program can reach. Empty outside code mode. It is a pure function of
+	// the tool set, so it rides in the cached prefix.
+	Kernel   string
 	Messages []provider.Message
 }
 
@@ -79,7 +83,7 @@ func SnapshotBreakdown(snap Snapshot, cfg config.ContextConfig) Breakdown {
 		msgTotal += messageTokens(m)
 	}
 	return Breakdown{
-		System:      EstimateTokens(snap.System),
+		System:      EstimateTokens(snap.System) + EstimateTokens(snap.Kernel),
 		Environment: EstimateTokens(snap.Environment),
 		Facts:       EstimateTokens(factsSection(snap.Facts, cfg.FactBudget)),
 		Skills:      EstimateTokens(skillsSection(snap.Skills, cfg.SkillBudget)),
@@ -267,6 +271,7 @@ func Assemble(snap Snapshot, cfg config.ContextConfig) provider.Request {
 	add(soulSection(snap.Soul))
 	add(snap.Self)
 	add(skillsSection(snap.Skills, cfg.SkillBudget))
+	add(snap.Kernel)
 	add(factsSection(snap.Facts, cfg.FactBudget))
 	add(agentSection(snap.Agent))
 	if snap.Summary != "" {
