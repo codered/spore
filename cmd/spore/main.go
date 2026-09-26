@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/codered/spore/internal/config"
+	"github.com/codered/spore/internal/kernel"
 	"github.com/codered/spore/internal/store"
 	sporetrace "github.com/codered/spore/internal/trace"
 )
@@ -44,6 +45,11 @@ flags:
 `
 
 func main() {
+	// A go_run child is this binary re-executed. It runs one program and
+	// exits: no config, no store, no tracing.
+	if kernel.IsChild() {
+		os.Exit(kernel.ChildMain())
+	}
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "spore:", err)
 		os.Exit(1)

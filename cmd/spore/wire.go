@@ -28,6 +28,7 @@ import (
 	"github.com/codered/spore/internal/subagent"
 	"github.com/codered/spore/internal/tool"
 	"github.com/codered/spore/internal/tool/fs"
+	"github.com/codered/spore/internal/tool/gorun"
 	"github.com/codered/spore/internal/tool/mem"
 	personatool "github.com/codered/spore/internal/tool/persona"
 	"github.com/codered/spore/internal/tool/schedule"
@@ -55,6 +56,10 @@ func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recall
 	tools = append(tools, skill.New(cfg, skillsCache)...)
 	tools = append(tools, personatool.New(cfg)...)
 	tools = append(tools, subagenttool.New(sup)...)
+	// go_run's helper calls go back through the guard built below, which
+	// wraps this very registry; Bind closes that cycle once the guard exists.
+	goRun := gorun.New(cfg.Kernel, cfg.Policy.MaxOutput)
+	tools = append(tools, goRun)
 	for _, t := range tools {
 		if err := reg.Register(t); err != nil {
 			return nil, nil, err
@@ -71,7 +76,9 @@ func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recall
 	learn := func(d policy.Decision, rule string) error {
 		return config.LearnRule(cfg.Path, string(d), rule)
 	}
-	return policy.NewGuard(reg, engine, approver, st, learn), host, nil
+	guard := policy.NewGuard(reg, engine, approver, st, learn)
+	goRun.Bind(guard)
+	return guard, host, nil
 }
 
 // buildRecall chooses the search backend. sqlitefts is always constructed:
