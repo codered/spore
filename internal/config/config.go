@@ -519,14 +519,17 @@ func insideCeiling(ceiling, p string) bool {
 
 var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
-// interpolate replaces ${VAR} with the environment value, erroring when a
-// referenced variable is unset so a missing key fails at load rather than at
-// the first API call.
-func interpolate(src string) (string, error) {
+// interpolate replaces ${VAR} with the environment value, falling back to
+// fileEnv, and errors when a referenced variable is set in neither so a
+// missing key fails at load rather than at the first API call.
+func interpolate(src string, fileEnv map[string]string) (string, error) {
 	var missing []string
 	out := envRef.ReplaceAllStringFunc(src, func(m string) string {
 		name := envRef.FindStringSubmatch(m)[1]
 		v, ok := os.LookupEnv(name)
+		if !ok {
+			v, ok = fileEnv[name]
+		}
 		if !ok {
 			missing = append(missing, name)
 			return ""
@@ -539,12 +542,54 @@ func interpolate(src string) (string, error) {
 	return out, nil
 }
 
+// readEnvFile parses the env file that sits beside config.toml, so ${VAR}
+// resolves even when spore is started from a shell that never sourced it
+// (a non-interactive shell skips .bashrc). It accepts the sourceable subset:
+// blank lines, # comments, and KEY=VALUE with an optional "export " prefix
+// and optional matching quotes. The values feed interpolation only; they are
+// not put into the process environment, so MCP children cannot inherit them.
+// A missing file is not an error.
+func readEnvFile(path string) (map[string]string, error) {
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: path is beside the config file
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read env file: %w", err)
+	}
+	vars := map[string]string{}
+	for i, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		name, val, ok := strings.Cut(line, "=")
+		name = strings.TrimSpace(name)
+		if !ok || !envName.MatchString(name) {
+			return nil, fmt.Errorf("env file %s line %d: want KEY=VALUE", path, i+1)
+		}
+		val = strings.TrimSpace(val)
+		if n := len(val); n >= 2 && (val[0] == '"' || val[0] == '\'') && val[n-1] == val[0] {
+			val = val[1 : n-1]
+		}
+		vars[name] = val
+	}
+	return vars, nil
+}
+
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path) //nolint:gosec // G304: path is from the config file and validated
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	body, err := interpolate(string(raw))
+	fileEnv, err := readEnvFile(filepath.Join(filepath.Dir(path), "env"))
+	if err != nil {
+		return nil, err
+	}
+	body, err := interpolate(string(raw), fileEnv)
 	if err != nil {
 		return nil, err
 	}
