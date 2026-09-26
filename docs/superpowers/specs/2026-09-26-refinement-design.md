@@ -1,7 +1,8 @@
 # spore — continual refinement
 
 **Date:** 2026-09-26
-**Status:** approved (brainstorming dialogue), awaiting written-spec review.
+**Status:** approved (brainstorming dialogue). §9 records changes made while
+writing the plan, after reading the code.
 
 ## 1. What this adds
 
@@ -77,7 +78,8 @@ One job per file:
   the refiner's instructions and the edit schema. User content: the transcript,
   the current facts (name, type, description, body), the workspace `agent.md`
   text if any, and optional user/model `instructions`. Output: a JSON object
-  `{"edits": [...]}`. Output budget derives from the model, as compaction's does.
+  `{"edits": [...]}`. Output budget is a fixed 8192 tokens (compaction uses a
+  fixed 1024; five 4 KiB bodies need more).
 - **`apply.go`** — validates each edit, decides apply vs. propose (§2 rule 1),
   writes the ledger row, then the file (§5.3), and returns a round result.
 - **`refine.go`** — `Round(ctx, sessionID, trigger, instructions) (Result, error)`,
@@ -125,7 +127,7 @@ CREATE TABLE IF NOT EXISTS refinements (
   before      TEXT,              -- NULL when the target did not exist
   after       TEXT,              -- NULL when the edit deletes it
   rationale   TEXT    NOT NULL,
-  status      TEXT    NOT NULL,  -- applied | proposed | rejected | rolled_back | stale
+  status      TEXT    NOT NULL,  -- applied | proposed | rejected | rolled_back | stale | failed
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
@@ -138,7 +140,8 @@ Two new `sessions` columns:
 
 - `refined_through INTEGER NOT NULL DEFAULT 0` — seq watermark; a round
   reviews only rows above it and advances it on success.
-- `refine_attempted_at INTEGER NOT NULL DEFAULT 0` — last round start, used by
+- `refine_attempted_at TEXT NOT NULL DEFAULT ''` — last round start, in the
+  same fixed-width format as `updated_at` so the two compare as text; used by
   the idle sweeper's backoff (§5.1).
 
 ### 3.4 Router and config
@@ -177,10 +180,9 @@ silently lost.
 
 ### 4.2 Review and rollback (TUI)
 
-- `/refine review` opens the list of `proposed` rows (the confirm-modal
-  pattern from #44): source session, trigger, rationale, before/after diff.
-  `a` accepts, `r` rejects, `A` accepts all. Accept runs the staleness check
-  (§5.3) first. The tab bar shows a pending-proposal count when non-zero.
+- The `refinements` view (§9) lists rows, proposed first: session, trigger,
+  rationale, before/after. `a` accepts, `r` rejects. Accept runs the
+  staleness check (§5.3) first.
 - `/refine rollback` rolls back the session's most recent applied round;
   `/refine rollback <round>` a specific one. Each edit is restored to
   `before` (create → delete the file; delete → restore; notes → old text). A
@@ -198,8 +200,10 @@ with optional `round_id`.
   `refined: 2 applied (fact create go-test-flags, notes append), 1 proposed`.
   Note rows never reach the model; the model sees the effect through the next
   turn's system prefix.
-- Usage is recorded against the session under the `refinement` site, so
-  `/usage` shows it.
+- Usage is recorded on that note row (model, `call_site = refinement`,
+  tokens, cost). `/usage` sums every message row with tokens, so refinement
+  cost shows there with no new accounting path. (Compaction records no usage
+  today; that is not changed here.)
 - A trace span wraps the round, like compaction's.
 
 ## 5. Failure handling
@@ -267,3 +271,24 @@ idle, the fact exists and a note row was written; `/refine rollback` removes it.
 
 Temp directories in tests use the symlink-resolved path (macOS). Verification
 runs in a detached worktree at HEAD.
+
+## 9. Changes made while planning
+
+- **Review UI.** Instead of a `/refine review` modal, proposals are reviewed in
+  a k9s-style `refinements` view (`:refinements`, hotkey `R`), the same
+  component the jobs and agents views use: `a` accepts, `r` rejects, `x` rolls
+  back the round an applied row belongs to. There is no accept-all and no
+  tab-bar pending count; the view lists proposed rows first.
+- **`failed` status.** A file write that errors after its ledger row was
+  inserted moves the row to `failed`, rather than leaving it claiming `applied`.
+- **Transcript cap.** The refiner's transcript keeps the most recent 120 000
+  characters, prefixed `[earlier conversation omitted]` when cut.
+- **`enabled = false`** turns off the three automatic triggers and the
+  `refine` tool; manual `/refine`, review and rollback still work.
+- **Side effects of a fact change.** Every fact write, accept or rollback
+  reloads the fact cache and re-indexes (or unindexes) the fact in recall,
+  exactly as the `memory` tool does, so the next turn and `recall_search` see it.
+- **Residual risk, stated.** Rule 2 in §2 removes tool results, but assistant
+  text can quote a tool result. The planner prompt tells the refiner that
+  spore's own text is evidence only of what spore did, and chat-origin edits
+  remain reversible; this is not a hard guarantee.
