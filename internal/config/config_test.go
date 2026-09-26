@@ -86,6 +86,49 @@ api_key = "${SPORE_DEFINITELY_UNSET_VAR}"
 	}
 }
 
+func TestLoadReadsEnvFileBesideConfig(t *testing.T) {
+	p := write(t, `
+default_model = "anthropic/claude-opus-5"
+
+[providers.anthropic]
+kind = "anthropic"
+api_key = "${SPORE_TEST_FILE_KEY}"
+
+[providers.other]
+kind = "openai"
+base_url = "http://x/v1"
+api_key = "${SPORE_TEST_SHELL_KEY}"
+`)
+	env := "# secrets\n\nexport SPORE_TEST_FILE_KEY='from-file'\nSPORE_TEST_SHELL_KEY=\"from-file\"\n"
+	if err := os.WriteFile(filepath.Join(filepath.Dir(p), "env"), []byte(env), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SPORE_TEST_SHELL_KEY", "from-shell")
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Providers["anthropic"].APIKey; got != "from-file" {
+		t.Errorf("APIKey = %q, want %q from the env file", got, "from-file")
+	}
+	if got := cfg.Providers["other"].APIKey; got != "from-shell" {
+		t.Errorf("APIKey = %q, want the environment to win over the file", got)
+	}
+	if _, ok := os.LookupEnv("SPORE_TEST_FILE_KEY"); ok {
+		t.Error("env file leaked into the process environment")
+	}
+}
+
+func TestLoadRejectsMalformedEnvFile(t *testing.T) {
+	p := write(t, `default_model = "anthropic/claude-opus-5"`)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(p), "env"), []byte("not an assignment\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal("Load succeeded with a malformed env file; want error")
+	}
+}
+
 func TestLoadRejectsBadModelRef(t *testing.T) {
 	p := write(t, `default_model = "claude-opus-5"`)
 	if _, err := Load(p); err == nil {
