@@ -97,7 +97,7 @@ func (f fetchTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("fetch %s: %s", u, resp.Status)
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(f.maxBytes)))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(tool.OutputLimit(ctx, f.maxBytes))))
 	if err != nil {
 		return "", err
 	}

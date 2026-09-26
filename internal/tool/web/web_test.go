@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/codered/spore/internal/config"
+	"github.com/codered/spore/internal/tool"
 )
 
 const braveFixture = `{"web":{"results":[
@@ -190,5 +191,31 @@ func TestNewOmitsSearchWithoutAKey(t *testing.T) {
 	got = names(config.WebConfig{SearchProvider: "brave", BraveAPIKey: "k"})
 	if len(got) != 2 {
 		t.Errorf("with a key, tools = %v, want both", got)
+	}
+}
+
+func TestFetchBodyLimitFollowsTheContext(t *testing.T) {
+	body := strings.Repeat("a", 5000)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	tl := NewFetchTool(srv.Client(), "spore-test", 100)
+	args, _ := json.Marshal(map[string]string{"url": srv.URL})
+	out, err := tl.Call(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 100 {
+		t.Errorf("without a context limit the body is read to maxBytes: got %d bytes, want 100", len(out))
+	}
+	out, err = tl.Call(tool.WithOutputLimit(context.Background(), 10_000), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 5000 {
+		t.Errorf("with a 10000-byte context limit the whole body arrives: got %d bytes, want 5000", len(out))
 	}
 }

@@ -43,6 +43,25 @@ type Source interface {
 // nameRE is the intersection of the Anthropic and OpenAI tool-name rules.
 var nameRE = regexp.MustCompile(`\A[a-zA-Z0-9_-]{1,64}\z`)
 
+type outputLimitKey struct{}
+
+// WithOutputLimit changes the byte cap for tool results produced under ctx.
+// The Go kernel uses it so a helper call hands the program the whole result:
+// the default cap protects the model's context window, and a helper's result
+// never reaches the model directly.
+func WithOutputLimit(ctx context.Context, n int) context.Context {
+	return context.WithValue(ctx, outputLimitKey{}, n)
+}
+
+// OutputLimit returns the cap attached by WithOutputLimit, or def when none
+// (or a non-positive one) is attached.
+func OutputLimit(ctx context.Context, def int) int {
+	if n, ok := ctx.Value(outputLimitKey{}).(int); ok && n > 0 {
+		return n
+	}
+	return def
+}
+
 const truncationNote = "\n\n[truncated: output exceeded the tool output budget]"
 
 type Registry struct {
@@ -185,11 +204,11 @@ func (r *Registry) Run(ctx context.Context, call provider.Block) (out provider.B
 	if err != nil {
 		return ErrResult(call.ID, fmt.Errorf("tool %s: %w", call.Name, err))
 	}
-	if len(content) > r.maxOutput {
-		// Pull the cut back to a rune boundary: maxOutput is a byte budget,
+	if limit := OutputLimit(ctx, r.maxOutput); len(content) > limit {
+		// Pull the cut back to a rune boundary: the limit is a byte budget,
 		// and slicing mid-rune hands the model a half-encoded character that
 		// JSON marshalling silently turns into U+FFFD.
-		cut := r.maxOutput
+		cut := limit
 		for cut > 0 && !utf8.RuneStart(content[cut]) {
 			cut--
 		}

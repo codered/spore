@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/codered/spore/internal/policy"
+	"github.com/codered/spore/internal/tool"
 )
 
 func firstLine(s string) string {
@@ -157,5 +158,28 @@ func TestShellRefusesWithoutASessionWorkspace(t *testing.T) {
 	tl := New(5*time.Second, 1<<16)
 	if _, err := tl.Call(context.Background(), json.RawMessage(`{"command":"pwd"}`)); err == nil {
 		t.Fatal("a shell call with no workspace on the context must be refused")
+	}
+}
+
+func TestOutputBudgetFollowsTheContext(t *testing.T) {
+	ws := t.TempDir()
+	tl := New(5*time.Second, 100)
+	cmd := map[string]string{"command": "head -c 5000 /dev/zero | tr '\\0' a"}
+	out, err := call(t, tl, ws, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(out, "a") > 200 {
+		t.Errorf("without a context limit output is capped near 100 bytes, got %d a's", strings.Count(out, "a"))
+	}
+	raw, _ := json.Marshal(cmd)
+	ctx := policy.WithSession(tool.WithOutputLimit(context.Background(), 10_000),
+		policy.Session{ID: "test", Profile: policy.ProfileLocal, Workspace: ws})
+	out, err = tl.Call(ctx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(out, "a") != 5000 {
+		t.Errorf("with a 10000-byte context limit all 5000 bytes arrive, got %d", strings.Count(out, "a"))
 	}
 }
