@@ -117,7 +117,7 @@ func (t *execTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 	// One writer for both streams: os/exec special-cases identical Stdout and
 	// Stderr writers and routes them through a single goroutine, so this needs
 	// no lock of its own.
-	w := &capWriter{limit: t.maxOutput}
+	w := &capWriter{limit: tool.OutputLimit(ctx, t.maxOutput)}
 	cmd.Stdout = w
 	cmd.Stderr = w
 
@@ -160,7 +160,7 @@ func (t *execTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 
 	out := w.buf.String()
 	if w.dropped > 0 {
-		out += fmt.Sprintf("\n[%d further bytes of output were dropped at the %d-byte budget]", w.dropped, t.maxOutput)
+		out += fmt.Sprintf("\n[%d further bytes of output were dropped at the %d-byte budget]", w.dropped, w.limit)
 	}
 	switch {
 	// A timeout is only reported when the deadline expired *and* the process

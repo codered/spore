@@ -15,6 +15,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24
 	github.com/mattn/go-sqlite3 v1.14.50
 	github.com/modelcontextprotocol/go-sdk v1.7.0
+	github.com/traefik/yaegi v0.16.1
 	github.com/weaviate/weaviate v1.38.0-rc.0
 	github.com/weaviate/weaviate-go-client/v5 v5.7.3
 	go.opentelemetry.io/otel v1.46.0

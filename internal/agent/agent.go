@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/codered/spore/internal/config"
+	"github.com/codered/spore/internal/kernel"
 	"github.com/codered/spore/internal/memory"
 	"github.com/codered/spore/internal/persona"
 	"github.com/codered/spore/internal/policy"
@@ -119,6 +120,18 @@ type Agent struct {
 	Skills *skill.Caches
 }
 
+// onlyKernel keeps the go_run spec. In code mode every other tool is reached
+// from inside a program, so offering them directly would invite the one-hop-
+// per-tool pattern code mode exists to replace.
+func onlyKernel(specs []provider.ToolSpec) []provider.ToolSpec {
+	for _, s := range specs {
+		if s.Name == kernel.ToolName {
+			return []provider.ToolSpec{s}
+		}
+	}
+	return nil
+}
+
 func New(st *store.Store, reg *provider.Registry, rt *router.Router, cfg *config.Config, tools ToolRunner) *Agent {
 	return &Agent{Store: st, Registry: reg, Router: rt, Cfg: cfg, Tools: tools}
 }
@@ -164,6 +177,9 @@ func (a *Agent) Snapshot(ctx context.Context, sessionID string) (Snapshot, error
 	}
 	if a.Facts != nil {
 		snap.Facts = a.Facts.Facts()
+	}
+	if a.Tools != nil && a.Cfg.Kernel.Mode == config.KernelModeCode {
+		snap.Kernel = kernel.Reference(a.Tools.Specs())
 	}
 	if a.Skills != nil {
 		// The directory is resolved the same way the skill tools resolve it,
@@ -277,6 +293,9 @@ func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Eve
 		req := Assemble(snap, a.Cfg.Context)
 		if a.Tools != nil {
 			req.Tools = a.Tools.Specs()
+			if a.Cfg.Kernel.Mode == config.KernelModeCode {
+				req.Tools = onlyKernel(req.Tools)
+			}
 		}
 		ref := a.Router.Model(site)
 		p, model, price, err := a.Registry.Resolve(ref)

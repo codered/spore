@@ -57,6 +57,7 @@ See [Installation](#installation) and [Configuration](#configure) for details.
 - [Configuration](#configuration)
   - [Providers & routing](#providers--routing)
   - [Policy & tools](#policy--tools)
+  - [Code mode (go_run)](#code-mode-go_run)
   - [MCP servers](#mcp-servers)
   - [Memory & recall](#memory--recall)
   - [Semantic search](#semantic-search)
@@ -73,6 +74,7 @@ See [Installation](#installation) and [Configuration](#configure) for details.
 | --- | --- |
 | **Multi-provider** | Anthropic, OpenAI-compatible (Ollama, etc.), with per-call routing |
 | **Policy engine** | Fine-grained allow/deny/ask rules; baseline deny is always enforced |
+| **Code mode** | The model writes one Go program per step; spore runs it in a sandboxed interpreter, and every action inside it still passes the policy engine |
 | **Workspace ceiling** | Filesystem tools are confined to a configurable workspace tree |
 | **MCP hosting** | Declare MCP servers; their tools are offered to the model as `mcp__<server>__<tool>` |
 | **Discord bridge** | Drive spore from Discord with thread-per-session and approval buttons |
@@ -407,6 +409,113 @@ Check a ruleset without running anything:
 ```bash
 spore policy check fs_write '{"path":"/etc/hosts"}'
 ```
+
+### Code mode (go_run)
+
+By default the model acts by writing Go. Instead of calling one tool, reading
+the result and calling the next, it sends a single `go_run` call carrying a
+complete program that does the whole job and prints the answer:
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"spore"
+)
+
+func main() {
+	body, err := spore.Fetch("https://wttr.in/London?format=j1")
+	if err != nil {
+		fmt.Println("fetch failed:", err)
+		return
+	}
+	var w struct {
+		Current []struct {
+			TempC string `json:"temp_C"`
+			Desc  []struct{ Value string } `json:"weatherDesc"`
+		} `json:"current_condition"`
+	}
+	json.Unmarshal([]byte(body), &w)
+	fmt.Printf("%s°C, %s\n", w.Current[0].TempC, w.Current[0].Desc[0].Value)
+}
+```
+
+Inside a program, the `spore` package reaches every tool: `Fetch`, `Search`,
+`ReadFile`, `WriteFile`, `EditFile`, `List`, `Glob`, `Grep`, `Shell`,
+`Recall`, and `Call(tool, args)` for anything else, MCP tools included. The
+system prompt lists them, along with the tools reachable through `Call`.
+
+**The sandbox.** Programs run under the [yaegi](https://github.com/traefik/yaegi)
+interpreter in a child process, with a fixed list of standard packages
+(`fmt`, `strings`, `encoding/json`, `regexp`, `sort`, `time`, `sync`, and a
+few more). `os`, `net`, `os/exec`, `syscall`, `unsafe` and `reflect` are not
+importable, so a program touches the machine only through `spore.*`. **Each
+`spore.*` call is a separate tool call that the policy engine judges exactly
+as it judges a direct one**: deny rules hold, `ask` prompts in the chat or
+Discord with the real tool and arguments while the program waits, and every
+action is audited and traced on its own. `go_run` itself is allowed by
+default, since it has no effect of its own. A crash, a runaway loop or
+unbounded recursion ends the child process, never the daemon.
+
+```toml
+[kernel]
+mode = "code"            # "code": the model is offered only go_run
+                         # "tools": every tool directly, go_run included
+timeout_seconds = 60     # interpreter time per program; time spent waiting
+                         # on a spore.* call (an approval included) is free
+max_timeout_seconds = 300
+ceiling_seconds = 1800   # wall-clock stop, approvals included
+helper_max_bytes = 4194304  # one spore.* result handed to a program
+```
+
+Each program starts fresh; nothing carries over between runs. Known gaps in
+the interpreter: the `min`, `max` and `clear` builtins are missing and
+`for i := range n` is unsupported (the prompt tells the model). `go_run`
+does not work on Windows; use `mode = "tools"` there.
+
+#### Measured: code mode vs tools mode
+
+Four tasks, three runs each per mode, against a local Qwen3.8-27B served
+over an OpenAI-compatible endpoint (no prompt caching), on identical
+workspaces with `shell_exec` and writes denied. Wall time is the median;
+the other columns are means per run.
+
+| Task | Mode | Wall time | LLM calls | Input tokens | Output tokens | Correct |
+| --- | --- | ---: | ---: | ---: | ---: | :---: |
+| Weather in London | code | 63 s | 4.0 | 21.9k | 3.1k | 3/3 |
+| | tools | **24 s** | 2.3 | **9.5k** | 0.4k | 3/3 |
+| Compare London, Paris, Tokyo | code | 46 s | 2.7 | **11.4k** | 2.4k | 3/3 |
+| | tools | **37 s** | 2.3 | 20.4k | 0.9k | 3/3 |
+| 3 largest Go files (28 files) | code | **53 s** | **4.3** | **17.5k** | **1.5k** | **3/3** |
+| | tools | 207 s | 10.3 | 67.8k | 4.5k | 2/3 |
+| Find TODO/FIXME comments | code | 45 s | 3.0 | 10.9k | 1.2k | 3/3 |
+| | tools | **28 s** | 2.7 | 10.8k | 0.4k | 3/3 |
+
+Over all 24 runs, code mode used **43% fewer input tokens** and **21% fewer
+LLM calls**, took **10% less total time**, and wrote **33% more output
+tokens**. It was correct in 12 of 12 runs, against 11 of 12 in tools mode
+(one tools run hit the 12-round-trip limit).
+
+What that means in practice:
+
+- **Code mode wins big when a task needs many tool calls.** Finding the
+  largest files needs a read per file: tools mode made about 22 tool calls
+  over 10 round trips, while code mode did it in one program, about 4× faster
+  with a quarter of the input tokens.
+- **For one or two lookups, tools mode is faster**, especially on a local
+  model. Writing a program costs several times the output tokens of a direct
+  call, and output tokens are the slow part of local generation. Tools mode
+  can also batch independent calls in a single turn.
+- **Most of code mode's extra round trips are mistakes**, such as importing
+  `os`, or calling a helper that does not exist. A stronger model makes
+  fewer of them, and on a paid API the input-token saving is the part you
+  pay for.
+
+These are small samples from one local model; treat them as indicative, not
+as a benchmark. To compare on your own setup, run the same prompts with
+`mode = "code"` and `mode = "tools"`.
 
 ### MCP servers
 

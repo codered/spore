@@ -292,3 +292,29 @@ func TestSourceReadOnlyAndUnknown(t *testing.T) {
 		t.Error("ReadOnly of an unknown name = true, want false")
 	}
 }
+
+// The Go kernel hands a helper's result to a program, not to the model, so
+// it raises the cap for that one call through the context.
+func TestRunHonoursTheOutputLimitOnTheContext(t *testing.T) {
+	r := NewRegistry(10)
+	big := strings.Repeat("x", 100)
+	if err := r.Register(fake{name: "big", fn: func(context.Context, json.RawMessage) (string, error) { return big, nil }}); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Run(context.Background(), call("big", "c1", `{}`)); !got.Truncated {
+		t.Errorf("without a limit on the context the result must be cut at maxOutput")
+	}
+	got := r.Run(WithOutputLimit(context.Background(), 1000), call("big", "c2", `{}`))
+	if got.Truncated || got.Content != big {
+		t.Errorf("with a 1000-byte limit the 100-byte result must arrive whole; truncated=%v len=%d", got.Truncated, len(got.Content))
+	}
+}
+
+func TestOutputLimitFallsBackToTheDefault(t *testing.T) {
+	if got := OutputLimit(context.Background(), 7); got != 7 {
+		t.Errorf("OutputLimit with nothing attached = %d, want 7", got)
+	}
+	if got := OutputLimit(WithOutputLimit(context.Background(), 0), 7); got != 7 {
+		t.Errorf("a non-positive limit must be ignored, got %d", got)
+	}
+}

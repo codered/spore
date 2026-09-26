@@ -26,6 +26,10 @@ import (
 
 type Decision string
 
+// KernelTool is the Go kernel's tool name. Its fallback decision is allow;
+// see Engine.Evaluate.
+const KernelTool = "go_run"
+
 const (
 	DecisionAllow Decision = "allow"
 	DecisionAsk   Decision = "ask"
