@@ -38,6 +38,7 @@ type Config struct {
 	Skills    SkillsConfig              `toml:"skills"`
 	Subagents SubagentConfig            `toml:"subagents"`
 	Kernel    KernelConfig              `toml:"kernel"`
+	Refine    RefineConfig              `toml:"refine"`
 }
 
 // SkillsConfig chooses where skills are read from and installed to.
@@ -70,6 +71,23 @@ type SubagentConfig struct {
 	// reaches the cost ceiling.
 	MaxConcurrent int `toml:"max_concurrent"`
 }
+
+// RefineConfig drives continual refinement: the reviewer pass that turns what
+// a session learned into memory facts and project notes.
+type RefineConfig struct {
+	// Enabled gates the automatic triggers (compaction, idle, the model's
+	// refine tool). Unset is true. Manual /refine, review and rollback work
+	// either way: turning the automation off must not strand proposals.
+	Enabled *bool `toml:"enabled"`
+	// IdleMinutes is how long a session sits untouched before the sweeper
+	// reviews it.
+	IdleMinutes int `toml:"idle_minutes"`
+	// MaxEdits caps the edits one round may make or propose.
+	MaxEdits int `toml:"max_edits"`
+}
+
+// On reports whether the automatic triggers run. Unset is true.
+func (r RefineConfig) On() bool { return r.Enabled == nil || *r.Enabled }
 
 // Skills scope names.
 const (
@@ -510,6 +528,7 @@ func Default() *Config {
 		Subagents: SubagentConfig{MaxDepth: 2, MaxCostUSD: 1.00, MaxConcurrent: 4},
 		Kernel: KernelConfig{Mode: KernelModeCode, TimeoutSeconds: 60, MaxTimeoutSeconds: 300,
 			CeilingSeconds: 1800, HelperMaxBytes: 4 << 20},
+		Refine:    RefineConfig{IdleMinutes: 10, MaxEdits: 5},
 	}
 }
 
@@ -740,6 +759,13 @@ func Load(path string) (*Config, error) {
 	if cfg.Subagents.MaxConcurrent == 0 {
 		cfg.Subagents.MaxConcurrent = 4
 	}
+	// Zero means "not set in the file", as for [subagents].
+	if cfg.Refine.IdleMinutes == 0 {
+		cfg.Refine.IdleMinutes = 10
+	}
+	if cfg.Refine.MaxEdits == 0 {
+		cfg.Refine.MaxEdits = 5
+	}
 	if err := validateDiscord(cfg.Bridge.Discord); err != nil {
 		return nil, err
 	}
@@ -829,6 +855,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Subagents.MaxDepth < 0 || c.Subagents.MaxCostUSD < 0 || c.Subagents.MaxConcurrent < 0 {
 		return fmt.Errorf("subagents: max_depth, max_cost_usd and max_concurrent must not be negative")
+	}
+	if c.Refine.IdleMinutes < 0 || c.Refine.MaxEdits < 0 {
+		return fmt.Errorf("refine: idle_minutes and max_edits must not be negative")
 	}
 	return nil
 }

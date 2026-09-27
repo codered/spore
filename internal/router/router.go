@@ -20,11 +20,14 @@ const (
 	// delegated work can be routed to a cheaper model in configuration
 	// alone, with no model selection in the sub-agent path.
 	SiteSubagent = "subagent"
+	// SiteRefinement is the reviewer pass that proposes memory and
+	// project-note edits. A site of its own so it can run on a cheaper model.
+	SiteRefinement = "refinement"
 )
 
 func ValidSite(s string) bool {
 	switch s {
-	case SiteChat, SiteCompaction, SiteTitle, SiteClassify, SiteSubagent:
+	case SiteChat, SiteCompaction, SiteTitle, SiteClassify, SiteSubagent, SiteRefinement:
 		return true
 	}
 	return false
