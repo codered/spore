@@ -292,8 +292,10 @@ type hookRecorder struct {
 	turns     int
 }
 
-func (h *hookRecorder) AfterCompact(_ string, through int) { h.compacted = append(h.compacted, through) }
-func (h *hookRecorder) AfterTurn(string)                   { h.turns++ }
+func (h *hookRecorder) AfterCompact(_ string, through int) {
+	h.compacted = append(h.compacted, through)
+}
+func (h *hookRecorder) AfterTurn(string) { h.turns++ }
 
 func TestCompactAndTurnCallTheRefineHook(t *testing.T) {
 	a, sid := compactFixture(t, 20)

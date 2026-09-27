@@ -528,7 +528,7 @@ func Default() *Config {
 		Subagents: SubagentConfig{MaxDepth: 2, MaxCostUSD: 1.00, MaxConcurrent: 4},
 		Kernel: KernelConfig{Mode: KernelModeCode, TimeoutSeconds: 60, MaxTimeoutSeconds: 300,
 			CeilingSeconds: 1800, HelperMaxBytes: 4 << 20},
-		Refine:    RefineConfig{IdleMinutes: 10, MaxEdits: 5},
+		Refine: RefineConfig{IdleMinutes: 10, MaxEdits: 5},
 	}
 }
 
