@@ -109,11 +109,13 @@ func (r *Refiner) Rollback(ctx context.Context, sessionID, roundID string) (Roll
 		}
 		path, err := r.pathFor(row)
 		if err != nil {
-			return out, err
+			out.Failed = append(out.Failed, row)
+			continue
 		}
 		cur, err := readTarget(path)
 		if err != nil {
-			return out, err
+			out.Failed = append(out.Failed, row)
+			continue
 		}
 		if !sameContent(cur, row.After) {
 			if _, err := r.Store.SetRefinementStatus(ctx, row.ID, store.RefineApplied, store.RefineStale); err != nil {

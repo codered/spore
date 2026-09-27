@@ -104,6 +104,9 @@ type Message struct {
 	TokensCacheRead  int
 	CostUSD          float64
 	CreatedAt        time.Time
+	// Quiet leaves sessions.updated_at alone. Refinement notes set it: a
+	// background review must not move a session to the top of the list.
+	Quiet bool
 }
 
 // Fixed-width so the text column sorts chronologically; still parses as
@@ -500,8 +503,10 @@ func (s *Store) AppendMessage(ctx context.Context, m Message) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("append message: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET updated_at = ? WHERE id = ?`, now, m.SessionID); err != nil {
-		return 0, err
+	if !m.Quiet {
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET updated_at = ? WHERE id = ?`, now, m.SessionID); err != nil {
+			return 0, err
+		}
 	}
 	id, err := res.LastInsertId()
 	if err != nil {

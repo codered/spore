@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 
@@ -250,7 +251,10 @@ func (r *Refiner) applyOne(ctx context.Context, row store.Refinement, path strin
 }
 
 // write puts content on disk and, for a fact, brings the prompt cache and
-// the recall index up to date, exactly as the memory tool does.
+// the recall index up to date, exactly as the memory tool does. Only a
+// writeTarget error is returned; index errors are logged but not propagated,
+// since the file write succeeded and leaving the index stale is better than
+// marking the whole edit as failed.
 func (r *Refiner) write(ctx context.Context, kind, target, path string, content *string) error {
 	if err := writeTarget(path, content); err != nil {
 		return err
@@ -261,10 +265,16 @@ func (r *Refiner) write(ctx context.Context, kind, target, path string, content 
 	r.Facts.Reload()
 	for _, f := range r.Facts.Facts() {
 		if f.Name == target {
-			return r.Store.IndexFact(ctx, target, f.Description+"\n"+f.Body)
+			if err := r.Store.IndexFact(ctx, target, f.Description+"\n"+f.Body); err != nil {
+				slog.Warn("refinement wrote the file but could not update the recall index", "target", target, "error", err)
+			}
+			return nil
 		}
 	}
-	return r.Store.UnindexFact(ctx, target)
+	if err := r.Store.UnindexFact(ctx, target); err != nil {
+		slog.Warn("refinement wrote the file but could not update the recall index", "target", target, "error", err)
+	}
+	return nil
 }
 
 // pathFor maps a ledger row back to its file. A notes target is an absolute

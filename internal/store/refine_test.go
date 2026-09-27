@@ -137,12 +137,17 @@ func TestIdleSessionsEligibility(t *testing.T) {
 	child, _ := st.CreateChildSession(ctx, "child", "", fresh)
 	appendText(t, st, child, "user", "hello")
 
+	job, _ := st.CreateSessionFrom(ctx, "job", "", SourceJob)
+	appendText(t, st, job, "user", "run task")
+	_ = st.MarkRefineAttempt(ctx, job)
+	_ = st.SetRefinedThrough(ctx, job, 1)
+
 	ids, err := st.IdleSessions(ctx, later)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(ids) != 1 || ids[0] != fresh {
-		t.Fatalf("IdleSessions = %v, want only %s", ids, fresh)
+		t.Fatalf("IdleSessions = %v, want only %s (not job)", ids, fresh)
 	}
 	if ids, _ := st.IdleSessions(ctx, time.Now().Add(-time.Hour)); len(ids) != 0 {
 		t.Fatalf("nothing is idle an hour ago, got %v", ids)
@@ -154,6 +159,40 @@ func TestIdleSessionsEligibility(t *testing.T) {
 	ids, _ = st.IdleSessions(ctx, later)
 	if len(ids) != 2 {
 		t.Fatalf("after a new message the failed session is eligible again, got %v", ids)
+	}
+}
+
+func TestRefinementNoteDoesNotBumpSessionUpdateTime(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+	sid, _ := st.CreateSessionFrom(ctx, "t", "", SourceChat)
+	appendText(t, st, sid, "user", "hello")
+
+	sess1, _, _ := st.Session(ctx, sid)
+	origTime := sess1.UpdatedAt
+
+	time.Sleep(2 * time.Millisecond)
+
+	_, _ = st.AppendMessage(ctx, Message{
+		SessionID: sid, Role: RoleNote, BlocksJSON: []byte(`[{"type":"text","text":"quiet"}]`),
+		Quiet: true,
+	})
+
+	sess2, _, _ := st.Session(ctx, sid)
+	if sess2.UpdatedAt != origTime {
+		t.Errorf("quiet note bumped UpdatedAt from %v to %v", origTime, sess2.UpdatedAt)
+	}
+
+	time.Sleep(2 * time.Millisecond)
+
+	_, _ = st.AppendMessage(ctx, Message{
+		SessionID: sid, Role: RoleNote, BlocksJSON: []byte(`[{"type":"text","text":"loud"}]`),
+		Quiet: false,
+	})
+
+	sess3, _, _ := st.Session(ctx, sid)
+	if sess3.UpdatedAt.Equal(origTime) || sess3.UpdatedAt.Equal(sess2.UpdatedAt) {
+		t.Errorf("non-quiet note did not bump UpdatedAt: was %v, now %v", origTime, sess3.UpdatedAt)
 	}
 }
 

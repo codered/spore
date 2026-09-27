@@ -432,4 +432,72 @@ func TestConcurrentRoundsAreExclusive(t *testing.T) {
 	wg.Wait()
 }
 
+func TestWriteReturnsWriteTargetErrorNotIndexError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("test requires non-root")
+	}
+	f := newFix(t, store.SourceChat)
+	dir := filepath.Join(t.TempDir(), "readonly")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	path := filepath.Join(dir, "test.md")
+	err := f.r.write(context.Background(), KindNotesAppend, "agent.md", path, strp("content"))
+	if err == nil {
+		t.Fatal("write must fail on unwritable parent")
+	}
+}
+
+func TestRollbackHandlesUnreadableTargets(t *testing.T) {
+	f := newFix(t, store.SourceChat)
+
+	factName := "real-fact"
+	fact := memory.Fact{Name: factName, Type: "user", Description: "test", Body: "content"}
+	writeFact(t, f, fact)
+	factPath := f.factPath(factName)
+	factContent, _ := read(t, factPath)
+
+	roundID := "test-round"
+	rowA := store.Refinement{
+		RoundID: roundID, SessionID: f.sid, Trigger: "manual",
+		Kind: KindNotesAppend, Target: "not/absolute/agent.md",
+		Before: nil, After: strp("x"), Rationale: "bad path", Status: store.RefineApplied,
+	}
+	idA, _ := f.st.AddRefinement(context.Background(), rowA)
+	rowA.ID = idA
+
+	rowB := store.Refinement{
+		RoundID: roundID, SessionID: f.sid, Trigger: "manual",
+		Kind: KindFactDelete, Target: factName,
+		Before: strp(factContent), After: nil, Rationale: "real delete", Status: store.RefineApplied,
+	}
+	idB, _ := f.st.AddRefinement(context.Background(), rowB)
+	rowB.ID = idB
+
+	// Actually apply rowB by deleting the file so the rollback can see it was applied
+	_ = os.Remove(factPath)
+
+	out, err := f.r.Rollback(context.Background(), f.sid, roundID)
+	if err != nil {
+		t.Fatalf("Rollback err = %v, want nil", err)
+	}
+	if len(out.RolledBack) != 1 || out.RolledBack[0].ID != idB {
+		t.Errorf("RolledBack = %+v, want only B", out.RolledBack)
+	}
+	if len(out.Failed) != 1 || out.Failed[0].ID != idA {
+		t.Errorf("Failed = %+v, want only A", out.Failed)
+	}
+	if _, ok := read(t, factPath); !ok {
+		t.Fatal("B's fact file should have been restored by rollback")
+	}
+	applied, ok, _ := f.st.Refinement(context.Background(), idA)
+	if !ok || applied.Status != store.RefineApplied {
+		t.Errorf("A's status = %s, want applied (unchanged)", applied.Status)
+	}
+}
+
 func strp(s string) *string { return &s }

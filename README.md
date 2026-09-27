@@ -700,12 +700,14 @@ when the model calls the `refine` tool, or when you type `/refine [focus]`.
 
 - Chat sessions apply edits immediately. Discord and scheduled-job sessions
   only propose them: open `:refinements` (hotkey `R`) and press `a` to accept
-  or `r` to reject.
+  or `r` to reject. Scheduled-job runs are not reviewed automatically when idle;
+  run `/refine` in one to review it.
 - Every edit is recorded. `/refine rollback` undoes the last round in the
   current session; `x` on an applied row in `:refinements` undoes its round.
 - The reviewer never sees tool output — only what you and spore said.
 - Route it to a cheaper model with `[[route]] when = "refinement"`, or turn
-  the automatic reviews off with `[refine] enabled = false`.
+  the automatic reviews off with `[refine] enabled = false` (manual `/refine`,
+  review and rollback still work).
 
 ### Tracing
 

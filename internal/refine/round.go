@@ -179,7 +179,7 @@ func (r *Refiner) writeNote(ctx context.Context, sessionID, text string, p Plan)
 		Model: p.Model, CallSite: router.SiteRefinement,
 		TokensIn: p.Usage.InputTokens, TokensOut: p.Usage.OutputTokens,
 		TokensCacheWrite: p.Usage.CacheWriteTokens, TokensCacheRead: p.Usage.CacheReadTokens,
-		CostUSD: p.Cost,
+		CostUSD: p.Cost, Quiet: true,
 	}); err != nil {
 		return err
 	}

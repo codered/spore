@@ -183,17 +183,19 @@ func (s *Store) MarkRefineAttempt(ctx context.Context, sessionID string) error {
 
 // IdleSessions lists top-level sessions last updated before `before` that
 // have a user message the refiner has not reviewed, and that have not been
-// attempted since their last update.
+// attempted since their last update. Scheduled-job sessions are excluded:
+// each job run opens a fresh session, and their "user" turn is the job prompt,
+// so they are never swept for idle review.
 func (s *Store) IdleSessions(ctx context.Context, before time.Time) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id FROM sessions s
-		 WHERE s.source != ? AND s.parent_id = ''
+		 WHERE s.source NOT IN (?, ?) AND s.parent_id = ''
 		   AND s.updated_at < ?
 		   AND s.refine_attempted_at < s.updated_at
 		   AND EXISTS (SELECT 1 FROM messages m
 		                WHERE m.session_id = s.id AND m.role = 'user' AND m.seq > s.refined_through)
 		 ORDER BY s.updated_at`,
-		SourceSubagent, before.UTC().Format(timeFormat))
+		SourceSubagent, SourceJob, before.UTC().Format(timeFormat))
 	if err != nil {
 		return nil, fmt.Errorf("idle sessions: %w", err)
 	}
