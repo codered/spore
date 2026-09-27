@@ -12,6 +12,7 @@ import (
 	"github.com/codered/spore/internal/bridge/discord"
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/daemon"
+	"github.com/codered/spore/internal/refine"
 	mcphost "github.com/codered/spore/internal/mcp"
 	"github.com/codered/spore/internal/memory"
 	"github.com/codered/spore/internal/policy"
@@ -31,6 +32,7 @@ import (
 	"github.com/codered/spore/internal/tool/gorun"
 	"github.com/codered/spore/internal/tool/mem"
 	personatool "github.com/codered/spore/internal/tool/persona"
+	refinetool "github.com/codered/spore/internal/tool/refine"
 	"github.com/codered/spore/internal/tool/schedule"
 	"github.com/codered/spore/internal/tool/shell"
 	"github.com/codered/spore/internal/tool/skill"
@@ -45,7 +47,7 @@ import (
 // caller — serve supervises it, and everything else closes it. The fact
 // cache is built by the caller (buildAgent needs it for Agent.Facts too) and
 // passed in here just to register the two memory tools around it.
-func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recallBackend recall.Recall, skillsCache *skillfiles.Caches, sup *subagent.Supervisor, approver policy.Approver) (*policy.Guard, *mcphost.Host, error) {
+func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recallBackend recall.Recall, skillsCache *skillfiles.Caches, sup *subagent.Supervisor, approver policy.Approver, ref *refine.Refiner) (*policy.Guard, *mcphost.Host, error) {
 	reg := tool.NewRegistry(cfg.Policy.MaxOutput)
 	tools := fs.New(cfg.Policy.MaxOutput)
 	tools = append(tools, shell.New(
@@ -55,6 +57,7 @@ func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recall
 	tools = append(tools, mem.NewRecallSearch(recallBackend), mem.NewMemory(facts, st))
 	tools = append(tools, skill.New(cfg, skillsCache)...)
 	tools = append(tools, personatool.New(cfg)...)
+	tools = append(tools, refinetool.New(ref))
 	tools = append(tools, subagenttool.New(sup)...)
 	// go_run's helper calls go back through the guard built below, which
 	// wraps this very registry; Bind closes that cycle once the guard exists.
@@ -178,7 +181,12 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	// receives the agent after: buildAgent constructs the registry first, so
 	// the cycle is closed by Attach rather than by construction order.
 	sup := subagent.New(st, cfg.Subagents)
-	tools, host, err := buildTools(cfg, st, facts, recallBackend, skillsCache, sup, approver)
+
+	// One Refiner per daemon: the tool records the model's requests on it,
+	// the agent calls its hooks, and the daemon runs its sweeper and routes.
+	ref := refine.New(st, reg, rt, cfg, facts)
+
+	tools, host, err := buildTools(cfg, st, facts, recallBackend, skillsCache, sup, approver, ref)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -186,6 +194,7 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	a.Facts = facts
 	a.Skills = skillsCache
 	a.Env = workspace.NewDescribers().Describe
+	a.Refine = ref
 	sup.Attach(a)
 	return a, host, mir, sup, nil
 }

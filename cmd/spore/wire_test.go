@@ -110,7 +110,7 @@ workspace = "`+dir+`"
 	facts.Reload()
 
 	sup := subagent.New(st, cfg.Subagents)
-	guard, host, err := buildTools(cfg, st, facts, sqlitefts.New(st.DB()), skillfiles.NewCaches(), sup, nil)
+	guard, host, err := buildTools(cfg, st, facts, sqlitefts.New(st.DB()), skillfiles.NewCaches(), sup, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

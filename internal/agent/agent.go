@@ -99,6 +99,14 @@ type ToolRunner interface {
 	Run(ctx context.Context, call provider.Block) provider.Block
 }
 
+// RefineHook is told when compaction folds messages and when a turn ends, so
+// continual refinement can review them. internal/refine implements it; the
+// agent does not import that package.
+type RefineHook interface {
+	AfterCompact(sessionID string, through int)
+	AfterTurn(sessionID string)
+}
+
 type Agent struct {
 	Store    *store.Store
 	Registry *provider.Registry
@@ -118,6 +126,9 @@ type Agent struct {
 	// pattern. Nil means a test built the Agent directly with New; buildAgent
 	// attaches the real one.
 	Skills *skill.Caches
+	// Refine receives the compaction and end-of-turn hooks. Nil means no
+	// refinement attached, which is what a test built with New gets.
+	Refine RefineHook
 }
 
 // onlyKernel keeps the go_run spec. In code mode every other tool is reached
@@ -265,7 +276,14 @@ func (a *Agent) RunSite(ctx context.Context, sessionID, input, site string) (<-c
 		defer close(out)
 		ctx, turn := sporetrace.StartTurn(ctx, sessionID, "core")
 		defer turn.End()
-		if err := a.loop(ctx, sessionID, site, out); err != nil {
+		err := a.loop(ctx, sessionID, site, out)
+		// Whatever the turn's outcome, a refine the model asked for during
+		// it is started (or discarded) now, so the request never outlives
+		// the turn that made it.
+		if a.Refine != nil {
+			a.Refine.AfterTurn(sessionID)
+		}
+		if err != nil {
 			if stopped(ctx) {
 				out <- Event{Type: EvStopped, Err: ErrStopped}
 				return

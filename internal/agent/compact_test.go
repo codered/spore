@@ -286,3 +286,37 @@ func TestCompactSkipsNotes(t *testing.T) {
 		}
 	}
 }
+
+type hookRecorder struct {
+	compacted []int
+	turns     int
+}
+
+func (h *hookRecorder) AfterCompact(_ string, through int) { h.compacted = append(h.compacted, through) }
+func (h *hookRecorder) AfterTurn(string)                   { h.turns++ }
+
+func TestCompactAndTurnCallTheRefineHook(t *testing.T) {
+	a, sid := compactFixture(t, 20)
+	h := &hookRecorder{}
+	a.Refine = h
+	if _, _, _, err := a.Compact(context.Background(), sid); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.compacted) != 1 || h.compacted[0] != 8 { // 20 messages, KeepRecent 12
+		t.Fatalf("AfterCompact calls = %v, want [8]", h.compacted)
+	}
+
+	script := provider.NewScript(provider.ScriptTurn{Text: "hello"})
+	b, st := harness(t, script, nil)
+	b.Refine = h
+	sid2, _ := st.CreateSession(context.Background(), "t", "")
+	ch, err := b.Run(context.Background(), sid2, "hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range ch {
+	}
+	if h.turns != 1 {
+		t.Fatalf("AfterTurn calls = %d, want 1", h.turns)
+	}
+}
