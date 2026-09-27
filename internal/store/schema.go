@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   source     TEXT NOT NULL DEFAULT '',
   job_id     INTEGER NOT NULL DEFAULT 0,
   seen_seq   INTEGER NOT NULL DEFAULT 0,
+  refined_through     INTEGER NOT NULL DEFAULT 0,
+  refine_attempted_at TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -204,4 +206,27 @@ CREATE TABLE IF NOT EXISTS subagent_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_subagent_runs_parent ON subagent_runs(parent_id, started_at);
+
+-- refinements is the ledger behind continual refinement: one row per edit a
+-- refinement round made or proposed, with the whole before and after file
+-- content so rollback and the staleness checks compare bytes. NULL before
+-- means the target did not exist; NULL after means the edit deletes it.
+CREATE TABLE IF NOT EXISTS refinements (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  round_id   TEXT NOT NULL,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  trigger    TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  target     TEXT NOT NULL,
+  before     TEXT,
+  after      TEXT,
+  rationale  TEXT NOT NULL,
+  status     TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_refinements_status ON refinements(status, id);
+CREATE INDEX IF NOT EXISTS idx_refinements_round ON refinements(round_id, id);
+CREATE INDEX IF NOT EXISTS idx_refinements_session ON refinements(session_id, status, id);
 `

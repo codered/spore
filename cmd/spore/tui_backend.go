@@ -178,3 +178,47 @@ func (b tuiBackend) DeleteSessions(ctx context.Context, ids []string, all, disco
 func (b tuiBackend) MarkSeen(ctx context.Context, id string) error {
 	return b.c.do(ctx, "POST", "/api/sessions/"+id+"/seen", nil, nil)
 }
+
+func (b tuiBackend) Refine(ctx context.Context, id, instructions string) (string, error) {
+	var out daemon.RefineResultJSON
+	if err := b.c.do(ctx, "POST", "/api/sessions/"+id+"/refine", map[string]string{"instructions": instructions}, &out); err != nil {
+		return "", err
+	}
+	if len(out.Dropped) > 0 {
+		return out.Note + "\n  dropped: " + strings.Join(out.Dropped, "\n  dropped: "), nil
+	}
+	return out.Note, nil
+}
+
+func (b tuiBackend) RefineRollback(ctx context.Context, id string) (string, error) {
+	var out daemon.RollbackJSON
+	if err := b.c.do(ctx, "POST", "/api/sessions/"+id+"/refine/rollback", map[string]string{}, &out); err != nil {
+		return "", err
+	}
+	s := fmt.Sprintf("rolled back %d edit(s) from round %s", len(out.RolledBack), out.RoundID)
+	if n := len(out.Stale); n > 0 {
+		s += fmt.Sprintf("; %d left alone because the file changed since", n)
+	}
+	if n := len(out.Failed); n > 0 {
+		s += fmt.Sprintf("; %d failed", n)
+	}
+	return s, nil
+}
+
+func (b tuiBackend) Refinements(ctx context.Context) ([]daemon.RefinementJSON, error) {
+	var out []daemon.RefinementJSON
+	err := b.c.do(ctx, "GET", "/api/refinements", nil, &out)
+	return out, viewErr(err)
+}
+
+func (b tuiBackend) AcceptRefinement(ctx context.Context, id int64) error {
+	return viewErr(b.c.do(ctx, "POST", "/api/refinements/"+strconv.FormatInt(id, 10)+"/accept", nil, nil))
+}
+
+func (b tuiBackend) RejectRefinement(ctx context.Context, id int64) error {
+	return viewErr(b.c.do(ctx, "POST", "/api/refinements/"+strconv.FormatInt(id, 10)+"/reject", nil, nil))
+}
+
+func (b tuiBackend) RollbackRound(ctx context.Context, sessionID, roundID string) error {
+	return viewErr(b.c.do(ctx, "POST", "/api/sessions/"+sessionID+"/refine/rollback", map[string]string{"round_id": roundID}, nil))
+}

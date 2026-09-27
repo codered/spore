@@ -140,6 +140,10 @@ func (a *Agent) Compact(ctx context.Context, sessionID string) (folded, before, 
 		return 0, before, before, err
 	}
 
+	if a.Refine != nil {
+		a.Refine.AfterCompact(sessionID, cut)
+	}
+
 	// Re-snapshot to compute the after size.
 	newSnap, err := a.Snapshot(ctx, sessionID)
 	if err != nil {

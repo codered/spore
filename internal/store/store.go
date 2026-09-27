@@ -19,7 +19,8 @@ import (
 )
 
 // Session sources: where a session was opened from. The TUI filters its
-// sidebar on them; nothing in the engine branches on them.
+// sidebar on them, and refinement trusts only SourceChat: a round over any
+// other source proposes its edits instead of applying them.
 const (
 	SourceChat     = "chat"
 	SourceDiscord  = "discord"
@@ -103,6 +104,9 @@ type Message struct {
 	TokensCacheRead  int
 	CostUSD          float64
 	CreatedAt        time.Time
+	// Quiet leaves sessions.updated_at alone. Refinement notes set it: a
+	// background review must not move a session to the top of the list.
+	Quiet bool
 }
 
 // Fixed-width so the text column sorts chronologically; still parses as
@@ -207,6 +211,18 @@ func migrateSessions(db *sql.DB) error {
 			if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN ` + col + ` INTEGER NOT NULL DEFAULT 0`); err != nil {
 				return fmt.Errorf("add sessions.%s: %w", col, err)
 			}
+		}
+	}
+	if !have["refined_through"] {
+		if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN refined_through INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add sessions.refined_through: %w", err)
+		}
+	}
+	// TEXT, in timeFormat like updated_at, so the idle sweeper compares the
+	// two as strings. '' sorts before every timestamp: never attempted.
+	if !have["refine_attempted_at"] {
+		if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN refine_attempted_at TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add sessions.refine_attempted_at: %w", err)
 		}
 	}
 	return nil
@@ -487,8 +503,10 @@ func (s *Store) AppendMessage(ctx context.Context, m Message) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("append message: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET updated_at = ? WHERE id = ?`, now, m.SessionID); err != nil {
-		return 0, err
+	if !m.Quiet {
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET updated_at = ? WHERE id = ?`, now, m.SessionID); err != nil {
+			return 0, err
+		}
 	}
 	id, err := res.LastInsertId()
 	if err != nil {

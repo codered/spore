@@ -27,4 +27,8 @@ type Backend interface {
 	DeleteSessions(ctx context.Context, ids []string, all, discord bool) (daemon.DeleteSessionsJSON, error)
 	// MarkSeen records that the session has been opened.
 	MarkSeen(ctx context.Context, id string) error
+	// Refine runs a manual refinement round and returns its note line.
+	Refine(ctx context.Context, id, instructions string) (string, error)
+	// RefineRollback undoes the session's most recent applied round.
+	RefineRollback(ctx context.Context, id string) (string, error)
 }

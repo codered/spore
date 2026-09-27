@@ -808,3 +808,20 @@ func TestAgentPathIsEmptyWithoutAWorkspace(t *testing.T) {
 		t.Fatalf("AgentPath(\"\") = %q, want empty", got)
 	}
 }
+
+func TestRefineDefaultsAndValidation(t *testing.T) {
+	cfg := Default()
+	if !cfg.Refine.On() || cfg.Refine.IdleMinutes != 10 || cfg.Refine.MaxEdits != 5 {
+		t.Fatalf("defaults = %+v on=%v", cfg.Refine, cfg.Refine.On())
+	}
+	off := false
+	cfg.Refine.Enabled = &off
+	if cfg.Refine.On() {
+		t.Error("enabled = false must turn refinement off")
+	}
+	cfg.Refine.MaxEdits = -1
+	cfg.DefaultModel = "test/m"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "refine") {
+		t.Error("negative max_edits must fail validation with error containing 'refine'")
+	}
+}

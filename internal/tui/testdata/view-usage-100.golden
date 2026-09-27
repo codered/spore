@@ -1,4 +1,4 @@
- spore   chat  skills S  agents A  usage U  jobs J                                                  
+ spore   chat  skills S  agents A  usage U  jobs J  refinements R                                   
 ┏━ usage(3) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃DAY           MODEL                                      TURNS      IN     OUT  CACHE %       COST┃
 ┃this session  sonnet-5                                       4    1.2k     300      96%    $0.1200┃

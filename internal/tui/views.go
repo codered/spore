@@ -23,4 +23,8 @@ type Views interface {
 	Usage(ctx context.Context, sessionID string) (daemon.UsageJSON, error)
 	CancelAgent(ctx context.Context, parent, child string) error
 	CancelJob(ctx context.Context, id int64) error
+	Refinements(ctx context.Context) ([]daemon.RefinementJSON, error)
+	AcceptRefinement(ctx context.Context, id int64) error
+	RejectRefinement(ctx context.Context, id int64) error
+	RollbackRound(ctx context.Context, sessionID, roundID string) error
 }
