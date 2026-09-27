@@ -224,7 +224,12 @@ func (r *Refiner) applyOne(ctx context.Context, row store.Refinement, path strin
 	cur, err := readTarget(path)
 	if err != nil || !sameContent(cur, row.Before) {
 		row.Status = store.RefineStale
-		row.ID, _ = r.Store.AddRefinement(ctx, row)
+		id, err := r.Store.AddRefinement(ctx, row) // ledger the stale edit
+		if err != nil {
+			res.Dropped = append(res.Dropped, fmt.Sprintf("%s %s: %v", row.Kind, row.Target, err))
+			return
+		}
+		row.ID = id
 		res.Stale = append(res.Stale, row)
 		return
 	}
