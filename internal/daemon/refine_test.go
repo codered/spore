@@ -50,6 +50,14 @@ func post(t *testing.T, url string, body any, out any) int {
 
 const tabs = `{"edits":[{"kind":"fact.create","name":"prefers-tabs","type":"feedback","description":"indent","body":"Use tabs.","rationale":"user said"}]}`
 
+func appendUser(t *testing.T, s *Server, sid, text string) {
+	t.Helper()
+	raw, _ := json.Marshal([]provider.Block{{Type: provider.BlockText, Text: text}})
+	if _, err := s.Store().AppendMessage(context.Background(), store.Message{SessionID: sid, Role: "user", BlocksJSON: raw}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRefineRouteProposeAcceptRollback(t *testing.T) {
 	s, ts := newTestServer(t)
 	attachRefiner(t, s, tabs)

@@ -211,6 +211,7 @@ func selfSection(cfg *config.Config, workspace string) string {
 	b.WriteString("\nThe user can ask you to do these things directly: \"write me a skill for X\" is skill_install, \"from now on in this project, always X\" is agent_note, and \"remember that X\" is memory. Each asks for their approval before it writes.\n")
 	// The asymmetry is the point: three of these are things spore does on
 	// request, and the fourth is a file it only reads.
+	b.WriteString("When the user corrects you or states a lasting preference, you can also call refine: a reviewer reads this conversation after your turn and records what was learned, which the user can review and roll back.\n")
 	b.WriteString("\nsoul.md is the user's, not yours: you cannot write it. When they ask you to change how you behave in general rather than in one project, tell them the path and what to add, and let them make the edit.\n")
 	// skill_install takes a body, not a location, so installing from a file
 	// or a URL is a two-step the model has to be told about. The last
