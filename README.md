@@ -61,6 +61,7 @@ See [Installation](#installation) and [Configuration](#configure) for details.
   - [MCP servers](#mcp-servers)
   - [Memory & recall](#memory--recall)
   - [Semantic search](#semantic-search)
+  - [Refinement](#refinement)
   - [Tracing](#tracing)
 - [Daemon](#daemon)
 - [Web UI](#web-ui)
@@ -690,7 +691,7 @@ after.
 `spore recall teardown` stops the containers and goes back to keyword
 search, keeping the data volume unless you pass `--purge`.
 
-## Refinement
+### Refinement
 
 spore reviews its own conversations and records what it learned as memory
 facts and project notes (`.spore/agent.md`). A review runs when a session goes
