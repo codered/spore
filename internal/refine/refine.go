@@ -56,12 +56,16 @@ type Refiner struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	mu       sync.Mutex //nolint:unused // used in future rounds implementation
+	// mu guards inFlight and requests.
+	mu       sync.Mutex
 	inFlight map[string]bool
 	requests map[string]string
 	// fileMu serialises read-check-write on target files across rounds,
 	// accepts and rollbacks.
-	fileMu sync.Mutex //nolint:unused // used in future apply implementation
+	fileMu sync.Mutex
+	// beforeApply, when set, runs between the planner call and apply. Tests
+	// use it to change a file underneath a round.
+	beforeApply func()
 }
 
 func New(st *store.Store, reg *provider.Registry, rt *router.Router, cfg *config.Config, facts *memory.Cache) *Refiner {
