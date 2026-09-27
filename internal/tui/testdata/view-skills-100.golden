@@ -1,4 +1,4 @@
- spore   chat  skills S  agents A  usage U  jobs J                                                  
+ spore   chat  skills S  agents A  usage U  jobs J  refinements R                                   
 ┏━ skills(3) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃NAME              LOADED  TOKENS  DESCRIPTION                                                     ┃
 ┃debug             ✓         1.2k  systematic debugging                                            ┃

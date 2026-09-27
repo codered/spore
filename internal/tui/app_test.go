@@ -43,6 +43,12 @@ type fakeBackend struct {
 	deletes     []deleteCall
 	deleteNotes []string
 	seen        []string
+
+	refinements []daemon.RefinementJSON
+	accepted    []int64
+	rejected    []int64
+	rolledBack  []string
+	refined     []string
 }
 
 func (f *fakeBackend) Sessions(context.Context) ([]daemon.SessionJSON, error) { return f.sessions, nil }
@@ -138,6 +144,41 @@ func (f *fakeBackend) CancelJob(_ context.Context, id int64) error {
 	defer f.mu.Unlock()
 	f.cancelledJobs = append(f.cancelledJobs, id)
 	return nil
+}
+
+func (f *fakeBackend) Refinements(context.Context) ([]daemon.RefinementJSON, error) {
+	f.fetched()
+	return f.refinements, f.viewErr
+}
+func (f *fakeBackend) AcceptRefinement(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.accepted = append(f.accepted, id)
+	return nil
+}
+func (f *fakeBackend) RejectRefinement(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rejected = append(f.rejected, id)
+	return nil
+}
+func (f *fakeBackend) RollbackRound(_ context.Context, sid, round string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rolledBack = append(f.rolledBack, sid+":"+round)
+	return nil
+}
+func (f *fakeBackend) Refine(_ context.Context, id, instr string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.refined = append(f.refined, id+":"+instr)
+	return "refined: no changes", nil
+}
+func (f *fakeBackend) RefineRollback(_ context.Context, id string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rolledBack = append(f.rolledBack, id+":latest")
+	return "rolled back 1", nil
 }
 
 func newTestModel(t *testing.T, fb *fakeBackend, selected string) *Model {
@@ -916,5 +957,31 @@ func TestStartingOnARunOpensTheFolder(t *testing.T) {
 	run(m, sessionsMsg{list: fb.sessions})
 	if !m.cache.jobsOpen || !strings.Contains(m.View(), short("r1")) {
 		t.Fatalf("started on r1: open=%v\n%s", m.cache.jobsOpen, m.View())
+	}
+}
+
+// runCmd executes a command and any batch it returns, synchronously.
+func runCmd(t *testing.T, c tea.Cmd) {
+	t.Helper()
+	if c == nil {
+		return
+	}
+	if b, ok := c().(tea.BatchMsg); ok {
+		for _, cc := range b {
+			runCmd(t, cc)
+		}
+	}
+}
+
+func TestSlashRefinePassesInstructionsAndRollback(t *testing.T) {
+	fb := &fakeBackend{}
+	m := newTestModel(t, fb, "s1")
+	runCmd(t, m.slashLine("refine the lint rule"))
+	runCmd(t, m.slashLine("refine rollback"))
+	if len(fb.refined) != 1 || fb.refined[0] != "s1:the lint rule" {
+		t.Fatalf("refined = %v", fb.refined)
+	}
+	if len(fb.rolledBack) != 1 || fb.rolledBack[0] != "s1:latest" {
+		t.Fatalf("rolledBack = %v", fb.rolledBack)
 	}
 }

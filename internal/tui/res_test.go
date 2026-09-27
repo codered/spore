@@ -139,7 +139,44 @@ func TestEveryResourceIsReachableByNameAndHotkey(t *testing.T) {
 			t.Errorf("%s has %d flex columns, want at most one", r.Name(), flex)
 		}
 	}
-	if len(resources()) != 4 {
-		t.Fatalf("%d resources, want skills, agents, usage, jobs", len(resources()))
+	if len(resources()) != 5 {
+		t.Fatalf("%d resources, want skills, agents, usage, jobs, refinements", len(resources()))
+	}
+}
+
+func TestRefinementRowsProposedFirstAndActionsByStatus(t *testing.T) {
+	before, after := "old", "new"
+	fb := &fakeBackend{refinements: []daemon.RefinementJSON{
+		{ID: 2, RoundID: "r2", SessionID: "s1", Trigger: "manual", Kind: "fact.update", Target: "style", Before: &before, After: &after, Rationale: "user said", Status: "applied", CreatedAt: fixedNow()},
+		{ID: 1, RoundID: "r1", SessionID: "s2", Trigger: "idle", Kind: "notes.append", Target: "/w/.spore/agent.md", After: &after, Rationale: "lint", Status: "proposed", CreatedAt: fixedNow()},
+	}}
+	rows := fetch(t, refinementsRes{}, fb, "")
+	if len(rows) != 2 || rows[0].ID != "1" {
+		t.Fatalf("proposed rows must sort first: %+v", rows)
+	}
+	if rows[0].Cells[3] != "agent.md" {
+		t.Errorf("notes target cell = %q, want agent.md", rows[0].Cells[3])
+	}
+	if d := (refinementsRes{}).Detail(rows[1]); !strings.Contains(d, "old") || !strings.Contains(d, "new") || !strings.Contains(d, "user said") {
+		t.Errorf("detail = %q", d)
+	}
+	acts := map[string]Action{}
+	for _, a := range (refinementsRes{}).Actions() {
+		acts[a.Key] = a
+	}
+	if !acts["a"].Applies(rows[0]) || acts["a"].Applies(rows[1]) {
+		t.Error("accept applies only to proposed rows")
+	}
+	if !acts["r"].Applies(rows[0]) || acts["r"].Applies(rows[1]) {
+		t.Error("reject applies only to proposed rows")
+	}
+	if acts["x"].Applies(rows[0]) || !acts["x"].Applies(rows[1]) {
+		t.Error("rollback applies only to applied rows")
+	}
+	ctx := context.Background()
+	_ = acts["a"].Run(ctx, fb, rows[0])
+	_ = acts["x"].Run(ctx, fb, rows[1])
+	if len(fb.accepted) != 1 || fb.accepted[0] != 1 || len(fb.rolledBack) != 1 || fb.rolledBack[0] != "s1:r2" {
+		t.Fatalf("accepted=%v rolledBack=%v", fb.accepted, fb.rolledBack)
 	}
 }

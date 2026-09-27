@@ -1,4 +1,4 @@
- spore   chat  skills S  agents A  usage U  jobs J                                         1 blocked
+ spore   chat  skills S  agents A  usage U  jobs J  refinements R                          1 blocked
 ╭─ sessions ───────────────────╮┏━ a1b2 fix flaky test ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 │▾ jobs  2                     │┃ chat · /work/spore · sonnet-5 · ctx 38.0k                        ┃
 │  job 1 · Send me a joke      │┃ › fix the flaky tui test                                         ┃

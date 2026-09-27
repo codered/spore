@@ -103,7 +103,7 @@ type Options struct {
 }
 
 // commandNames are the `:` commands, for completion.
-var commandNames = []string{"agents", "chat", "clear", "compact", "context", "delete", "jobs", "new", "q", "quit", "sessions", "skills", "usage"}
+var commandNames = []string{"agents", "chat", "clear", "compact", "context", "delete", "jobs", "new", "q", "quit", "refine", "refinements", "sessions", "skills", "usage"}
 
 // confirmState is the modal on screen. yes and alt run on the model's
 // goroutine when the key is pressed, so they may change the model before
@@ -739,6 +739,8 @@ func (m *Model) command(line string) tea.Cmd {
 		return m.confirmDelete(len(args) > 0 && args[0] == "all")
 	case "clear", "compact", "context":
 		return m.slash(name)
+	case "refine":
+		return m.refine(args)
 	}
 	if r, ok := resourceByName(name); ok {
 		return m.openView(r)
@@ -757,6 +759,8 @@ func (m *Model) slashLine(line string) tea.Cmd {
 	switch fields[0] {
 	case "clear", "compact", "context", "usage", "skills", "agents":
 		return m.slash(fields[0])
+	case "refine":
+		return m.refine(fields[1:])
 	}
 	return m.command(line)
 }
@@ -768,6 +772,34 @@ func (m *Model) slash(name string) tea.Cmd {
 		out, err := be.Slash(ctx, id, name)
 		if err != nil {
 			return noticeMsg{session: id, text: name + " failed: " + err.Error(), isErr: true}
+		}
+		return noticeMsg{session: id, text: out}
+	}
+}
+
+// refine runs /refine [instructions] or /refine rollback on the selected
+// session and reports the result as a notice.
+func (m *Model) refine(args []string) tea.Cmd {
+	be, ctx, id := m.be, m.ctx, m.selected
+	if id == "" {
+		return nil
+	}
+	if len(args) > 0 && args[0] == "rollback" {
+		m.cache.get(id).add(kindNotice, "rolling back the last refinement…")
+		return func() tea.Msg {
+			out, err := be.RefineRollback(ctx, id)
+			if err != nil {
+				return noticeMsg{session: id, text: "refine rollback failed: " + err.Error(), isErr: true}
+			}
+			return noticeMsg{session: id, text: out}
+		}
+	}
+	instr := strings.Join(args, " ")
+	m.cache.get(id).add(kindNotice, "refining…")
+	return func() tea.Msg {
+		out, err := be.Refine(ctx, id, instr)
+		if err != nil {
+			return noticeMsg{session: id, text: "refine failed: " + err.Error(), isErr: true}
 		}
 		return noticeMsg{session: id, text: out}
 	}
