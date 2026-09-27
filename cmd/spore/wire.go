@@ -215,6 +215,12 @@ func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, *mcphost.
 	}
 	srv.Attach(a, guard)
 	srv.AttachSubagents(sup)
+	ref, ok := a.Refine.(*refine.Refiner)
+	if !ok {
+		return nil, nil, nil, fmt.Errorf("internal: agent refine hook is %T, want *refine.Refiner", a.Refine)
+	}
+	ref.Notify = srv.PublishNote // set before any turn can run a round
+	srv.AttachRefiner(ref)
 	return srv, host, mir, nil
 }
 

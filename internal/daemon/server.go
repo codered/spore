@@ -12,6 +12,7 @@ import (
 	"github.com/codered/spore/internal/agent"
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/policy"
+	"github.com/codered/spore/internal/refine"
 	"github.com/codered/spore/internal/store"
 	"github.com/codered/spore/internal/subagent"
 )
@@ -42,6 +43,9 @@ type Server struct {
 	// subagents is the supervisor the sub-agent tools launch through. It is
 	// nil in tests that do not exercise sub-agents.
 	subagents *subagent.Supervisor
+
+	// refiner runs continual refinement. Nil means the routes answer 503.
+	refiner *refine.Refiner
 
 	// base bounds every turn's lifetime. It is the SERVER's context, never a
 	// request's: a turn survives the client that started it (spec invariant
@@ -102,6 +106,22 @@ func (s *Server) AttachSubagents(sup *subagent.Supervisor) {
 // Subagents is the supervisor the daemon serves /agents from.
 func (s *Server) Subagents() *subagent.Supervisor { return s.subagents }
 
+// AttachRefiner supplies the Refiner. Like Attach, it arrives after New.
+func (s *Server) AttachRefiner(r *refine.Refiner) { s.refiner = r }
+
+// Refiner is the attached Refiner, or nil.
+func (s *Server) Refiner() *refine.Refiner { return s.refiner }
+
+// TurnRunning reports whether a session has a turn in flight. The idle
+// sweeper skips those.
+func (s *Server) TurnRunning(id string) bool { return s.hub.Running(id) }
+
+// PublishNote shows a note row live in any view of the session. Refinement
+// uses the job-note event: the TUI renders both the same way.
+func (s *Server) PublishNote(sessionID, text string) {
+	s.hub.Publish(sessionID, WireEvent{Type: WireJobNote, Text: text})
+}
+
 // Close cancels every in-flight turn. Run calls it on shutdown.
 func (s *Server) Close() { s.cancel() }
 
@@ -122,6 +142,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sessions/{id}/events", s.handleEvents)
 	mux.HandleFunc("POST /api/sessions/{id}/compact", s.handleCompact)
 	mux.HandleFunc("POST /api/sessions/{id}/clear", s.handleClear)
+	mux.HandleFunc("POST /api/sessions/{id}/refine", s.handleRefine)
+	mux.HandleFunc("POST /api/sessions/{id}/refine/rollback", s.handleRefineRollback)
+	mux.HandleFunc("GET /api/refinements", s.handleListRefinements)
+	mux.HandleFunc("POST /api/refinements/{id}/accept", s.handleAcceptRefinement)
+	mux.HandleFunc("POST /api/refinements/{id}/reject", s.handleRejectRefinement)
 	mux.HandleFunc("GET /api/sessions/{id}/skills", s.handleSkills)
 	mux.HandleFunc("GET /api/sessions/{id}/agents", s.handleAgents)
 	mux.HandleFunc("DELETE /api/sessions/{id}/agents/{child}", s.handleCancelAgent)

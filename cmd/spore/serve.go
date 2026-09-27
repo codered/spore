@@ -155,6 +155,11 @@ func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []s
 	sched := scheduler.New(st, srv, nil)
 	go func() { _ = sched.Run(ctx, time.Duration(cfg.Daemon.TickSeconds)*time.Second) }()
 
+	if ref := srv.Refiner(); ref != nil {
+		defer ref.Close()
+		go ref.RunSweeper(ctx, time.Duration(cfg.Daemon.TickSeconds)*time.Second, srv.TurnRunning)
+	}
+
 	bridgeDone := make(chan struct{})
 	if bridge != nil {
 		go func() {
