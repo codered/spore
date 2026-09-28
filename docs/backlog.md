@@ -187,3 +187,28 @@ argument: a skills directory is read once per turn, so an entry untouched for an
 hour belongs to a session that is over. The other question — whether anything
 else is keyed by session root and unbounded — was checked at the same time, and
 these two were the only ones.
+
+## Refinement: fix the two weak tests
+
+Known gap from #48. Two refinement fixes shipped with tests that do not prove
+what they are named for. The behaviour is right in both cases; the suite just
+would not notice if it regressed.
+
+1. **Job sessions are excluded from the idle sweep, but the test would pass
+   without the exclusion.** The job case in `TestIdleSessionsEligibility`
+   (`internal/store/refine_test.go`) calls `MarkRefineAttempt` and
+   `SetRefinedThrough` right after the job's only user message. That closes
+   the other two guards in `IdleSessions`, so the case passes whether or not
+   `SourceJob` is in the `NOT IN` list. Fix: add a job session with an
+   unreviewed user message and no attempt recorded, next to an equivalent chat
+   session, and assert that only the chat session comes back. A throwaway
+   version of this test passed with the exclusion and failed without it.
+2. **Nothing forces a recall-index failure in `refine.write`.**
+   `TestWriteReturnsWriteTargetErrorNotIndexError`
+   (`internal/refine/round_test.go`) uses a `notes.append` edit, which returns
+   before the fact-only `IndexFact`/`UnindexFact` branch. So the rule that an
+   index error after a successful file write is only logged, and never marks
+   the row `failed`, is checked only by reading the code. Fix: put an interface
+   in front of the index calls (or inject a failing indexer) so a fact edit can
+   hit an index error, then assert that the row is `applied` and the file
+   changed.
