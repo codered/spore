@@ -152,9 +152,10 @@ arrived.
 **Cost.** Each frame changes the transcript string, which means a
 `vp.SetContent`. Blocks cache their rendering, so a frame is a join and a
 viewport reset, but a long transcript makes that join longer. The plan
-includes a benchmark of `sync` on a 2,000-block transcript. If a frame costs
-more than 2 ms there, the spinner drops to one frame per second, and nothing
-else changes.
+includes a benchmark of `sync` on a 2,000-block transcript. It measured
+about 2.8 ms a frame. A one-second spinner read as lag, so the spinner stays
+at 120 ms and accepts that cost, which is about 2% of a core, and only on a
+transcript that long.
 
 ### 3.6 Input placeholder (item 6)
 

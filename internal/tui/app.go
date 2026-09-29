@@ -49,11 +49,10 @@ const (
 	// refreshEvery is how often an open view refetches.
 	refreshEvery = 2 * time.Second
 	// frameEvery turns the working line's spinner. secondEvery redraws an
-	// approval's countdown when nothing else on screen moves. frameEvery is
-	// a second, not the 120ms a spinner wants: each frame rejoins the
-	// transcript, and on 2,000 blocks that costs about 2.8ms
-	// (BenchmarkSyncLongTranscript), over the spec's 2ms budget.
-	frameEvery  = time.Second
+	// approval's countdown when nothing else on screen moves. A slower
+	// spinner reads as lag; each frame rejoins the transcript, about 2.8ms
+	// on 2,000 blocks (BenchmarkSyncLongTranscript).
+	frameEvery  = 120 * time.Millisecond
 	secondEvery = time.Second
 
 	placeholderInsert = "Ask spore something…"

@@ -8,7 +8,7 @@
 │/work/web                     │┃ ▸ fs_read {"path":"internal/tui/app.go"}         ✓ 3 lines  1.3s ┃
 │○ e5f6 notes              chat│┃ The flake is a race                                              ┃
 │                              │┃                                                                  ┃
-│                              │┃ ⠸ writing · 13s                                                  ┃
+│                              │┃ ⠋ writing · 13s                                                  ┃
 │                              │┃                                                                  ┃
 │                              │┃                                                                  ┃
 │                              │┃                                                                  ┃
