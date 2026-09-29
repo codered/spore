@@ -192,6 +192,16 @@ func visible(s string) string {
 	return b.String()
 }
 
+// visibleLines is visible for text of several lines: each line's controls
+// show as symbols and the newlines between them stay.
+func visibleLines(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = visible(l)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // deadline is when the daemon denies an unanswered approval. expires is
 // empty after a daemon restart, when nothing will time the ask out.
 func (m *Model) deadline(expires string) string {
