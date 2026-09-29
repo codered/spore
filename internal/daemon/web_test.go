@@ -3,8 +3,12 @@ package daemon
 import (
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/codered/spore/web"
 )
 
 func TestIndexRenders(t *testing.T) {
@@ -19,7 +23,7 @@ func TestIndexRenders(t *testing.T) {
 	}
 	body, _ := io.ReadAll(res.Body)
 	page := string(body)
-	for _, want := range []string{"<title>spore</title>", `id="transcript"`, "/static/app.js", "/static/style.css"} {
+	for _, want := range []string{"<title>spore</title>", `id="transcript"`, `id="sidebar"`, `id="settings"`, "/static/app.js", "/static/style.css"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("index page is missing %q", want)
 		}
@@ -30,7 +34,9 @@ func TestStaticAssetsAreEmbedded(t *testing.T) {
 	_, ts := newTestServer(t)
 	for _, tc := range []struct{ path, contentType, needle string }{
 		{"/static/app.js", "javascript", "EventSource"},
+		{"/static/app.js", "javascript", "spore.keys"},
 		{"/static/style.css", "css", "#transcript"},
+		{"/static/style.css", "css", "--selected"},
 	} {
 		res, err := http.Get(ts.URL + tc.path)
 		if err != nil {
@@ -98,5 +104,60 @@ func TestPathTraversalIsNotServed(t *testing.T) {
 	res.Body.Close()
 	if strings.Contains(string(body), "package daemon") {
 		t.Error("path traversal returned Go source code")
+	}
+}
+
+var (
+	// apiCallRe finds api("METHOD", "/api/...") calls. app.js writes every
+	// call with a literal path template so this can read it.
+	apiCallRe = regexp.MustCompile(`api\(\s*"([A-Z]+)"\s*,\s*"(/api/[^"]*)"`)
+	// apiLiteralRe finds every /api/ string literal, such as EventSource URLs.
+	apiLiteralRe = regexp.MustCompile(`["'\x60](/api/[^"'\x60]*)["'\x60]`)
+	placeholder  = regexp.MustCompile(`\{[a-z_]+\}`)
+)
+
+// TestAppJSRoutesAreRegistered checks every /api path the web UI uses
+// against the mux. A view wired to an endpoint that does not exist yet (the
+// 2a-2 policy, MCP and memory routes) would otherwise fall through to the
+// index handler's 404 and fail only in a browser.
+func TestAppJSRoutesAreRegistered(t *testing.T) {
+	src, err := web.FS.ReadFile("app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux, ok := (&Server{}).Handler().(*http.ServeMux)
+	if !ok {
+		t.Fatal("Handler is not a *http.ServeMux")
+	}
+	matches := func(method, tpl string) bool {
+		path, _, _ := strings.Cut(tpl, "?")
+		path = placeholder.ReplaceAllString(path, "1")
+		if strings.Contains(path, "{") || strings.HasSuffix(path, "/") {
+			return false // a concatenated or unfinished path is not checkable
+		}
+		_, pattern := mux.Handler(httptest.NewRequest(method, path, nil))
+		return pattern != "" && pattern != "GET /"
+	}
+
+	withMethod := map[string]bool{}
+	calls := apiCallRe.FindAllStringSubmatch(string(src), -1)
+	for _, m := range calls {
+		withMethod[m[2]] = true
+		if !matches(m[1], m[2]) {
+			t.Errorf("app.js calls %s %s, which no route serves", m[1], m[2])
+		}
+	}
+	literals := apiLiteralRe.FindAllStringSubmatch(string(src), -1)
+	for _, m := range literals {
+		if withMethod[m[1]] {
+			continue
+		}
+		if !matches(http.MethodGet, m[1]) {
+			t.Errorf("app.js references %s, which no GET route serves", m[1])
+		}
+	}
+	// A regex that silently matched nothing would pass everything.
+	if len(calls) < 10 {
+		t.Errorf("found only %d api(...) calls in app.js; is the pattern still right?", len(calls))
 	}
 }
