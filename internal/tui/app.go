@@ -129,6 +129,9 @@ type confirmState struct {
 	// alt, when set, is what D does: the delete prompt's "and on Discord".
 	alt      func() tea.Cmd
 	altLabel string
+	// back is the mode the modal returns to; zero is NORMAL. An approval
+	// answered with alt+key from INSERT returns there, draft and all.
+	back mode
 }
 
 // do wraps a command that needs nothing from the model as a confirm action.
@@ -485,6 +488,16 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 	// arrives as alt+<key>. Read it as vim does: Esc, then the key. alt+enter
 	// is not a rune key, so it stays the INSERT newline.
 	if k.Alt && k.Type == tea.KeyRunes && (m.mode == modeInsert || m.mode == modeNormal) {
+		// alt+y/n/s/p answers an approval from INSERT without giving up
+		// the draft; a modifier cannot be typed by accident mid-sentence.
+		if m.mode == modeInsert && m.table == nil {
+			if root, ev, ok := m.cache.approvalFor(m.selected); ok && m.answer(root, ev, string(k.Runes)) {
+				if m.confirm != nil {
+					m.confirm.back = modeInsert
+				}
+				return nil
+			}
+		}
 		m.mode = modeNormal
 		m.input.Blur()
 		plain := tea.KeyMsg{Type: tea.KeyRunes, Runes: k.Runes}
@@ -747,13 +760,17 @@ func (m *Model) keyConfirm(k tea.KeyMsg) tea.Cmd {
 	c := m.confirm
 	m.confirm = nil
 	m.mode = modeNormal
+	var cmd tea.Cmd
 	switch {
 	case c != nil && k.String() == "y":
-		return c.yes()
+		cmd = c.yes()
 	case c != nil && k.String() == "D" && c.alt != nil:
-		return c.alt()
+		cmd = c.alt()
 	}
-	return nil
+	if c != nil && c.back == modeInsert {
+		return tea.Batch(cmd, m.enterInsert())
+	}
+	return cmd
 }
 
 // command runs a `:` command. A view's name opens that view.

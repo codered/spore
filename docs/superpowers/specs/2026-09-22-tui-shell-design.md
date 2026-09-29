@@ -244,10 +244,12 @@ working.
 
 ### 4.2 Two safety rules
 
-1. **Approval keys are live only in NORMAL.** If an approval arrives while the
-   user is in INSERT, focus stays on the input and the overlay reads
-   `esc, then y/n/s/p`. Today an arriving approval captures every key, so a `y`
-   typed mid-sentence can approve a tool call; that cannot happen here.
+1. **Plain approval keys are live only in NORMAL.** If an approval arrives while
+   the user is in INSERT, focus stays on the input, and a `y` typed
+   mid-sentence goes into the draft; it can never approve a tool call. From
+   INSERT the approval is answered with `alt+y`/`alt+n`/`alt+s`/`alt+p`, which
+   cannot be typed by accident, and the answer returns to INSERT with the draft
+   intact. (Amended 2026-09-29: pressing `esc` first was one step too many.)
 2. **Stopping takes `esc` in NORMAL.** Leaving INSERT consumes one `esc`, so an
    accidental stop needs a deliberate double press. The status bar shows
    `esc stop` whenever the selected session is working.

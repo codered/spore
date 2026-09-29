@@ -207,7 +207,10 @@ func (m *Model) keyHints(room int) string {
 	var parts []string
 	switch m.mode {
 	case modeInsert:
-		parts = []string{hint("enter", "send"), hint("ctrl+j", "newline"), hint("esc", "normal")}
+		if m.waiting() {
+			parts = append(parts, hint("alt+y/n/s/p", "answer"))
+		}
+		parts = append(parts, hint("enter", "send"), hint("ctrl+j", "newline"), hint("esc", "normal"))
 	case modeCommand:
 		parts = []string{hint("enter", "run"), hint("tab", "complete"), hint("esc", "cancel")}
 	case modeFilter:

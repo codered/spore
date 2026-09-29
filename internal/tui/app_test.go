@@ -280,7 +280,7 @@ func TestAYTypedInInsertNeverAnswersAnApproval(t *testing.T) {
 	if m.input.Value() != "yes" {
 		t.Fatalf("input = %q, want the typed text", m.input.Value())
 	}
-	if !strings.Contains(m.View(), "esc, then y/n/s/p") {
+	if !strings.Contains(m.View(), "answer with alt+y/n/s/p, or esc then y/n/s/p") {
 		t.Fatal("the overlay does not tell an INSERT-mode user how to answer")
 	}
 

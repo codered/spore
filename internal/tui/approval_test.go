@@ -150,15 +150,15 @@ func TestCardFitsANarrowPane(t *testing.T) {
 func TestDraftLineUnderTheInput(t *testing.T) {
 	m, _, _ := clockModel(t)
 	approvalOn(m, daemon.WireEvent{Tool: "shell_exec"})
-	if v := ansi.Strip(m.View()); !strings.Contains(v, "approval keys work in NORMAL — esc, then y/n/s/p") || strings.Contains(v, "draft kept") {
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "answer with alt+y/n/s/p, or esc then y/n/s/p") || strings.Contains(v, "draft kept") {
 		t.Fatalf("empty input:\n%s", v)
 	}
 	run(m, keyMsg("h"))
-	if v := ansi.Strip(m.View()); !strings.Contains(v, "draft kept · approval keys work in NORMAL — esc, then y/n/s/p") {
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "draft kept · answer with alt+y/n/s/p, or esc then y/n/s/p") {
 		t.Fatalf("with a draft:\n%s", v)
 	}
 	press(m, "esc")
-	if v := ansi.Strip(m.View()); strings.Contains(v, "approval keys work in NORMAL") {
+	if v := ansi.Strip(m.View()); strings.Contains(v, "answer with alt+y") {
 		t.Fatalf("still shown in NORMAL:\n%s", v)
 	}
 }
@@ -273,5 +273,56 @@ func TestShortPaneKeepsTheCardsKeys(t *testing.T) {
 		if !strings.Contains(v, want) {
 			t.Fatalf("missing %q at 60x15:\n%s", want, v)
 		}
+	}
+}
+
+func altKey(r rune) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: true} }
+
+// While typing, alt+y/n/s/p answer the approval without leaving INSERT; the
+// confirm modal still stands between the key and the answer, and the draft
+// survives it.
+func TestAltKeysAnswerFromInsert(t *testing.T) {
+	fb := &fakeBackend{}
+	m := newTestModel(t, fb, "s1")
+	feed(m, wev("s1", daemon.WireTurnStarted),
+		daemon.WireEvent{Session: "s1", Type: daemon.WireApproval, PendingID: 1, Tool: "shell_exec", Args: `{}`})
+	typeText(m, "half a thought")
+	run(m, altKey('y'))
+	if m.mode != modeConfirm || len(fb.resolved) != 0 {
+		t.Fatalf("alt+y: mode %v, resolved %v; want the confirm modal and nothing sent", m.mode, fb.resolved)
+	}
+	press(m, "y")
+	if len(fb.resolved) != 1 || fb.resolved[0] != "s1:1:true" {
+		t.Fatalf("resolved = %v, want s1:1:true", fb.resolved)
+	}
+	if m.mode != modeInsert || m.input.Value() != "half a thought" {
+		t.Fatalf("after answering: mode %v, input %q; want INSERT with the draft", m.mode, m.input.Value())
+	}
+}
+
+func TestAltKeyCancelledReturnsToInsert(t *testing.T) {
+	fb := &fakeBackend{}
+	m := newTestModel(t, fb, "s1")
+	feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireApproval, PendingID: 1, Tool: "shell_exec", Args: `{}`})
+	run(m, altKey('n'))
+	press(m, "esc")
+	if m.mode != modeInsert || len(fb.resolved) != 0 {
+		t.Fatalf("mode %v, resolved %v; want INSERT and nothing sent", m.mode, fb.resolved)
+	}
+}
+
+func TestInsertShowsTheAltKeys(t *testing.T) {
+	m, _, _ := clockModel(t)
+	approvalOn(m, daemon.WireEvent{Tool: "shell_exec", Pattern: "shell_exec(go test*)"})
+	v := ansi.Strip(m.View())
+	for _, want := range []string{"alt+y allow once", "alt+n deny", "alt+s allow shell_exec", "alt+p always allow",
+		"answer with alt+y/n/s/p, or esc then y/n/s/p", "alt+y/n/s/p answer"} {
+		if !strings.Contains(v, want) {
+			t.Fatalf("missing %q in INSERT:\n%s", want, v)
+		}
+	}
+	press(m, "esc")
+	if v := ansi.Strip(m.View()); strings.Contains(v, "alt+y") || !strings.Contains(v, "y allow once") {
+		t.Fatalf("NORMAL should show plain keys:\n%s", v)
 	}
 }

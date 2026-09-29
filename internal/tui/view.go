@@ -330,6 +330,7 @@ func helpText() string {
 		"",
 		styKey.Render("APPROVAL") + "  (normal mode, while one is showing)",
 		"  y allow once · n deny · s allow the tool this session · p always allow the pattern",
+		"  while typing: alt+y / alt+n / alt+s / alt+p answer, and the draft is kept",
 		"  each asks first: y confirms, esc cancels",
 		"  n answers the approval, not \"new session\", until it is answered",
 		"",

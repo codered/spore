@@ -44,6 +44,12 @@ func (m *Model) approvalCard(w, h int) string {
 	ev.Rule, ev.Pattern = visible(ev.Rule), visible(ev.Pattern)
 	cw := min(cardMaxWidth, w-4)
 	inner := max(10, cw-6)
+	// While typing, the answers take alt so a letter in the draft is never
+	// read as one.
+	mod := ""
+	if m.mode == modeInsert {
+		mod = "alt+"
+	}
 	// build draws the card at a compaction level: 0 is the full card, 1
 	// drops its spacing, 2 also drops the origin and pattern rows. The
 	// title, rule, call, answers and deadline are never dropped.
@@ -60,11 +66,11 @@ func (m *Model) approvalCard(w, h int) string {
 		}
 		rows = gap(append(rows, clip(ruleLine(ev.Rule), inner)))
 		rows = gap(append(rows, box...))
-		rows = append(rows, clip(styKey.Render("y")+styMuted.Render(" allow once   ")+
-			styKey.Render("n")+styMuted.Render(" deny   ")+
-			styKey.Render("s")+styMuted.Render(" allow "+ev.Tool+" this session"), inner))
+		rows = append(rows, clip(styKey.Render(mod+"y")+styMuted.Render(" allow once   ")+
+			styKey.Render(mod+"n")+styMuted.Render(" deny   ")+
+			styKey.Render(mod+"s")+styMuted.Render(" allow "+ev.Tool+" this session"), inner))
 		if ev.Pattern != "" && level < 2 {
-			rows = append(rows, clip(styKey.Render("p")+styMuted.Render(" always allow ")+styAccent.Render(ev.Pattern), inner))
+			rows = append(rows, clip(styKey.Render(mod+"p")+styMuted.Render(" always allow ")+styAccent.Render(ev.Pattern), inner))
 		}
 		rows = append(gap(rows), styMuted.Render(m.deadline(ev.ExpiresAt)))
 		sty := styApprovalCard
@@ -209,12 +215,12 @@ func faint(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-// draftLine tells someone typing that the approval keys wait for NORMAL.
+// draftLine tells someone typing how to answer without losing the draft.
 func (m *Model) draftLine() string {
 	if m.mode != modeInsert || !m.waiting() {
 		return ""
 	}
-	msg := "approval keys work in NORMAL — esc, then y/n/s/p"
+	msg := "answer with alt+y/n/s/p, or esc then y/n/s/p"
 	if strings.TrimSpace(m.input.Value()) != "" {
 		msg = "draft kept · " + msg
 	}

@@ -270,9 +270,14 @@ The card no longer does that: it always shows the keys. Instead, while an
 approval waits for the selected session and the mode is INSERT, one line in
 warn goes under the input:
 
-- `draft kept · approval keys work in NORMAL — esc, then y/n/s/p`, when the
+- `draft kept · answer with alt+y/n/s/p, or esc then y/n/s/p`, when the
   input is not empty;
-- `approval keys work in NORMAL — esc, then y/n/s/p`, when it is empty.
+- `answer with alt+y/n/s/p, or esc then y/n/s/p`, when it is empty.
+
+In INSERT the card's key rows name the alt keys (`alt+y allow once` …), and
+the status bar leads with `alt+y/n/s/p answer`. An alt answer opens the same
+confirm modal and returns to INSERT with the draft intact (tui-shell §4.2,
+amended).
 
 That line takes one row from the viewport.
 
