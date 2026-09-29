@@ -163,6 +163,17 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .msg.error { color: var(--error); font-family: var(--mono); font-size: 13px; }
 .footer { color: var(--dim); font: 12px var(--mono); margin: 4px 0 16px; }
 
+.thinking { display: flex; align-items: baseline; gap: 8px; color: var(--dim); font: 13px var(--mono); margin: 6px auto 16px; }
+.thinking .dots span { animation: blink 1.4s infinite both; }
+.thinking .dots span:nth-child(2) { animation-delay: 0.2s; }
+.thinking .dots span:nth-child(3) { animation-delay: 0.4s; }
+.thinking .glyph { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes blink { 0%, 80%, 100% { opacity: 0.15; } 40% { opacity: 1; } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .thinking .dots span, .thinking .glyph { animation: none; }
+}
+
 details.tool {
   font: 13px var(--mono);
   margin: 4px 0;

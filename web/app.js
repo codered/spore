@@ -261,6 +261,7 @@ function apply(ev) {
   const id = ev.session;
   if (!id) return;
   const isOpen = id === S.open;
+  const known = S.sessions.has(id);
   const r = rec(id);
   switch (ev.type) {
     case "turn_started":
@@ -317,7 +318,8 @@ function apply(ev) {
       break;
     case "session":
       Object.assign(r, { title: ev.title || r.title, workspace: ev.workspace || r.workspace, source: ev.source || r.source, parent_id: ev.parent_id || r.parent_id });
-      r.updated_at = new Date().toISOString();
+      // A new session goes to the top; a known one being named stays put.
+      if (!known) r.updated_at = new Date().toISOString();
       break;
     case "session_deleted":
       S.sessions.delete(id);
@@ -343,6 +345,7 @@ function apply(ev) {
   if (S.open) {
     renderHeader();
     renderApprovals();
+    renderThinking();
   }
 }
 
@@ -408,7 +411,8 @@ function renderSidebar() {
       class: "srow" + (depth ? " child" : "") + (r.id === S.open ? " active" : "") + (r.unread ? " unread" : ""),
       style: depth > 1 ? "padding-left:" + (12 + 18 * depth) + "px" : null,
       title: r.workspace || "",
-      onclick: (e) => { e.preventDefault(); selectSession(r.id); },
+      // A click means "show me this conversation", whatever view is open.
+      onclick: (e) => { e.preventDefault(); openView("chat"); selectSession(r.id); },
     },
     h("span", { class: "glyph " + st, title: st, text: GLYPH[st] }),
     h("span", { class: "title", text: r.title || shortID(r.id) }),
@@ -473,6 +477,33 @@ async function stopTurn() {
 
 // ---------- transcript ----------
 
+// renderThinking keeps a "spore is thinking" row at the foot of the
+// transcript while the open session's turn runs, so a sent message never
+// sits there with no sign of life. It hides while an approval waits: then
+// spore is waiting on you, and the card says so.
+function renderThinking() {
+  const t = el("transcript");
+  let n = el("thinking");
+  const r = S.open && S.sessions.get(S.open);
+  if (!r || !r.working || stateOf(r) === "blocked") {
+    if (n) n.remove();
+    return;
+  }
+  if (!n) {
+    n = h("div", { id: "thinking", class: "thinking", role: "status" },
+      h("span", { class: "glyph working", text: "●" }),
+      h("span", { class: "label" }),
+      h("span", { class: "dots", "aria-hidden": "true" }, h("span", { text: "." }), h("span", { text: "." }), h("span", { text: "." })));
+  }
+  const pending = [...t.querySelectorAll("details.tool .res.wait")].pop();
+  const tool = pending && pending.closest("details.tool")._tool;
+  n.querySelector(".label").textContent = tool ? "spore is running " + tool : S.live ? "spore is writing" : "spore is thinking";
+  if (t.lastElementChild !== n) {
+    t.appendChild(n);
+    scrollDown();
+  }
+}
+
 function scrollDown() {
   const t = el("transcript");
   t.scrollTop = t.scrollHeight;
@@ -491,6 +522,8 @@ function addNote(text) {
 
 function addUser(text) {
   endLive();
+  const empty = el("empty-note");
+  if (empty) empty.remove();
   el("transcript").appendChild(h("div", { class: "msg user" },
     h("span", { class: "marker", text: "›" }), h("div", { class: "prose", text })));
   scrollDown();
@@ -630,12 +663,13 @@ function renderTranscript(tr) {
     }
     S.head.cost += m.cost_usd || 0;
   }
-  if (!(tr.messages || []).length) addNote("No messages yet. Say something below.");
+  if (!(tr.messages || []).length) addNote("No messages yet. Say something below.").id = "empty-note";
   endLive();
   const r = rec(tr.session.id);
   Object.assign(r, { title: tr.session.title, workspace: tr.session.workspace, source: tr.session.source, parent_id: tr.session.parent_id || "" });
   r.working = r.working || !!tr.running;
   renderHeader();
+  renderThinking();
 }
 
 async function loadTranscript(id, gen) {
@@ -770,9 +804,21 @@ async function send() {
   if (!text || !S.open) return;
   input.value = "";
   addUser(text);
+  // Show the turn as started now rather than when turn_started arrives, so
+  // the message visibly went somewhere.
+  const r = rec(S.open);
+  const was = r.working;
+  r.working = true;
+  renderSidebar();
+  renderHeader();
+  renderThinking();
   try {
     await api("POST", "/api/sessions/{id}/messages", { id: S.open }, { text });
   } catch (err) {
+    r.working = was;
+    renderSidebar();
+    renderHeader();
+    renderThinking();
     setStatus(err.message, true);
   }
 }
