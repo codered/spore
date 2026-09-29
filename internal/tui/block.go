@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
@@ -35,6 +36,10 @@ type block struct {
 	truncated bool
 	done      bool
 	expanded  bool
+	// startedAt and doneAt time the call when it ran live. A call rebuilt
+	// from a stored transcript has neither and shows no duration.
+	startedAt time.Time
+	doneAt    time.Time
 
 	// kindText still receiving deltas.
 	streaming bool
@@ -131,10 +136,14 @@ func splitStable(text string) (stable, tail string) {
 	return text[:cut], text[cut:]
 }
 
-// drawTool is one line collapsed -- `▸ bash go test ./…  ✗ exit 1` -- and
-// the full arguments and result expanded.
+// drawTool is one line collapsed -- `▸ bash go test ./…      ✗ exit 1  1.3s`,
+// with the status against the right edge -- and the full arguments and
+// result under a rule when expanded.
 func (b *block) drawTool(width int, selected bool) string {
 	marker := "▸ "
+	if b.expanded {
+		marker = "▾ "
+	}
 	if selected {
 		marker = "▶ "
 	}
@@ -145,22 +154,26 @@ func (b *block) drawTool(width int, selected bool) string {
 		} else {
 			status = styAccent.Render("✓ ") + styMuted.Render(summarise(b.result, b.truncated))
 		}
+		if !b.startedAt.IsZero() && !b.doneAt.IsZero() {
+			status += "  " + styMuted.Render(humanDur(b.doneAt.Sub(b.startedAt)))
+		}
 	}
 	head := styTool.Render(marker + b.tool)
-	budget := width - lipgloss.Width(head) - lipgloss.Width(status) - 3
-	line := head + " " + styMuted.Render(clip(oneLine(b.args), budget)) + "  " + status
+	args := clip(oneLine(b.args), width-lipgloss.Width(head)-lipgloss.Width(status)-3)
+	gap := max(2, width-lipgloss.Width(head)-1-lipgloss.Width(args)-lipgloss.Width(status))
+	line := head + " " + styMuted.Render(args) + strings.Repeat(" ", gap) + status
+	if selected {
+		line = fill(line, width, colFillCursor)
+	}
 	if !b.expanded {
 		return line
 	}
-	var sb strings.Builder
-	sb.WriteString(line)
-	sb.WriteString("\n")
-	sb.WriteString(indent(prettyArgs(b.args, 40), "    "))
+	body := prettyArgs(b.args, 40)
 	if b.done {
-		sb.WriteString("\n")
-		sb.WriteString(indent(clipLines(b.result, 200), "    "))
+		body += "\n" + clipLines(b.result, 200)
 	}
-	return lipgloss.NewStyle().Width(max(10, width)).Render(sb.String())
+	wrapped := lipgloss.NewStyle().Width(max(10, width-4)).Render(body)
+	return line + "\n" + indent(wrapped, "  "+styMuted.Render("│")+" ")
 }
 
 // summarise describes a successful result in a few words.

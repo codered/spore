@@ -233,3 +233,15 @@ func TestJobNotesAndCheckInsAreNotices(t *testing.T) {
 		t.Errorf("check-in notice = %q", got)
 	}
 }
+
+func TestToolTimesComeFromEvents(t *testing.T) {
+	now := t0
+	c := newCache(func() time.Time { return now })
+	c.Apply(daemon.WireEvent{Session: "s", Type: daemon.WireToolCall, ToolUseID: "t1", Tool: "bash"})
+	now = now.Add(1300 * time.Millisecond)
+	c.Apply(daemon.WireEvent{Session: "s", Type: daemon.WireToolResult, ToolUseID: "t1", Content: "ok"})
+	b := c.get("s").tool("t1")
+	if got := b.doneAt.Sub(b.startedAt); got != 1300*time.Millisecond {
+		t.Fatalf("duration = %v", got)
+	}
+}

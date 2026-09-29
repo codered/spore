@@ -4,6 +4,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestMain(m *testing.M) {
@@ -87,5 +90,63 @@ func TestStreamingTextShowsItsTail(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("streaming render is missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestHumanDur(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		-time.Second:            "0.0s",
+		400 * time.Millisecond:  "0.4s",
+		1300 * time.Millisecond: "1.3s",
+		12 * time.Second:        "12s",
+		65 * time.Second:        "1m05s",
+	} {
+		if got := humanDur(d); got != want {
+			t.Errorf("humanDur(%v) = %q, want %q", d, got, want)
+		}
+	}
+}
+
+func doneTool() *block {
+	return &block{kind: kindTool, tool: "bash", args: `{"command":"go test"}`, result: "ok", done: true,
+		startedAt: t0, doneAt: t0.Add(1300 * time.Millisecond)}
+}
+
+func TestToolRowStatusSitsAtTheRightEdge(t *testing.T) {
+	out := ansi.Strip(doneTool().drawTool(60, false))
+	if ansi.StringWidth(out) != 60 {
+		t.Fatalf("row is %d wide, want 60: %q", ansi.StringWidth(out), out)
+	}
+	if !strings.HasSuffix(out, "✓ ok  1.3s") || !strings.HasPrefix(out, "▸ bash ") {
+		t.Fatalf("row = %q", out)
+	}
+}
+
+func TestCursorToolRowIsFullWidth(t *testing.T) {
+	out := ansi.Strip(doneTool().drawTool(60, true))
+	if !strings.HasPrefix(out, "▶ bash") || ansi.StringWidth(out) != 60 {
+		t.Fatalf("cursor row = %q", out)
+	}
+}
+
+func TestExpandedToolHasARule(t *testing.T) {
+	b := doneTool()
+	b.expanded = true
+	lines := strings.Split(ansi.Strip(b.drawTool(60, false)), "\n")
+	if !strings.HasPrefix(lines[0], "▾ bash") {
+		t.Fatalf("head = %q", lines[0])
+	}
+	for _, l := range lines[1:] {
+		if !strings.HasPrefix(l, "  │ ") {
+			t.Fatalf("body line without the rule: %q", l)
+		}
+	}
+}
+
+func TestStoredToolRowHasNoDuration(t *testing.T) {
+	b := doneTool()
+	b.startedAt, b.doneAt = time.Time{}, time.Time{}
+	if out := ansi.Strip(b.drawTool(60, false)); !strings.HasSuffix(out, "✓ ok") {
+		t.Fatalf("row = %q", out)
 	}
 }

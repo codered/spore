@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
@@ -241,4 +242,17 @@ func bgSeq(bg lipgloss.TerminalColor) string {
 		return s[:i]
 	}
 	return ""
+}
+
+// humanDur is a short elapsed time: 0.4s, 12s, 1m05s.
+func humanDur(d time.Duration) string {
+	d = max(0, d)
+	switch {
+	case d < 10*time.Second:
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	s := int(d.Seconds())
+	return fmt.Sprintf("%dm%02ds", s/60, s%60)
 }

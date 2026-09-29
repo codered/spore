@@ -146,7 +146,7 @@ func (c *cache) Apply(ev daemon.WireEvent) string {
 		}
 	case daemon.WireToolCall:
 		sv.endStreaming()
-		sv.blocks = append(sv.blocks, &block{kind: kindTool, toolID: ev.ToolUseID, tool: ev.Tool, args: ev.Args})
+		sv.blocks = append(sv.blocks, &block{kind: kindTool, toolID: ev.ToolUseID, tool: ev.Tool, args: ev.Args, startedAt: c.now()})
 	case daemon.WireToolResult:
 		b := sv.tool(ev.ToolUseID)
 		if b == nil {
@@ -154,6 +154,7 @@ func (c *cache) Apply(ev daemon.WireEvent) string {
 			sv.blocks = append(sv.blocks, b)
 		}
 		b.result, b.isError, b.truncated, b.done = ev.Content, ev.IsError, ev.Truncated, true
+		b.doneAt = c.now()
 		b.touch()
 	case daemon.WireApproval:
 		for _, a := range sv.approvals {
