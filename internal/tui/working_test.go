@@ -66,7 +66,7 @@ func TestWorkingLineFollowsTheTurn(t *testing.T) {
 	if got := working(m); got != "running bash · 1m15s" {
 		t.Fatalf("past a minute: %q", got)
 	}
-	if !strings.Contains(ansi.Strip(m.lastContent), "running bash · 1m15s") {
+	if !strings.Contains(ansi.Strip(m.View()), "running bash · 1m15s") {
 		t.Fatal("the working line is not in the transcript")
 	}
 	feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireApproval, PendingID: 1, Tool: "bash"})
@@ -82,7 +82,7 @@ func TestWorkingLineFollowsTheTurn(t *testing.T) {
 	if got := working(m); got != "" {
 		t.Fatalf("after the turn: %q", got)
 	}
-	if strings.Contains(ansi.Strip(m.lastContent), "thinking") {
+	if strings.Contains(ansi.Strip(m.View()), "thinking") {
 		t.Fatal("the working line outlived the turn")
 	}
 }
@@ -161,6 +161,75 @@ func TestTickIntervalFollowsWhatIsOnScreen(t *testing.T) {
 	feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireApproval, PendingID: 1, Tool: "shell"})
 	if len(*armed) != 3 || (*armed)[2] != secondEvery {
 		t.Fatalf("approval only: %v, want a %v tick", *armed, secondEvery)
+	}
+}
+
+// A spinner frame redraws the working line over its row and leaves the
+// viewport's content alone: re-setting it measures every line.
+func TestASpinnerFrameLeavesTheViewportContentAlone(t *testing.T) {
+	m, now, _ := clockModel(t)
+	feed(m, wev("s1", daemon.WireTurnStarted))
+	feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireToolCall, ToolUseID: "t1", Tool: "bash"})
+	before, view := m.vp.View(), ansi.Strip(m.View())
+	*now = now.Add(frameEvery)
+	run(m, tickMsg{})
+	if m.vp.View() != before {
+		t.Fatal("a spinner frame changed the viewport's content")
+	}
+	if after := ansi.Strip(m.View()); after == view || !strings.Contains(after, "running bash") {
+		t.Fatalf("the frame did not turn the spinner:\n%s", after)
+	}
+}
+
+// Scrolled up past the working line's row, the frame draws nothing over the
+// transcript.
+func TestTheWorkingLineStaysOnItsRow(t *testing.T) {
+	m, _, _ := clockModel(t)
+	sv := m.cache.get("s1")
+	for i := 0; i < 80; i++ {
+		sv.add(kindNotice, fmt.Sprintf("note %d", i))
+	}
+	feed(m, wev("s1", daemon.WireTurnStarted))
+	if !strings.Contains(ansi.Strip(m.View()), "thinking") {
+		t.Fatal("following the bottom, the working line is not on screen")
+	}
+	run(m, keyMsg("esc"))
+	run(m, keyMsg("g"))
+	if v := ansi.Strip(m.View()); strings.Contains(v, "thinking") || !strings.Contains(v, "note 0") {
+		t.Fatalf("scrolled to the top, the working line is drawn anyway:\n%s", v)
+	}
+}
+
+// The joined transcript is kept between frames; each kind of change still
+// shows at once.
+func TestTheKeptTranscriptPicksUpEveryChange(t *testing.T) {
+	m, _, _ := clockModel(t)
+	feed(m, wev("s1", daemon.WireTurnStarted))
+	feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireToolCall, ToolUseID: "t1", Tool: "bash", Args: `{"cmd":"ls"}`})
+	feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireText, Text: "hel"})
+	has := func(want string) bool { return strings.Contains(ansi.Strip(m.vp.View()), want) }
+	feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireText, Text: "lo there"})
+	if !has("hello there") {
+		t.Fatal("a text delta did not show")
+	}
+	feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireToolResult, ToolUseID: "t1", Content: "done-marker"})
+	if !has("done-marker") {
+		t.Fatal("a result for an earlier block did not show")
+	}
+	run(m, keyMsg("esc"))
+	run(m, keyMsg("["))
+	run(m, keyMsg("o"))
+	if !has(`"cmd"`) {
+		t.Fatal("expanding the tool did not show its arguments")
+	}
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	if !has("hello there") {
+		t.Fatal("a resize lost the transcript")
+	}
+	m.cache.SetTranscript(daemon.TranscriptJSON{Session: daemon.SessionJSON{ID: "s1"}})
+	m.sync()
+	if has("hello there") {
+		t.Fatal("replacing the blocks left the old transcript on screen")
 	}
 }
 

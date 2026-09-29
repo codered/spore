@@ -46,7 +46,7 @@ type block struct {
 
 	// Render cache. cacheKey covers everything render's output depends on
 	// except the block's own data, which touch() invalidates.
-	cacheKey string
+	cacheKey renderKey
 	cacheOut string
 
 	// The stable part of a streaming reply, rendered once per change.
@@ -55,13 +55,26 @@ type block struct {
 	stableOut   string
 }
 
+// renderKey is what a block's drawing depends on besides its own data. The
+// zero key matches no render, so touch() clears it to invalidate.
+type renderKey struct {
+	width              int
+	selected, expanded bool
+	ok                 bool
+}
+
 // touch invalidates the render cache after the block's data changed.
-func (b *block) touch() { b.cacheKey = "" }
+func (b *block) touch() { b.cacheKey = renderKey{} }
+
+// cached reports whether render would return the cached drawing.
+func (b *block) cached(width int, selected bool) bool {
+	return b.cacheKey == renderKey{width, selected, b.expanded, true}
+}
 
 // render draws the block at width. md may be nil. selected marks the tool
 // cursor.
 func (b *block) render(width int, md *glamour.TermRenderer, selected bool) string {
-	key := fmt.Sprintf("%d/%t/%t", width, selected, b.expanded)
+	key := renderKey{width, selected, b.expanded, true}
 	if key == b.cacheKey {
 		return b.cacheOut
 	}
