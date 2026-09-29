@@ -13,10 +13,10 @@
 │                              │┃                                                                  ┃
 │                              │┃                                                                  ┃
 │                              │┃                                                                  ┃
-│                              │┃                                                                  ┃
 │                              │┃ ╭──────────────────────────────────────────────────────────────╮ ┃
 │                              │┃ │ spore wants to run fs.write                                  │ ┃
 │                              │┃ │ matched policy rule "fs.write.ask"                           │ ┃
+│                              │┃ │ waiting (no timeout)                                         │ ┃
 │                              │┃ │ {                                                            │ ┃
 │                              │┃ │   "path": "cmd/spore/tui_test.go"                            │ ┃
 │                              │┃ │ }                                                            │ ┃

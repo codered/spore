@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -46,7 +48,7 @@ func (m *Model) sync() {
 	}
 	m.vp.Width = w
 	// One row inside the pane is the session's facts.
-	m.vp.Height = max(1, m.paneHeight()-1-lipgloss.Height(m.inputView())-m.overlayHeight())
+	m.vp.Height = max(1, m.paneHeight()-1-lipgloss.Height(m.inputView())-m.overlayHeight()-m.thinkingHeight())
 
 	content := m.transcript(w)
 	if content != m.lastContent {
@@ -125,6 +127,9 @@ func (m *Model) mainView() string {
 		return paneBox("help", helpText(), m.chatOuter(), m.bodyHeight(), on, 1)
 	}
 	parts := []string{clip(m.sessionFacts(), m.mainWidth()), m.vp.View()}
+	if th := m.thinkingView(); th != "" {
+		parts = append(parts, th)
+	}
 	if ov := m.overlayView(); ov != "" {
 		parts = append(parts, ov)
 	}
@@ -224,7 +229,12 @@ func (m *Model) overlayView() string {
 		title = "sub-agent " + short(ev.Origin) + ": " + title
 	}
 	b.WriteString(styApprovalTitle.Render(title) + "\n")
-	b.WriteString(styMuted.Render(`matched policy rule "`+ev.Rule+`"`) + "\n")
+	rule := `matched policy rule "` + ev.Rule + `"`
+	if ev.Profile != "" {
+		rule = "profile " + ev.Profile + " · " + rule
+	}
+	b.WriteString(styMuted.Render(rule) + "\n")
+	b.WriteString(styWarn.Render(m.deadline(ev.ExpiresAt)) + "\n")
 	b.WriteString(prettyArgs(ev.Args, 8) + "\n")
 	if m.mode != modeNormal && m.mode != modeConfirm {
 		b.WriteString(styKey.Render("esc") + styMuted.Render(", then y/n/s/p"))
@@ -240,6 +250,67 @@ func (m *Model) overlayView() string {
 		b.WriteString(strings.Join(keys, styMuted.Render("  ·  ")))
 	}
 	return styApprovalBox.Width(max(10, m.mainWidth()-2)).Render(b.String())
+}
+
+// deadline is when the daemon denies an unanswered approval. expires is
+// empty after a daemon restart, when nothing will time the ask out.
+func (m *Model) deadline(expires string) string {
+	at, err := time.Parse(time.RFC3339, expires)
+	if expires == "" || err != nil {
+		return "waiting (no timeout)"
+	}
+	left := at.Sub(m.opts.Now()).Round(time.Second)
+	if left <= 0 {
+		return "auto-denying…"
+	}
+	return fmt.Sprintf("auto-denies in %d:%02d", int(left.Minutes()), int(left.Seconds())%60)
+}
+
+// thinkingView is the line pinned above the input while the selected
+// session's turn runs, so a sent message shows a sign of life before any
+// text arrives. It hides while an approval waits: then spore is waiting on
+// the person, and the prompt says so.
+func (m *Model) thinkingView() string {
+	if m.selected == "" || m.cache.State(m.selected) != daemon.SessionWorking {
+		return ""
+	}
+	sv := m.cache.get(m.selected)
+	label := "spore is thinking…"
+	if b := sv.last(); b != nil && b.kind == kindText && b.streaming {
+		label = "spore is writing…"
+	} else if tool := waitingTool(sv); tool != "" {
+		label = "spore is running " + tool + "…"
+	}
+	if !sv.started.IsZero() {
+		label += " " + elapsed(m.opts.Now().Sub(sv.started))
+	}
+	return clip(styAccent.Render("●")+" "+styMuted.Render(label), m.mainWidth())
+}
+
+// waitingTool names the latest call in the transcript's trailing run of
+// tool calls that has no result yet.
+func waitingTool(sv *sessionView) string {
+	for i := len(sv.blocks) - 1; i >= 0 && sv.blocks[i].kind == kindTool; i-- {
+		if !sv.blocks[i].done {
+			return sv.blocks[i].tool
+		}
+	}
+	return ""
+}
+
+func elapsed(d time.Duration) string {
+	s := int(max(0, d).Seconds())
+	if s < 60 {
+		return fmt.Sprintf("%ds", s)
+	}
+	return fmt.Sprintf("%dm%02ds", s/60, s%60)
+}
+
+func (m *Model) thinkingHeight() int {
+	if m.thinkingView() != "" {
+		return 1
+	}
+	return 0
 }
 
 func (m *Model) overlayHeight() int {

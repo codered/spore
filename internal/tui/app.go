@@ -48,6 +48,9 @@ const (
 	inputMaxHeight = 8
 	// refreshEvery is how often an open view refetches.
 	refreshEvery = 2 * time.Second
+	// secondEvery redraws the thinking row's elapsed time and the approval
+	// countdown.
+	secondEvery = time.Second
 )
 
 // Messages. Everything that changes the model arrives as one of these, so
@@ -88,6 +91,7 @@ type (
 		err           error
 	}
 	viewTickMsg   struct{ gen int }
+	secondTickMsg struct{}
 	actionDoneMsg struct{ err error }
 	deletedMsg    struct {
 		res daemon.DeleteSessionsJSON
@@ -172,6 +176,9 @@ type Model struct {
 	viewGen  int
 	viewErr  string
 	viewTick func(gen int) tea.Cmd
+	// ticking is true while a secondTick is in flight; see armSecond.
+	ticking    bool
+	secondTick func() tea.Cmd
 	// flash is a one-line report in the status bar, such as what a delete
 	// did; the next key clears it.
 	flash string
@@ -224,6 +231,9 @@ func New(ctx context.Context, be Backend, sessionID string, opts Options) *Model
 	m.viewTick = func(gen int) tea.Cmd {
 		return tea.Tick(refreshEvery, func(time.Time) tea.Msg { return viewTickMsg{gen: gen} })
 	}
+	m.secondTick = func() tea.Cmd {
+		return tea.Tick(secondEvery, func(time.Time) tea.Msg { return secondTickMsg{} })
+	}
 	m.mode = modeInsert
 	m.input.Focus()
 	return m
@@ -236,7 +246,21 @@ func (m *Model) Init() tea.Cmd { return textarea.Blink }
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmd := m.update(msg)
 	m.sync()
+	if t := m.armSecond(); t != nil {
+		cmd = tea.Batch(cmd, t)
+	}
 	return m, cmd
+}
+
+// armSecond starts the one-second tick when something on screen counts
+// time: the selected session's running turn or a waiting approval. At most
+// one tick is in flight, and it lapses once nothing counts.
+func (m *Model) armSecond() tea.Cmd {
+	if m.ticking || m.table != nil || m.selected == "" || m.cache.State(m.selected) == daemon.SessionIdle {
+		return nil
+	}
+	m.ticking = true
+	return m.secondTick()
 }
 
 func (m *Model) update(msg tea.Msg) tea.Cmd {
@@ -369,6 +393,10 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		if m.table != nil && m.table.res.Name() == msg.name && m.table.session == msg.session {
 			m.table.setRows(msg.rows, msg.err)
 		}
+		return nil
+
+	case secondTickMsg:
+		m.ticking = false
 		return nil
 
 	case viewTickMsg:
@@ -818,6 +846,9 @@ func (m *Model) submit(id, text string) tea.Cmd {
 	}
 	sv.addUser(text)
 	sv.working = true
+	// Until turn_started lands, the thinking row has no time to show; the
+	// last turn's start is not it.
+	sv.started = time.Time{}
 	m.follow = true
 	be, ctx := m.be, m.ctx
 	return func() tea.Msg {

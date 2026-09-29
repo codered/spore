@@ -129,6 +129,7 @@ func (c *cache) get(id string) *sessionView {
 // session it changed.
 func (c *cache) Apply(ev daemon.WireEvent) string {
 	id := ev.Session
+	_, known := c.sessions[id]
 	sv := c.get(id)
 	switch ev.Type {
 	case daemon.WireTurnStarted:
@@ -190,9 +191,15 @@ func (c *cache) Apply(ev daemon.WireEvent) string {
 	case daemon.WireJobNote:
 		sv.add(kindNotice, ev.Text)
 	case daemon.WireSession:
-		sv.info.Title, sv.info.Workspace = ev.Title, ev.Workspace
-		sv.info.Source, sv.info.ParentID = ev.Source, ev.ParentID
-		sv.info.UpdatedAt = c.now()
+		keep(&sv.info.Title, ev.Title)
+		keep(&sv.info.Workspace, ev.Workspace)
+		keep(&sv.info.Source, ev.Source)
+		keep(&sv.info.ParentID, ev.ParentID)
+		// A new session goes to the top; one being named stays where it is,
+		// so the row under the cursor does not move.
+		if !known || sv.info.UpdatedAt.IsZero() {
+			sv.info.UpdatedAt = c.now()
+		}
 	case daemon.WireAgentState:
 		sv.working = ev.State == "running"
 		if !sv.working {
@@ -204,6 +211,14 @@ func (c *cache) Apply(ev daemon.WireEvent) string {
 		}
 	}
 	return id
+}
+
+// keep sets *field to v unless v is empty: an event that leaves a field out
+// does not clear what is known.
+func keep(field *string, v string) {
+	if v != "" {
+		*field = v
+	}
 }
 
 func (c *cache) footer(sv *sessionView, ev daemon.WireEvent) string {

@@ -168,6 +168,31 @@ func TestASessionEventCreatesTheRow(t *testing.T) {
 	if info.Title != "new" || info.Source != "chat" || info.Workspace != "/w" || info.ID != "n" {
 		t.Fatalf("info = %+v", info)
 	}
+	if !info.UpdatedAt.Equal(t0) {
+		t.Fatalf("a new session's UpdatedAt = %v, want now", info.UpdatedAt)
+	}
+}
+
+// Sessions are named after their first turn; the name arriving must not
+// move the row under the cursor.
+func TestRenamingAKnownSessionKeepsItsPlace(t *testing.T) {
+	c := newCache(fixedNow)
+	c.SetSessions([]daemon.SessionJSON{
+		{ID: "a", Title: "", Workspace: "/w", Source: "chat", UpdatedAt: t0.Add(-time.Hour)},
+		{ID: "b", Title: "b", Workspace: "/w", Source: "chat", UpdatedAt: t0.Add(-time.Minute)},
+	})
+	before := ids(c.rows(false, "", ""))
+	c.Apply(daemon.WireEvent{Session: "a", Type: daemon.WireSession, Title: "named"})
+	info := c.get("a").info
+	if info.Title != "named" || info.Workspace != "/w" || info.Source != "chat" {
+		t.Fatalf("info = %+v", info)
+	}
+	if !info.UpdatedAt.Equal(t0.Add(-time.Hour)) {
+		t.Fatalf("rename moved UpdatedAt to %v", info.UpdatedAt)
+	}
+	if after := ids(c.rows(false, "", "")); strings.Join(after, ",") != strings.Join(before, ",") {
+		t.Fatalf("order changed: %v -> %v", before, after)
+	}
 }
 
 func TestClearApprovalsEmptiesEverySession(t *testing.T) {
