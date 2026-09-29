@@ -1,9 +1,7 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -53,7 +51,7 @@ func (m *Model) sync() {
 	}
 	m.vp.Width = w
 	// One row inside the pane is the session's facts.
-	m.vp.Height = max(1, m.paneHeight()-1-lipgloss.Height(m.inputView())-m.overlayHeight())
+	m.vp.Height = max(1, m.paneHeight()-1-lipgloss.Height(m.inputView())-m.draftLineHeight())
 
 	base := m.transcript(w)
 	content := base
@@ -139,11 +137,14 @@ func (m *Model) mainView() string {
 	if m.help {
 		return paneBox("help", helpText(), m.chatOuter(), m.bodyHeight(), on, 1)
 	}
-	parts := []string{clip(m.sessionFacts(), m.mainWidth()), m.vp.View()}
-	if ov := m.overlayView(); ov != "" {
-		parts = append(parts, ov)
+	vpView := m.vp.View()
+	if card := m.approvalCard(m.vp.Width, m.vp.Height); card != "" {
+		vpView = placeOver(faint(vpView), card, m.vp.Width)
 	}
-	parts = append(parts, m.inputView())
+	parts := []string{clip(m.sessionFacts(), m.mainWidth()), vpView, m.inputView()}
+	if dl := m.draftLine(); dl != "" {
+		parts = append(parts, dl)
+	}
 	return paneBox(m.paneTitle(), strings.Join(parts, "\n"), m.chatOuter(), m.bodyHeight(), on, 1)
 }
 
@@ -248,54 +249,6 @@ func (m *Model) inputView() string {
 	return styInputIdle.Width(w).Render(m.input.View())
 }
 
-func (m *Model) overlayView() string {
-	_, ev, ok := m.cache.approvalFor(m.selected)
-	if !ok {
-		return ""
-	}
-	var b strings.Builder
-	title := "spore wants to run " + ev.Tool
-	if ev.Origin != "" {
-		title = "sub-agent " + short(ev.Origin) + ": " + title
-	}
-	b.WriteString(styApprovalTitle.Render(title) + "\n")
-	rule := `matched policy rule "` + ev.Rule + `"`
-	if ev.Profile != "" {
-		rule = "profile " + ev.Profile + " · " + rule
-	}
-	b.WriteString(styMuted.Render(rule) + "\n")
-	b.WriteString(styWarn.Render(m.deadline(ev.ExpiresAt)) + "\n")
-	b.WriteString(prettyArgs(ev.Args, 8) + "\n")
-	if m.mode != modeNormal && m.mode != modeConfirm {
-		b.WriteString(styKey.Render("esc") + styMuted.Render(", then y/n/s/p"))
-	} else {
-		keys := []string{
-			styKey.Render("y") + styMuted.Render(" allow once"),
-			styKey.Render("n") + styMuted.Render(" deny"),
-			styKey.Render("s") + styMuted.Render(" allow "+ev.Tool+" this session"),
-		}
-		if ev.Pattern != "" {
-			keys = append(keys, styKey.Render("p")+styMuted.Render(" always allow "+ev.Pattern))
-		}
-		b.WriteString(strings.Join(keys, styMuted.Render("  ·  ")))
-	}
-	return styApprovalBox.Width(max(10, m.mainWidth()-2)).Render(b.String())
-}
-
-// deadline is when the daemon denies an unanswered approval. expires is
-// empty after a daemon restart, when nothing will time the ask out.
-func (m *Model) deadline(expires string) string {
-	at, err := time.Parse(time.RFC3339, expires)
-	if expires == "" || err != nil {
-		return "waiting (no timeout)"
-	}
-	left := at.Sub(m.opts.Now()).Round(time.Second)
-	if left <= 0 {
-		return "auto-denying…"
-	}
-	return fmt.Sprintf("auto-denies in %d:%02d", int(left.Minutes()), int(left.Seconds())%60)
-}
-
 // waitingTool names the latest call in the transcript's trailing run of
 // tool calls that has no result yet.
 func waitingTool(sv *sessionView) string {
@@ -330,13 +283,6 @@ func (m *Model) workingLine() string {
 	}
 	frame := spinnerFrames[int(now.UnixMilli()/frameEvery.Milliseconds())%len(spinnerFrames)]
 	return styAccent.Render(frame) + " " + styMuted.Render(label)
-}
-
-func (m *Model) overlayHeight() int {
-	if ov := m.overlayView(); ov != "" {
-		return lipgloss.Height(ov)
-	}
-	return 0
 }
 
 // statusView is the mode badge and the keys that work here, with the few
