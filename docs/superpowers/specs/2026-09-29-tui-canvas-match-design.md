@@ -275,9 +275,10 @@ warn goes under the input:
 - `answer with alt+y/n/s/p, or esc then y/n/s/p`, when it is empty.
 
 In INSERT the card's key rows name the alt keys (`alt+y allow once` …), and
-the status bar leads with `alt+y/n/s/p answer`. An alt answer opens the same
-confirm modal and returns to INSERT with the draft intact (tui-shell §4.2,
-amended).
+the status bar leads with `alt+y/n/s/p answer`. `alt+y` and `alt+n` answer at
+once; `alt+s` and `alt+p` open the confirm modal, whose question says how the
+policy changes. Either way the TUI returns to INSERT with the draft intact
+(tui-shell §4.2, amended).
 
 That line takes one row from the viewport.
 

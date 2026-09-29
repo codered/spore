@@ -490,12 +490,21 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 	if k.Alt && k.Type == tea.KeyRunes && (m.mode == modeInsert || m.mode == modeNormal) {
 		// alt+y/n/s/p answers an approval from INSERT without giving up
 		// the draft; a modifier cannot be typed by accident mid-sentence.
+		// y and n settle this one call and change no policy, so they
+		// answer at once. s and p change the policy past this call, so
+		// they still ask, and the question says what changes.
 		if m.mode == modeInsert && m.table == nil {
-			if root, ev, ok := m.cache.approvalFor(m.selected); ok && m.answer(root, ev, string(k.Runes)) {
-				if m.confirm != nil {
-					m.confirm.back = modeInsert
+			if root, ev, ok := m.cache.approvalFor(m.selected); ok {
+				ans, isKey, offered := answerFor(ev, string(k.Runes))
+				switch {
+				case isKey && offered && ans.Scope == policy.ScopeOnce:
+					return m.resolve(root, ev, ans)
+				case isKey && m.answer(root, ev, string(k.Runes)):
+					if m.confirm != nil {
+						m.confirm.back = modeInsert
+					}
+					return nil
 				}
-				return nil
 			}
 		}
 		m.mode = modeNormal
@@ -901,28 +910,38 @@ func (m *Model) drainQueue(id string) tea.Cmd {
 	return m.submit(id, q[0])
 }
 
+// answerFor is the answer an approval key gives. ok is false when k is not
+// an approval key; offered is false for p when the ask carried no pattern.
+func answerFor(ev daemon.WireEvent, k string) (ans policy.Answer, ok, offered bool) {
+	switch k {
+	case "y":
+		return policy.Answer{Allow: true, Scope: policy.ScopeOnce}, true, true
+	case "n":
+		return policy.Answer{Allow: false, Scope: policy.ScopeOnce}, true, true
+	case "s":
+		return policy.Answer{Allow: true, Scope: policy.ScopeSession}, true, true
+	case "p":
+		return policy.Answer{Allow: true, Scope: policy.ScopePattern}, true, ev.Pattern != ""
+	}
+	return policy.Answer{}, false, false
+}
+
 // answer opens the modal that confirms an approval key, reporting whether k
 // was one.
 func (m *Model) answer(root string, ev daemon.WireEvent, k string) bool {
-	var ans policy.Answer
-	switch k {
-	case "y":
-		ans = policy.Answer{Allow: true, Scope: policy.ScopeOnce}
-	case "n":
-		ans = policy.Answer{Allow: false, Scope: policy.ScopeOnce}
-	case "s":
-		ans = policy.Answer{Allow: true, Scope: policy.ScopeSession}
-	case "p":
-		if ev.Pattern == "" {
-			return true // the option was never offered
-		}
-		ans = policy.Answer{Allow: true, Scope: policy.ScopePattern}
-	default:
-		return false
+	ans, ok, offered := answerFor(ev, k)
+	if !ok || !offered {
+		return ok // a p never offered is swallowed, not typed
 	}
 	detail := []string{`matched policy rule "` + ev.Rule + `"`}
 	if ev.Origin != "" {
 		detail = append(detail, "asked by sub-agent "+short(ev.Origin))
+	}
+	switch ans.Scope {
+	case policy.ScopeSession:
+		detail = append(detail, "changes the policy: "+ev.Tool+" runs without asking for the rest of this session")
+	case policy.ScopePattern:
+		detail = append(detail, "changes the policy: writes an allow rule to your config")
 	}
 	m.confirm = &confirmState{
 		question: answerQuestion(ev, ans),

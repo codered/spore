@@ -8,15 +8,15 @@
 │/work/web                     │┃   ║                                                          ║   ┃
 │○ e5f6 notes              chat│┃   ║  spore wants to run fs.write                             ║   ┃
 │                              │┃   ║  matched ask  fs.write.ask                               ║   ┃
-│                              │┃   ║                                                          ║   ┃
-│                             ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓                         ║   ┃
-│                             ┃                                      ┃go"                      ║   ┃
-│                             ┃  Allow fs.write for this session?    ┃                         ║   ┃
-│                             ┃  matched policy rule "fs.write.ask"  ┃                         ║   ┃
-│                             ┃                                      ┃ fs.write this session   ║   ┃
-│                             ┃  y confirm  esc cancel               ┃re/*                     ║   ┃
-│                             ┃                                      ┃                         ║   ┃
-│                             ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛                         ║   ┃
+│       ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓    ║   ┃
+│       ┃                                                                                 ┃    ║   ┃
+│       ┃  Allow fs.write for this session?                                               ┃    ║   ┃
+│       ┃  matched policy rule "fs.write.ask"                                             ┃    ║   ┃
+│       ┃  changes the policy: fs.write runs without asking for the rest of this session  ┃    ║   ┃
+│       ┃                                                                                 ┃n   ║   ┃
+│       ┃  y confirm  esc cancel                                                          ┃    ║   ┃
+│       ┃                                                                                 ┃    ║   ┃
+│       ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛    ║   ┃
 │                              │┃   ║                                                          ║   ┃
 │                              │┃   ╚══════════════════════════════════════════════════════════╝   ┃
 │                              │┃                                                                  ┃

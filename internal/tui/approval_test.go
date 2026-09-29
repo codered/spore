@@ -278,25 +278,58 @@ func TestShortPaneKeepsTheCardsKeys(t *testing.T) {
 
 func altKey(r rune) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: true} }
 
-// While typing, alt+y/n/s/p answer the approval without leaving INSERT; the
-// confirm modal still stands between the key and the answer, and the draft
-// survives it.
-func TestAltKeysAnswerFromInsert(t *testing.T) {
-	fb := &fakeBackend{}
-	m := newTestModel(t, fb, "s1")
-	feed(m, wev("s1", daemon.WireTurnStarted),
-		daemon.WireEvent{Session: "s1", Type: daemon.WireApproval, PendingID: 1, Tool: "shell_exec", Args: `{}`})
-	typeText(m, "half a thought")
-	run(m, altKey('y'))
-	if m.mode != modeConfirm || len(fb.resolved) != 0 {
-		t.Fatalf("alt+y: mode %v, resolved %v; want the confirm modal and nothing sent", m.mode, fb.resolved)
+// While typing, alt+y and alt+n answer at once: they settle this one call
+// and change no policy, and a modifier cannot be typed by accident. The
+// draft stays.
+func TestAltYAndAltNAnswerAtOnceFromInsert(t *testing.T) {
+	for _, tc := range []struct {
+		key  rune
+		want string
+	}{{'y', "s1:1:true"}, {'n', "s1:1:false"}} {
+		fb := &fakeBackend{}
+		m := newTestModel(t, fb, "s1")
+		feed(m, wev("s1", daemon.WireTurnStarted),
+			daemon.WireEvent{Session: "s1", Type: daemon.WireApproval, PendingID: 1, Tool: "shell_exec", Args: `{}`})
+		typeText(m, "half a thought")
+		run(m, altKey(tc.key))
+		if m.confirm != nil || m.mode != modeInsert {
+			t.Fatalf("alt+%c asked first: mode %v", tc.key, m.mode)
+		}
+		if len(fb.resolved) != 1 || fb.resolved[0] != tc.want {
+			t.Fatalf("alt+%c resolved %v, want %s", tc.key, fb.resolved, tc.want)
+		}
+		if m.input.Value() != "half a thought" || m.waiting() {
+			t.Fatalf("alt+%c: input %q, waiting %v", tc.key, m.input.Value(), m.waiting())
+		}
 	}
-	press(m, "y")
-	if len(fb.resolved) != 1 || fb.resolved[0] != "s1:1:true" {
-		t.Fatalf("resolved = %v, want s1:1:true", fb.resolved)
-	}
-	if m.mode != modeInsert || m.input.Value() != "half a thought" {
-		t.Fatalf("after answering: mode %v, input %q; want INSERT with the draft", m.mode, m.input.Value())
+}
+
+// alt+s and alt+p change the policy past this call, so they still ask, and
+// the question says what changes. Answering returns to INSERT with the draft.
+func TestAltSAndAltPAskBecauseTheyChangePolicy(t *testing.T) {
+	for _, tc := range []struct {
+		key  rune
+		note string
+	}{{'s', "for the rest of this session"}, {'p', "writes an allow rule to your config"}} {
+		fb := &fakeBackend{}
+		m := newTestModel(t, fb, "s1")
+		feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireApproval, PendingID: 1, Tool: "shell_exec",
+			Args: `{}`, Pattern: "shell_exec(go test*)"})
+		typeText(m, "draft")
+		run(m, altKey(tc.key))
+		if m.mode != modeConfirm || len(fb.resolved) != 0 {
+			t.Fatalf("alt+%c: mode %v, resolved %v; want the confirm modal", tc.key, m.mode, fb.resolved)
+		}
+		if v := ansi.Strip(m.View()); !strings.Contains(v, tc.note) {
+			t.Fatalf("alt+%c modal does not say %q:\n%s", tc.key, tc.note, v)
+		}
+		press(m, "y")
+		if len(fb.resolved) != 1 {
+			t.Fatalf("alt+%c then y resolved %v", tc.key, fb.resolved)
+		}
+		if m.mode != modeInsert || m.input.Value() != "draft" {
+			t.Fatalf("after alt+%c: mode %v, input %q", tc.key, m.mode, m.input.Value())
+		}
 	}
 }
 
@@ -304,7 +337,7 @@ func TestAltKeyCancelledReturnsToInsert(t *testing.T) {
 	fb := &fakeBackend{}
 	m := newTestModel(t, fb, "s1")
 	feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireApproval, PendingID: 1, Tool: "shell_exec", Args: `{}`})
-	run(m, altKey('n'))
+	run(m, altKey('s'))
 	press(m, "esc")
 	if m.mode != modeInsert || len(fb.resolved) != 0 {
 		t.Fatalf("mode %v, resolved %v; want INSERT and nothing sent", m.mode, fb.resolved)

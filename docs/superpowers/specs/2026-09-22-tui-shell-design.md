@@ -249,7 +249,11 @@ working.
    mid-sentence goes into the draft; it can never approve a tool call. From
    INSERT the approval is answered with `alt+y`/`alt+n`/`alt+s`/`alt+p`, which
    cannot be typed by accident, and the answer returns to INSERT with the draft
-   intact. (Amended 2026-09-29: pressing `esc` first was one step too many.)
+   intact. `alt+y` and `alt+n` answer at once: they settle this one call and
+   change no policy. `alt+s` and `alt+p` change the policy past this call, so
+   they still open the confirm modal, which says what changes. (Amended
+   2026-09-29: pressing `esc` first, and confirming a one-off answer, were
+   steps too many.)
 2. **Stopping takes `esc` in NORMAL.** Leaving INSERT consumes one `esc`, so an
    accidental stop needs a deliberate double press. The status bar shows
    `esc stop` whenever the selected session is working.
