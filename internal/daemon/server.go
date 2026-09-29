@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/codered/spore/internal/agent"
@@ -46,6 +47,13 @@ type Server struct {
 
 	// refiner runs continual refinement. Nil means the routes answer 503.
 	refiner *refine.Refiner
+
+	// titler names sessions from their first message. Nil means sessions
+	// are named from the message's first line instead.
+	titler Titler
+	// naming holds the sessions a name is being made for, so two quick
+	// turns do not make two calls.
+	naming sync.Map
 
 	// base bounds every turn's lifetime. It is the SERVER's context, never a
 	// request's: a turn survives the client that started it (spec invariant
@@ -105,6 +113,9 @@ func (s *Server) AttachSubagents(sup *subagent.Supervisor) {
 
 // Subagents is the supervisor the daemon serves /agents from.
 func (s *Server) Subagents() *subagent.Supervisor { return s.subagents }
+
+// AttachTitler supplies the session titler. Like Attach, it arrives after New.
+func (s *Server) AttachTitler(t Titler) { s.titler = t }
 
 // AttachRefiner supplies the Refiner. Like Attach, it arrives after New.
 func (s *Server) AttachRefiner(r *refine.Refiner) { s.refiner = r }

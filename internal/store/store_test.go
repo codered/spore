@@ -959,3 +959,26 @@ func TestOpenAddsCacheColumnsToAnOlderDatabase(t *testing.T) {
 		t.Fatalf("TotalUsage on a migrated database: %v", err)
 	}
 }
+
+func TestRenameSessionFromOnlyReplacesTheExpectedTitle(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	id, err := s.CreateSessionFrom(ctx, "chat", "", SourceChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _, _ := s.Session(ctx, id)
+	if ok, err := s.RenameSessionFrom(ctx, id, "web", "wrong"); err != nil || ok {
+		t.Fatalf("rename from a stale title = %v, %v; want no change", ok, err)
+	}
+	if ok, err := s.RenameSessionFrom(ctx, id, "chat", "Fix login bug"); err != nil || !ok {
+		t.Fatalf("rename = %v, %v; want a change", ok, err)
+	}
+	after, _, _ := s.Session(ctx, id)
+	if after.Title != "Fix login bug" {
+		t.Errorf("title = %q, want Fix login bug", after.Title)
+	}
+	if !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Errorf("updated_at moved from %v to %v; naming is not activity", before.UpdatedAt, after.UpdatedAt)
+	}
+}

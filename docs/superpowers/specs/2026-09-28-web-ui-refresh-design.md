@@ -281,3 +281,35 @@ Session-scoped views use the open session and say so when there is none.
 4. Hints off → no `<kbd>` hint visible.
 5. A blocked Discord session shows `◐` and the banner.
 6. A private window loads with defaults (shortcuts and hints on).
+
+## 8. Addendum after the first manual pass (2026-09-28)
+
+Three findings from the human's first test:
+
+1. **No sign a message went through.** The transcript now ends in a
+   `spore is thinking…` row (`spore is writing…` while text streams,
+   `spore is running <tool>…` while a call waits) whenever the open session is
+   working and not blocked. It appears the moment Send is pressed, not when
+   `turn_started` arrives, and it hides while an approval card waits.
+2. **Clicking a session while a view was open did nothing visible.** A click
+   on a session row now opens Chat on that session. `j`/`k` still keep the
+   current view, so a session-scoped view follows the selection.
+3. **Every session was called "chat".** The daemon names a session after its
+   first turn ends:
+   - Only top-level `chat`, `discord` and `unknown` sessions whose title is a
+     placeholder (`""`, `chat`, `web`, `new chat`) are named. Jobs keep their
+     prompt; sub-agents keep their task.
+   - `internal/title` makes one call on the existing `title` router site
+     (route it to a cheap model with a `[[router]]` rule if wanted), from
+     the session's first user message, capped at 1000 characters. The reply
+     is cleaned: `<think>` blocks, a `Title:` label, markdown, quotes and
+     closing punctuation are dropped, and the result is bounded to 60 characters.
+   - Naming runs after the turn ends, not beside it: on a local model the two
+     calls would share one GPU and delay the reply.
+   - If the call fails or returns nothing, the first line of the message is
+     used (50 characters).
+   - `store.RenameSessionFrom` only replaces the placeholder it read, so a
+     rename made meanwhile wins. It does not touch `updated_at`.
+   - The name reaches clients as a `session` event carrying every field.
+   - The title call's tokens are traced but not written to the transcript,
+     so `/usage` does not count them.

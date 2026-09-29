@@ -453,6 +453,9 @@ func (s *Server) startTurnThen(sessionID, text, client string, profile policy.Pr
 			return fmt.Errorf("create session directory: %w", err)
 		}
 	}
+	if wantsTitle(sess) {
+		then = s.nameAfter(sess, text, then)
+	}
 	turnCtx, cancel := context.WithCancelCause(s.base)
 	ctx := policy.WithSession(turnCtx, policy.Session{
 		ID: sessionID, Profile: profile, Workspace: sess.Workspace,
