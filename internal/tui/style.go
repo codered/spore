@@ -69,11 +69,6 @@ var (
 			Padding(0, 1)
 	styInputIdle = styInputBox.BorderForeground(colMuted)
 
-	styApprovalBox = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(colWarn).
-			Padding(0, 1)
-
 	styApprovalTitle = lipgloss.NewStyle().Foreground(colWarn).Bold(true)
 
 	// styApprovalCard frames the approval drawn over the transcript.

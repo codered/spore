@@ -235,6 +235,15 @@ A one-second tick drives items 1 and 2. It runs only while the selected
 session is working or blocked, with at most one tick in flight. Key parity
 needed nothing: `o`/`O` and `b` already exist in the TUI.
 
+Followed by the canvas match on the same branch
+(`docs/superpowers/specs/2026-09-29-tui-canvas-match-design.md`). It moves
+the working line into the transcript with a spinner, draws the approval as
+a centred card over a dimmed transcript, and brings the header, sidebar,
+tool rows, placeholder and status bar to the canvas's chat and approval
+boards. Still missing, because they need daemon data: live token and cache
+figures on the working line, the rule's config location, and nested
+`spore.*` calls inside `go_run`.
+
 ## Web UI refresh: shipped
 
 Closed. #49 (d15a2e1) brought `web/` to the TUI's colours and layout, and
