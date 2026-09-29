@@ -50,6 +50,54 @@ func TestSessionUsageGroupsByModel(t *testing.T) {
 	}
 }
 
+// A session's usage must not include another session's. usageSelect's
+// WHERE is an OR chain; a filter appended without parentheses bound to its
+// last term only, and every session reported the global total.
+func TestSessionUsageExcludesOtherSessions(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	mine, err := st.CreateSession(ctx, "mine", "/ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := st.CreateSession(ctx, "other", "/ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []struct {
+		session string
+		in, out int
+		cost    float64
+	}{
+		{mine, 100, 10, 0.01},
+		// Token-only rows (a local model costs nothing) are the ones the
+		// broken filter let through.
+		{other, 500, 50, 0},
+		{other, 700, 70, 0.07},
+	} {
+		if _, err := st.AppendMessage(ctx, Message{
+			SessionID: m.session, Role: "assistant", BlocksJSON: []byte(`[]`),
+			Model: "m", TokensIn: m.in, TokensOut: m.out, CostUSD: m.cost,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := st.SessionUsage(ctx, mine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Turns != 1 || rows[0].TokensIn != 100 || rows[0].TokensOut != 10 {
+		t.Fatalf("session usage = %+v, want only this session's one turn of 100 in / 10 out", rows)
+	}
+	empty, err := st.CreateSession(ctx, "empty", "/ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := st.SessionUsage(ctx, empty); err != nil || len(rows) != 0 {
+		t.Fatalf("a session with no messages reported %+v, %v; want nothing", rows, err)
+	}
+}
+
 func TestTotalUsageSpansSessions(t *testing.T) {
 	st := openTestStore(t)
 	ctx := context.Background()

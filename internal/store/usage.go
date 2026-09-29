@@ -18,9 +18,12 @@ type UsageRow struct {
 	CostUSD          float64 `json:"cost_usd"`
 }
 
+// usageSelect's condition is parenthesised because callers append
+// "AND ..." to it: unbracketed, AND binds to the last OR term only, and a
+// session filter let every other session's token-only rows through.
 const usageSelect = `SELECT model, count(*), sum(tokens_in), sum(tokens_out),
   sum(tokens_cache_write), sum(tokens_cache_read), sum(cost_usd)
-  FROM messages WHERE tokens_in > 0 OR tokens_out > 0 OR cost_usd > 0`
+  FROM messages WHERE (tokens_in > 0 OR tokens_out > 0 OR cost_usd > 0)`
 
 func (s *Store) SessionUsage(ctx context.Context, sessionID string) ([]UsageRow, error) {
 	return s.usage(ctx, usageSelect+` AND session_id = ? GROUP BY model ORDER BY model`, sessionID)
