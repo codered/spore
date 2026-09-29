@@ -172,3 +172,18 @@ func TestGoldenJobsFolder(t *testing.T) {
 	press(m, "esc", "z")
 	golden(t, "jobs-open-100", m.View())
 }
+
+func TestGoldenWorking(t *testing.T) {
+	m := scene(t, 100, 24)
+	now := t0
+	clock := func() time.Time { return now }
+	m.opts.Now, m.cache.now = clock, clock
+	feed(m, wev("a1b2c3", daemon.WireTurnStarted))
+	feed(m, daemon.WireEvent{Session: "a1b2c3", Type: daemon.WireToolCall, ToolUseID: "t3", Tool: "fs_read", Args: `{"path":"internal/tui/app.go"}`})
+	now = now.Add(1300 * time.Millisecond)
+	feed(m, daemon.WireEvent{Session: "a1b2c3", Type: daemon.WireToolResult, ToolUseID: "t3", Content: "package tui\n\nimport (\n"})
+	feed(m, daemon.WireEvent{Session: "a1b2c3", Type: daemon.WireText, Text: "The flake is a race"})
+	now = now.Add(12 * time.Second)
+	run(m, tickMsg{})
+	golden(t, "working-100", m.View())
+}

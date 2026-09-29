@@ -48,8 +48,12 @@ const (
 	inputMaxHeight = 8
 	// refreshEvery is how often an open view refetches.
 	refreshEvery = 2 * time.Second
-	// secondEvery redraws the thinking row's elapsed time and the approval
-	// countdown.
+	// frameEvery turns the working line's spinner. secondEvery redraws an
+	// approval's countdown when nothing else on screen moves. frameEvery is
+	// a second, not the 120ms a spinner wants: each frame rejoins the
+	// transcript, and on 2,000 blocks that costs about 2.8ms
+	// (BenchmarkSyncLongTranscript), over the spec's 2ms budget.
+	frameEvery  = time.Second
 	secondEvery = time.Second
 )
 
@@ -91,7 +95,7 @@ type (
 		err           error
 	}
 	viewTickMsg   struct{ gen int }
-	secondTickMsg struct{}
+	tickMsg       struct{}
 	actionDoneMsg struct{ err error }
 	deletedMsg    struct {
 		res daemon.DeleteSessionsJSON
@@ -178,9 +182,12 @@ type Model struct {
 	viewGen  int
 	viewErr  string
 	viewTick func(gen int) tea.Cmd
-	// ticking is true while a secondTick is in flight; see armSecond.
-	ticking    bool
-	secondTick func() tea.Cmd
+	// ticking is true while a tick is in flight; see armTick.
+	ticking bool
+	tick    func(d time.Duration) tea.Cmd
+	// lastBase is the transcript without its working line, so a spinner
+	// frame is not mistaken for new output.
+	lastBase string
 	// flash is a one-line report in the status bar, such as what a delete
 	// did; the next key clears it.
 	flash string
@@ -233,8 +240,8 @@ func New(ctx context.Context, be Backend, sessionID string, opts Options) *Model
 	m.viewTick = func(gen int) tea.Cmd {
 		return tea.Tick(refreshEvery, func(time.Time) tea.Msg { return viewTickMsg{gen: gen} })
 	}
-	m.secondTick = func() tea.Cmd {
-		return tea.Tick(secondEvery, func(time.Time) tea.Msg { return secondTickMsg{} })
+	m.tick = func(d time.Duration) tea.Cmd {
+		return tea.Tick(d, func(time.Time) tea.Msg { return tickMsg{} })
 	}
 	m.mode = modeInsert
 	m.input.Focus()
@@ -248,21 +255,25 @@ func (m *Model) Init() tea.Cmd { return textarea.Blink }
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmd := m.update(msg)
 	m.sync()
-	if t := m.armSecond(); t != nil {
+	if t := m.armTick(); t != nil {
 		cmd = tea.Batch(cmd, t)
 	}
 	return m, cmd
 }
 
-// armSecond starts the one-second tick when something on screen counts
-// time: the selected session's running turn or a waiting approval. At most
-// one tick is in flight, and it lapses once nothing counts.
-func (m *Model) armSecond() tea.Cmd {
+// armTick starts the redraw tick while something on screen moves with time:
+// the working line's spinner every frame, or an approval's countdown every
+// second. At most one tick is in flight, and it lapses once nothing moves.
+func (m *Model) armTick() tea.Cmd {
 	if m.ticking || m.table != nil || m.selected == "" || m.cache.State(m.selected) == daemon.SessionIdle {
 		return nil
 	}
 	m.ticking = true
-	return m.secondTick()
+	d := secondEvery
+	if m.workingLine() != "" {
+		d = frameEvery
+	}
+	return m.tick(d)
 }
 
 func (m *Model) update(msg tea.Msg) tea.Cmd {
@@ -397,7 +408,7 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 
-	case secondTickMsg:
+	case tickMsg:
 		m.ticking = false
 		return nil
 

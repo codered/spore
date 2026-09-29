@@ -189,7 +189,7 @@ func newTestModel(t *testing.T, fb *fakeBackend, selected string) *Model {
 	m.line.Cursor.SetMode(cursor.CursorStatic)
 	// A real refresh tick sleeps two seconds; tests drive ticks by hand.
 	m.viewTick = func(int) tea.Cmd { return nil }
-	m.secondTick = func() tea.Cmd { return nil }
+	m.tick = func(time.Duration) tea.Cmd { return nil }
 	// Initialize with a default session if none provided
 	if selected != "" && len(fb.sessions) == 0 {
 		fb.sessions = []daemon.SessionJSON{{ID: selected, Source: "chat", Workspace: "/tmp"}}

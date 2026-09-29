@@ -48,15 +48,23 @@ func (m *Model) sync() {
 	}
 	m.vp.Width = w
 	// One row inside the pane is the session's facts.
-	m.vp.Height = max(1, m.paneHeight()-1-lipgloss.Height(m.inputView())-m.overlayHeight()-m.thinkingHeight())
+	m.vp.Height = max(1, m.paneHeight()-1-lipgloss.Height(m.inputView())-m.overlayHeight())
 
-	content := m.transcript(w)
+	base := m.transcript(w)
+	content := base
+	if wl := m.workingLine(); wl != "" {
+		if base != "" {
+			content += "\n\n"
+		}
+		content += wl
+	}
 	if content != m.lastContent {
-		m.lastContent = content
 		m.vp.SetContent(content)
-		if !m.follow {
+		// A spinner frame changes content but is not something new to read.
+		if base != m.lastBase && !m.follow {
 			m.unseen = true
 		}
+		m.lastContent, m.lastBase = content, base
 	}
 	if m.scrollToTool && m.toolCursor >= 0 && m.toolCursor < len(m.toolLines) {
 		m.follow = false
@@ -127,9 +135,6 @@ func (m *Model) mainView() string {
 		return paneBox("help", helpText(), m.chatOuter(), m.bodyHeight(), on, 1)
 	}
 	parts := []string{clip(m.sessionFacts(), m.mainWidth()), m.vp.View()}
-	if th := m.thinkingView(); th != "" {
-		parts = append(parts, th)
-	}
 	if ov := m.overlayView(); ov != "" {
 		parts = append(parts, ov)
 	}
@@ -286,27 +291,6 @@ func (m *Model) deadline(expires string) string {
 	return fmt.Sprintf("auto-denies in %d:%02d", int(left.Minutes()), int(left.Seconds())%60)
 }
 
-// thinkingView is the line pinned above the input while the selected
-// session's turn runs, so a sent message shows a sign of life before any
-// text arrives. It hides while an approval waits: then spore is waiting on
-// the person, and the prompt says so.
-func (m *Model) thinkingView() string {
-	if m.selected == "" || m.cache.State(m.selected) != daemon.SessionWorking {
-		return ""
-	}
-	sv := m.cache.get(m.selected)
-	label := "spore is thinking…"
-	if b := sv.last(); b != nil && b.kind == kindText && b.streaming {
-		label = "spore is writing…"
-	} else if tool := waitingTool(sv); tool != "" {
-		label = "spore is running " + tool + "…"
-	}
-	if !sv.started.IsZero() {
-		label += " " + elapsed(m.opts.Now().Sub(sv.started))
-	}
-	return clip(styAccent.Render("●")+" "+styMuted.Render(label), m.mainWidth())
-}
-
 // waitingTool names the latest call in the transcript's trailing run of
 // tool calls that has no result yet.
 func waitingTool(sv *sessionView) string {
@@ -318,19 +302,29 @@ func waitingTool(sv *sessionView) string {
 	return ""
 }
 
-func elapsed(d time.Duration) string {
-	s := int(max(0, d).Seconds())
-	if s < 60 {
-		return fmt.Sprintf("%ds", s)
-	}
-	return fmt.Sprintf("%dm%02ds", s/60, s%60)
-}
+// spinnerFrames turn once per frameEvery while a turn runs.
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-func (m *Model) thinkingHeight() int {
-	if m.thinkingView() != "" {
-		return 1
+// workingLine ends the transcript while the selected session's turn runs:
+// a spinner, what spore is doing, and for how long. It hides while an
+// approval waits: then spore is waiting on the person, and the card says so.
+func (m *Model) workingLine() string {
+	if m.selected == "" || m.cache.State(m.selected) != daemon.SessionWorking {
+		return ""
 	}
-	return 0
+	sv := m.cache.get(m.selected)
+	label := "thinking"
+	if b := sv.last(); b != nil && b.kind == kindText && b.streaming {
+		label = "writing"
+	} else if tool := waitingTool(sv); tool != "" {
+		label = "running " + tool
+	}
+	now := m.opts.Now()
+	if !sv.started.IsZero() {
+		label += " · " + humanDur(now.Sub(sv.started))
+	}
+	frame := spinnerFrames[int(now.UnixMilli()/frameEvery.Milliseconds())%len(spinnerFrames)]
+	return styAccent.Render(frame) + " " + styMuted.Render(label)
 }
 
 func (m *Model) overlayHeight() int {
