@@ -24,7 +24,7 @@
 │                              │┃                                                                  ┃
 │                              │┃                                                                  ┃
 │                              │┃ ╭──────────────────────────────────────────────────────────────╮ ┃
-│                              │┃ │ Ask spore something…                                         │ ┃
+│                              │┃ │ Ask spore something…  (i to type · : for commands)           │ ┃
 │● working  ◐ blocked  ○ idle  │┃ ╰──────────────────────────────────────────────────────────────╯ ┃
 ╰──────────────────────────────╯┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
  NORMAL  tab sessions  i type  j/k scroll  [ ] tools  o expand  n new  b next blocked  ? help       

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,4 +187,15 @@ func TestGoldenWorking(t *testing.T) {
 	now = now.Add(12 * time.Second)
 	run(m, tickMsg{})
 	golden(t, "working-100", m.View())
+}
+
+func TestPlaceholderFollowsTheMode(t *testing.T) {
+	m := newTestModel(t, &fakeBackend{}, "s1")
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "Ask spore something…") || strings.Contains(v, "(i to type") {
+		t.Fatalf("INSERT placeholder wrong:\n%s", v)
+	}
+	press(m, "esc")
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "Ask spore something…  (i to type · : for commands)") {
+		t.Fatalf("NORMAL placeholder wrong:\n%s", v)
+	}
 }

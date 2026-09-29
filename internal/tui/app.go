@@ -55,6 +55,9 @@ const (
 	// (BenchmarkSyncLongTranscript), over the spec's 2ms budget.
 	frameEvery  = time.Second
 	secondEvery = time.Second
+
+	placeholderInsert = "Ask spore something…"
+	placeholderNormal = "Ask spore something…  (i to type · : for commands)"
 )
 
 // Messages. Everything that changes the model arrives as one of these, so
@@ -208,7 +211,7 @@ func New(ctx context.Context, be Backend, sessionID string, opts Options) *Model
 		opts.Now = time.Now
 	}
 	in := textarea.New()
-	in.Placeholder = "Ask spore something…"
+	in.Placeholder = placeholderInsert
 	in.Prompt = ""
 	in.ShowLineNumbers = false
 	in.CharLimit = 0

@@ -40,6 +40,11 @@ func (m *Model) paneHeight() int { return max(1, m.bodyHeight()-2) }
 // sync re-lays-out after every update: input width, viewport size, and the
 // transcript of the selected session.
 func (m *Model) sync() {
+	if m.mode == modeInsert {
+		m.input.Placeholder = placeholderInsert
+	} else {
+		m.input.Placeholder = placeholderNormal
+	}
 	w := m.mainWidth()
 	m.input.SetWidth(max(10, w-4))
 	m.line.Width = max(10, w-6)
