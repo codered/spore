@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
@@ -157,5 +158,67 @@ func TestDraftLineUnderTheInput(t *testing.T) {
 	press(m, "esc")
 	if v := ansi.Strip(m.View()); strings.Contains(v, "approval keys work in NORMAL") {
 		t.Fatalf("still shown in NORMAL:\n%s", v)
+	}
+}
+
+func TestBlockedPaneSaysWaitingOnYou(t *testing.T) {
+	m := scene(t, 100, 30)
+	feed(m, daemon.WireEvent{Session: "a1b2c3", Type: daemon.WireApproval, PendingID: 6, Tool: "shell_exec", Rule: "shell_exec"})
+	press(m, "esc", "tab")
+	v := ansi.Strip(m.View())
+	if !strings.Contains(v, "┏━ a1b2 fix flaky test · waiting on you") {
+		t.Fatalf("chat pane not heavy with the waiting title while the sidebar has focus:\n%s", v)
+	}
+	press(m, "tab")
+	line := statusLine(m)
+	if !strings.HasPrefix(line, " APPROVAL ") {
+		t.Fatalf("badge: %q", line)
+	}
+	for _, want := range []string{"y once", "n deny", "s session", "b next blocked (c9d0)"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("missing %q in %q", want, line)
+		}
+	}
+	if strings.Contains(line, "p pattern") || strings.Contains(line, "other keys do nothing") {
+		t.Fatalf("status line = %q", line)
+	}
+}
+
+func TestNoNextBlockedWhenOnlyTheSelectedWaits(t *testing.T) {
+	m, _, _ := clockModel(t)
+	approvalOn(m, daemon.WireEvent{Tool: "shell_exec"})
+	press(m, "esc")
+	if line := statusLine(m); strings.Contains(line, "next blocked") {
+		t.Fatalf("offered itself: %q", line)
+	}
+}
+
+func TestSubAgentSelectedStillShowsItsApproval(t *testing.T) {
+	m := scene(t, 100, 30)
+	feed(m, daemon.WireEvent{Session: "a1b2c3", Type: daemon.WireApproval, PendingID: 9, Tool: "shell_exec", Origin: "7f3e99"})
+	// Select the child directly: the approval lives on the root, and
+	// approvalFor must find it through Origin.
+	m.selected = "7f3e99"
+	run(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	if !m.waiting() {
+		t.Fatal("the sub-agent's own approval is not waiting on it")
+	}
+	v := ansi.Strip(m.View())
+	for _, want := range []string{"7f3e audit the tests · waiting on you", "from sub-agent 7f3e"} {
+		if !strings.Contains(v, want) {
+			t.Fatalf("missing %q:\n%s", want, v)
+		}
+	}
+}
+
+func TestNarrowApprovalBarKeepsTheAnswers(t *testing.T) {
+	m := scene(t, 60, 24)
+	feed(m, daemon.WireEvent{Session: "a1b2c3", Type: daemon.WireApproval, PendingID: 7, Tool: "shell_exec"})
+	press(m, "esc")
+	line := statusLine(m)
+	for _, want := range []string{"y once", "n deny", "s session"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("missing %q at 60 columns: %q", want, line)
+		}
 	}
 }

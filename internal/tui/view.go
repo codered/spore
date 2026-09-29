@@ -131,11 +131,11 @@ func (m *Model) mainView() string {
 	if m.table != nil && !m.help {
 		w, h := m.width-2, m.paneHeight()
 		body := lipgloss.NewStyle().Width(w).Height(h).MaxHeight(h).Render(m.table.render(w, h))
-		return paneBox(m.table.title(), body, m.width, m.bodyHeight(), true, 0)
+		return paneBox(m.table.title(), body, m.width, m.bodyHeight(), true, 0, false)
 	}
 	on := m.focused() == paneChat
 	if m.help {
-		return paneBox("help", helpText(), m.chatOuter(), m.bodyHeight(), on, 1)
+		return paneBox("help", helpText(), m.chatOuter(), m.bodyHeight(), on, 1, false)
 	}
 	vpView := m.vp.View()
 	if card := m.approvalCard(m.vp.Width, m.vp.Height); card != "" {
@@ -145,13 +145,13 @@ func (m *Model) mainView() string {
 	if dl := m.draftLine(); dl != "" {
 		parts = append(parts, dl)
 	}
-	return paneBox(m.paneTitle(), strings.Join(parts, "\n"), m.chatOuter(), m.bodyHeight(), on, 1)
+	return paneBox(m.paneTitle(), strings.Join(parts, "\n"), m.chatOuter(), m.bodyHeight(), on, 1, m.waiting())
 }
 
 func (m *Model) sidebarView() string {
 	h := m.paneHeight()
 	body := renderSidebar(m.cache, m.cache.rows(m.showAll, m.filter, m.selected), m.selected, m.sideCursor, sidebarWidth, h)
-	return paneBox("sessions", withLegend(body, h), sidebarOuter, m.bodyHeight(), m.focused() == paneSidebar, 0)
+	return paneBox("sessions", withLegend(body, h), sidebarOuter, m.bodyHeight(), m.focused() == paneSidebar, 0, false)
 }
 
 // withLegend puts the state legend on the last of h rows when body leaves a
@@ -176,13 +176,17 @@ func legendLine() string {
 // paneBox frames body in w x h cells with title in the top border and pad
 // blank columns inside each side. The focused pane gets a heavy accent
 // border, the other a light muted one, so the difference survives a
-// terminal without colour.
-func paneBox(title, body string, w, h int, focused bool, pad int) string {
+// terminal without colour. warn outranks focus: a pane waiting on the person
+// is heavy and amber whether or not it has focus.
+func paneBox(title, body string, w, h int, focused bool, pad int, warn bool) string {
 	iw, ih := max(1, w-2), max(1, h-2)
 	cw := max(1, iw-2*pad)
 	gap := strings.Repeat(" ", pad)
 	b, sty, tsty := lipgloss.RoundedBorder(), styMuted, styMuted
-	if focused {
+	switch {
+	case warn:
+		b, sty, tsty = lipgloss.ThickBorder(), styWarn, styApprovalTitle
+	case focused:
 		b, sty, tsty = lipgloss.ThickBorder(), styAccent, styKey
 	}
 	head := " " + clip(oneLine(title), max(0, iw-3)) + " "
@@ -289,6 +293,9 @@ func (m *Model) workingLine() string {
 // signals that need the user now on the right.
 func (m *Model) statusView() string {
 	badge := styMode.Render(" " + m.mode.String() + " ")
+	if m.approvalBar() {
+		badge = styModeWarn.Render(" APPROVAL ")
+	}
 	var right []string
 	if m.unseen {
 		right = append(right, styAccent.Render("↓ new"))

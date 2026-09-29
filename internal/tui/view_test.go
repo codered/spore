@@ -199,3 +199,19 @@ func TestPlaceholderFollowsTheMode(t *testing.T) {
 		t.Fatalf("NORMAL placeholder wrong:\n%s", v)
 	}
 }
+
+func TestGoldenApprovalCard(t *testing.T) {
+	exp := t0.Add(4*time.Minute + 32*time.Second).Format(time.RFC3339)
+	m := scene(t, 60, 24)
+	feed(m, daemon.WireEvent{Session: "a1b2c3", Type: daemon.WireApproval, PendingID: 7, Tool: "shell_exec",
+		Args: `{"command":"go test -race -count=50 ./internal/tui/..."}`, Rule: "shell_exec", Profile: "local", ExpiresAt: exp})
+	press(m, "esc")
+	golden(t, "approval-card-60", m.View())
+
+	m = scene(t, 100, 30)
+	feed(m, daemon.WireEvent{Session: "a1b2c3", Type: daemon.WireApproval, PendingID: 8, Tool: "shell_exec",
+		Args: `{"command":"go test -race -count=50 ./internal/tui/...","timeout_seconds":300}`, Rule: "shell_exec",
+		Origin: "7f3e99", Profile: "local", Pattern: "shell_exec(command matches go test*)", ExpiresAt: exp})
+	press(m, "esc")
+	golden(t, "approval-subagent-100", m.View())
+}

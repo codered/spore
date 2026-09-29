@@ -129,7 +129,8 @@ func (m *Model) sessionFacts() string {
 	return styMuted.Render(strings.Join(out, " · "))
 }
 
-// paneTitle is the chat pane's border title: the session's id and title.
+// paneTitle is the chat pane's border title: the session's id and title,
+// and that it waits on the person while an approval does.
 func (m *Model) paneTitle() string {
 	if m.selected == "" {
 		return "no session"
@@ -138,7 +139,31 @@ func (m *Model) paneTitle() string {
 	if title == "" {
 		title = "untitled"
 	}
-	return short(m.selected) + " " + oneLine(title)
+	out := short(m.selected) + " " + oneLine(title)
+	if m.waiting() {
+		out += " · waiting on you"
+	}
+	return out
+}
+
+// approvalBar is whether the status bar belongs to the approval: NORMAL,
+// the chat on screen, and an approval waiting on the selected session.
+func (m *Model) approvalBar() bool {
+	return m.mode == modeNormal && m.table == nil && !m.help && m.waiting()
+}
+
+// approvalHints are the answers the card offers, and the next blocked
+// session when there is one.
+func (m *Model) approvalHints() []string {
+	_, ev, _ := m.cache.approvalFor(m.selected)
+	parts := []string{hint("y", "once"), hint("n", "deny"), hint("s", "session")}
+	if ev.Pattern != "" {
+		parts = append(parts, hint("p", "pattern"))
+	}
+	if id := m.nextBlockedID(); id != "" {
+		parts = append(parts, hint("b", "next blocked ("+short(id)+")"))
+	}
+	return parts
 }
 
 func hint(key, label string) string {
@@ -193,7 +218,16 @@ func (m *Model) keyHints(room int) string {
 		}
 		parts = confirmParts(m.confirm)
 	default:
-		parts = m.normalHints()
+		if m.approvalBar() {
+			parts = m.approvalHints()
+			// The answers matter more than the way to the next blocked
+			// session, which fitHints would otherwise keep as the last hint.
+			if m.nextBlockedID() != "" && lipgloss.Width(strings.Join(parts, "  ")) > room {
+				parts = parts[:len(parts)-1]
+			}
+		} else {
+			parts = m.normalHints()
+		}
 	}
 	return fitHints(parts, room)
 }

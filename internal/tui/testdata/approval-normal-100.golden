@@ -1,5 +1,5 @@
  spore   chat  skills S  agents A  usage U  jobs J  refinements R                        ◐ 2 blocked
-╭─ sessions ───────────────────╮┏━ a1b2 fix flaky test ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+╭─ sessions ───────────────────╮┏━ a1b2 fix flaky test · waiting on you ━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 │▸ jobs                        │┃ chat · /work/spore · sonnet-5 · ctx 38.0k                        ┃
 │/work/spore                   │┃ › fix the flaky tui test                                         ┃
 │◐ c9d0 lint audit         disc│┃   Looking at tui_test.go…                                        ┃
@@ -27,4 +27,4 @@
 │                              │┃ │ Ask spore something…  (i to type · : for commands)           │ ┃
 │● working  ◐ blocked  ○ idle  │┃ ╰──────────────────────────────────────────────────────────────╯ ┃
 ╰──────────────────────────────╯┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
- NORMAL  tab sessions  i type  j/k scroll  [ ] tools  o expand  n new  ? help               esc stop
+ APPROVAL  y once  n deny  s session  p pattern  b next blocked (c9d0)                      esc stop
