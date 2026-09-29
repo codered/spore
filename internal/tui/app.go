@@ -1344,14 +1344,23 @@ func (m *Model) removeSessions(ids []string) tea.Cmd {
 	return m.selectSession(next)
 }
 
-func (m *Model) nextBlocked() tea.Cmd {
+// nextBlockedID is the next blocked session after the selected one, in
+// sidebar order, or empty when no other session is blocked.
+func (m *Model) nextBlockedID() string {
 	ids := m.selectable()
 	start := indexOf(ids, m.selected)
 	for k := 1; k <= len(ids); k++ {
 		id := ids[(start+k+len(ids))%len(ids)]
-		if m.cache.State(id) == daemon.SessionBlocked {
-			return m.selectSession(id)
+		if id != m.selected && m.cache.State(id) == daemon.SessionBlocked {
+			return id
 		}
+	}
+	return ""
+}
+
+func (m *Model) nextBlocked() tea.Cmd {
+	if id := m.nextBlockedID(); id != "" {
+		return m.selectSession(id)
 	}
 	return nil
 }

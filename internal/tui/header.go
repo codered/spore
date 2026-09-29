@@ -117,7 +117,25 @@ func (m *Model) paneTitle() string {
 }
 
 func hint(key, label string) string {
-	return styKey.Render("<"+key+">") + " " + styMuted.Render(label)
+	return styKey.Render(key) + " " + styMuted.Render(label)
+}
+
+// fitHints joins hints two spaces apart, dropping them from the end until
+// they fit in room cells. The last hint always stays: it is the way out, or
+// the way to the rest of the keys.
+func fitHints(parts []string, room int) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	last := parts[len(parts)-1]
+	head := parts[:len(parts)-1]
+	for n := len(head); n > 0; n-- {
+		s := strings.Join(append(append([]string{}, head[:n]...), last), "  ")
+		if lipgloss.Width(s) <= room {
+			return s
+		}
+	}
+	return last
 }
 
 // fitRow puts left and right on one line of width cells, cutting left first.
@@ -133,21 +151,30 @@ func fitRow(left, right string, width int) string {
 	return left + strings.Repeat(" ", width-lipgloss.Width(left)-rw) + right
 }
 
-// keyHints is the status bar's left half: the keys that work in this mode.
-func (m *Model) keyHints() string {
+// keyHints is the status bar's left half: the keys that work in this mode,
+// fitted to room cells.
+func (m *Model) keyHints(room int) string {
+	var parts []string
 	switch m.mode {
 	case modeInsert:
-		return hint("enter", "send") + "  " + hint("ctrl+j", "newline") + "  " + hint("esc", "normal")
+		parts = []string{hint("enter", "send"), hint("ctrl+j", "newline"), hint("esc", "normal")}
 	case modeCommand:
-		return hint("enter", "run") + "  " + hint("tab", "complete") + "  " + hint("esc", "cancel")
+		parts = []string{hint("enter", "run"), hint("tab", "complete"), hint("esc", "cancel")}
 	case modeFilter:
-		return hint("enter", "keep") + "  " + hint("esc", "clear")
+		parts = []string{hint("enter", "keep"), hint("esc", "clear")}
 	case modeConfirm:
 		if m.confirm == nil {
 			return ""
 		}
-		return confirmKeys(m.confirm)
+		parts = confirmParts(m.confirm)
+	default:
+		parts = m.normalHints()
 	}
+	return fitHints(parts, room)
+}
+
+// normalHints are the NORMAL-mode keys for what is on screen.
+func (m *Model) normalHints() []string {
 	if m.table != nil {
 		esc := "back"
 		switch {
@@ -160,22 +187,24 @@ func (m *Model) keyHints() string {
 		for _, a := range m.table.res.Actions() {
 			parts = append(parts, hint(a.Key, a.Label))
 		}
-		return strings.Join(append(parts, hint("esc", esc)), "  ")
+		return append(parts, hint("esc", esc))
+	}
+	if m.focused() == paneSidebar {
+		return []string{hint("tab", "chat"), hint("j/k", "session"), hint("enter", "open"), hint("i", "type"), hint("n", "new"), hint("?", "help")}
 	}
 	var parts []string
-	if m.focused() == paneSidebar {
-		parts = []string{hint("tab", "chat"), hint("j/k", "session"), hint("enter", "open"), hint("i", "type"), hint("n", "new")}
-	} else {
-		if m.sidebarOn() {
-			parts = append(parts, hint("tab", "sessions"))
-		}
-		parts = append(parts, hint("i", "type"), hint("j/k", "scroll"), hint("[ ]", "tools"))
+	if m.sidebarOn() {
+		parts = append(parts, hint("tab", "sessions"))
 	}
-	return strings.Join(append(parts, hint("?", "help")), "  ")
+	parts = append(parts, hint("i", "type"), hint("j/k", "scroll"), hint("[ ]", "tools"), hint("o", "expand"), hint("n", "new"))
+	if m.nextBlockedID() != "" {
+		parts = append(parts, hint("b", "next blocked"))
+	}
+	return append(parts, hint(":", "cmd"), hint("?", "help"))
 }
 
-// confirmKeys is the modal's answer line: y, D when it applies, and esc.
-func confirmKeys(c *confirmState) string {
+// confirmParts are the modal's answers: y, D when it applies, and esc.
+func confirmParts(c *confirmState) []string {
 	yes := c.yesLabel
 	if yes == "" {
 		yes = "confirm"
@@ -184,5 +213,8 @@ func confirmKeys(c *confirmState) string {
 	if c.alt != nil {
 		parts = append(parts, hint("D", c.altLabel))
 	}
-	return strings.Join(append(parts, hint("esc", "cancel")), "  ")
+	return append(parts, hint("esc", "cancel"))
 }
+
+// confirmKeys is the modal's answer line.
+func confirmKeys(c *confirmState) string { return strings.Join(confirmParts(c), "  ") }

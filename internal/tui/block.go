@@ -69,7 +69,7 @@ func (b *block) draw(width int, md *glamour.TermRenderer, selected bool) string 
 	wrap := lipgloss.NewStyle().Width(max(10, width))
 	switch b.kind {
 	case kindUser:
-		return wrap.Render(styAccent.Render("› ") + b.text)
+		return wrap.Render(styVisor.Render("› ") + b.text)
 	case kindText:
 		return b.drawText(width, md)
 	case kindTool:

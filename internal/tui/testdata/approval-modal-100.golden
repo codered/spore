@@ -14,7 +14,7 @@
 │                             ┃  Allow fs.write for this session?    ┃                             ┃
 │                             ┃  matched policy rule "fs.write.ask"  ┃                             ┃
 │                             ┃                                      ┃───────────────────────────╮ ┃
-│                             ┃  <y> confirm  <esc> cancel           ┃                           │ ┃
+│                             ┃  y confirm  esc cancel               ┃                           │ ┃
 │                             ┃                                      ┃                           │ ┃
 │                             ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛                           │ ┃
 │                              │┃ │ {                                                            │ ┃
@@ -27,4 +27,4 @@
 │                              │┃ │ Ask spore something…                                         │ ┃
 │                              │┃ ╰──────────────────────────────────────────────────────────────╯ ┃
 ╰──────────────────────────────╯┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
- CONFIRM  <y> confirm  <esc> cancel                                                                 
+ CONFIRM  y confirm  esc cancel                                                                     

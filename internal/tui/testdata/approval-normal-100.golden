@@ -27,4 +27,4 @@
 │                              │┃ │ Ask spore something…                                         │ ┃
 │                              │┃ ╰──────────────────────────────────────────────────────────────╯ ┃
 ╰──────────────────────────────╯┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
- NORMAL  <tab> sessions  <i> type  <j/k> scroll  <[ ]> tools  <?> help                    <esc> stop
+ NORMAL  tab sessions  i type  j/k scroll  [ ] tools  o expand  n new  ? help               esc stop

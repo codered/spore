@@ -323,13 +323,13 @@ func (m *Model) overlayHeight() int {
 // statusView is the mode badge and the keys that work here, with the few
 // signals that need the user now on the right.
 func (m *Model) statusView() string {
-	left := styMode.Render(" "+m.mode.String()+" ") + " " + m.keyHints()
+	badge := styMode.Render(" " + m.mode.String() + " ")
 	var right []string
 	if m.unseen {
 		right = append(right, styAccent.Render("↓ new"))
 	}
 	if m.mode == modeNormal && m.table == nil && m.cache.State(m.selected) != daemon.SessionIdle {
-		right = append(right, hint("esc", "stop"))
+		right = append(right, styWarn.Bold(true).Render("esc stop"))
 	}
 	if m.viewErr != "" {
 		right = append(right, styDanger.Render(m.viewErr))
@@ -337,7 +337,9 @@ func (m *Model) statusView() string {
 	if m.flash != "" {
 		right = append(right, styAccent.Render(m.flash))
 	}
-	return fitRow(left, strings.Join(right, styMuted.Render(" · ")), m.width)
+	r := strings.Join(right, styMuted.Render(" · "))
+	room := m.width - lipgloss.Width(badge) - 1 - lipgloss.Width(r) - 1
+	return fitRow(badge+" "+m.keyHints(max(0, room)), r, m.width)
 }
 
 func helpText() string {
