@@ -60,7 +60,7 @@ func interactiveTerminal() bool {
 // exchange and how to resume -- to ordinary scrollback, so quitting does not
 // make the conversation vanish from view.
 func chatTUI(ctx context.Context, cfg *config.Config, c *client, sessionID string) error {
-	summary, err := tui.Run(ctx, tuiBackend{c: c, showCost: cfg.ShowCost}, sessionID, tui.Options{ShowCost: cfg.ShowCost})
+	summary, err := tui.Run(ctx, tuiBackend{c: c, showCost: cfg.ShowCost}, sessionID, tui.Options{ShowCost: cfg.ShowCost, Daemon: cfg.Daemon.Addr})
 	if err != nil {
 		return err
 	}

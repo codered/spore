@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -14,11 +15,14 @@ func (m *Model) bodyHeight() int { return max(1, m.height-2) }
 // headerView is the top nav: the brand, a tab per screen with the one on
 // show lit, and on the right the signals that concern every session.
 func (m *Model) headerView() string {
-	right := m.globalFacts()
+	right := m.globalFacts(true)
 	left := m.tabBar(true)
 	if lipgloss.Width(left)+lipgloss.Width(right)+1 > m.width {
 		// Narrow: the names matter more than the letters, which ? lists.
 		left = m.tabBar(false)
+	}
+	if lipgloss.Width(left)+lipgloss.Width(right)+1 > m.width {
+		right = m.globalFacts(false)
 	}
 	return fitRow(left, right, m.width)
 }
@@ -68,16 +72,37 @@ func (m *Model) activeTab() string {
 	return m.table.res.Name()
 }
 
-// globalFacts is what the top nav reports about every session at once.
-func (m *Model) globalFacts() string {
+// globalFacts is what the top nav reports about every session at once, and
+// where the daemon is when withDaemon is set.
+func (m *Model) globalFacts(withDaemon bool) string {
 	var out []string
 	if n := m.cache.BlockedCount(); n > 0 {
-		out = append(out, styWarn.Render(fmt.Sprintf("%d blocked", n)))
+		out = append(out, styWarn.Render(fmt.Sprintf("◐ %d blocked", n)))
 	}
 	if m.reconnecting {
 		out = append(out, styDanger.Render("reconnecting…"))
 	}
+	if d := daemonLabel(m.opts.Daemon); withDaemon && d != "" {
+		out = append(out, styMuted.Render(d))
+	}
 	return strings.Join(out, styMuted.Render(" · "))
+}
+
+// daemonLabel names the daemon for the header. A loopback host goes without
+// saying, so 127.0.0.1:7777 shows as :7777.
+func daemonLabel(addr string) string {
+	if addr == "" {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "daemon " + addr
+	}
+	switch host {
+	case "", "127.0.0.1", "localhost", "::1":
+		return "daemon :" + port
+	}
+	return "daemon " + addr
 }
 
 // sessionFacts is the chat pane's first line: where the selected session

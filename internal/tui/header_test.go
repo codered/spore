@@ -54,3 +54,33 @@ func TestHintsHaveNoBracketsAndOfferNextBlocked(t *testing.T) {
 		t.Fatalf("brackets left in %q", line)
 	}
 }
+
+func TestDaemonLabel(t *testing.T) {
+	for addr, want := range map[string]string{
+		"":               "",
+		"127.0.0.1:7777": "daemon :7777",
+		"localhost:7777": "daemon :7777",
+		"[::1]:7777":     "daemon :7777",
+		":7777":          "daemon :7777",
+		"10.0.0.5:7777":  "daemon 10.0.0.5:7777",
+		"not an address": "daemon not an address",
+	} {
+		if got := daemonLabel(addr); got != want {
+			t.Errorf("daemonLabel(%q) = %q, want %q", addr, got, want)
+		}
+	}
+}
+
+func TestHeaderShowsBlockedGlyphAndDaemon(t *testing.T) {
+	m := scene(t, 160, 24)
+	m.opts.Daemon = "127.0.0.1:7777"
+	head := strings.Split(ansi.Strip(m.View()), "\n")[0]
+	if !strings.HasSuffix(head, "◐ 1 blocked · daemon :7777") {
+		t.Fatalf("header = %q", head)
+	}
+	run(m, tea.WindowSizeMsg{Width: 60, Height: 24})
+	head = strings.Split(ansi.Strip(m.View()), "\n")[0]
+	if strings.Contains(head, "daemon") || !strings.Contains(head, "◐ 1 blocked") {
+		t.Fatalf("narrow header = %q", head)
+	}
+}

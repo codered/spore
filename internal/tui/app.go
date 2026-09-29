@@ -102,6 +102,8 @@ type (
 // Options configure a Model.
 type Options struct {
 	ShowCost bool
+	// Daemon is the daemon's address, for the header; empty hides it.
+	Daemon string
 	// Now is the clock; nil means time.Now. Tests pin it.
 	Now func() time.Time
 }
