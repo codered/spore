@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/codered/spore/internal/policy"
+	"github.com/codered/spore/internal/store"
 )
 
 func TestBrokerDeliversAnAnswerToTheWaitingAsk(t *testing.T) {
@@ -431,5 +432,52 @@ func TestBrokerAnswerStillWorksForTopLevelSessions(t *testing.T) {
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatal("Ask did not return after Answer")
+	}
+}
+
+// The web card shows who is asking under which profile and counts down to
+// the auto-deny, so the live ask must carry both.
+func TestApprovalEventCarriesProfileAndExpiry(t *testing.T) {
+	h := NewHub()
+	b := NewBroker(h)
+	events, stop := h.Subscribe("s1")
+	defer stop()
+
+	deadline := time.Now().Add(5 * time.Minute).UTC().Truncate(time.Second)
+	go b.Ask(context.Background(), policy.Ask{
+		SessionID: "s1", Tool: "shell_exec", PendingID: 11,
+		Profile: "remote", Deadline: deadline,
+	})
+	select {
+	case ev := <-events:
+		if ev.Profile != "remote" {
+			t.Errorf("Profile = %q, want remote", ev.Profile)
+		}
+		got, err := time.Parse(time.RFC3339, ev.ExpiresAt)
+		if err != nil || !got.Equal(deadline) {
+			t.Errorf("ExpiresAt = %q (%v), want %s", ev.ExpiresAt, err, deadline.Format(time.RFC3339))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ask published no approval event")
+	}
+	if d, ok := b.deadline(11); !ok || !d.Equal(deadline) {
+		t.Errorf("broker deadline = %v, %v; want %v while the ask waits", d, ok, deadline)
+	}
+	b.Answer("s1", 11, policy.Answer{Allow: false})
+}
+
+// A suspension replayed after a restart has no waiter and so no timer. A
+// countdown on it would be a lie.
+func TestReplayWithoutWaiterHasNoExpiry(t *testing.T) {
+	b := NewBroker(NewHub())
+	ev := b.replayEvent(store.PendingCall{
+		ID: 5, SessionID: "child", Tool: "fs_write", Profile: "local", Rule: "fs_write",
+		ArgsJSON: []byte(`{"path":"a"}`),
+	}, "root")
+	if ev.ExpiresAt != "" {
+		t.Errorf("ExpiresAt = %q, want empty with no live waiter", ev.ExpiresAt)
+	}
+	if ev.Profile != "local" || ev.Origin != "child" || ev.Type != WireApproval || ev.PendingID != 5 {
+		t.Errorf("replayed %+v, want profile local, origin child, pending 5", ev)
 	}
 }

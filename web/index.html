@@ -4,33 +4,86 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>spore</title>
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <aside id="sidebar">
-  <header>
+  <header class="brand">
     <h1>spore</h1>
-    <button id="new-session" type="button">new session</button>
+    <button id="new-session" type="button">New session <kbd class="hint">n</kbd></button>
   </header>
+  <nav id="views" aria-label="views"></nav>
+  <div class="filter-wrap">
+    <input id="filter" type="search" placeholder="filter sessions" aria-label="filter sessions" autocomplete="off">
+    <kbd class="hint">/</kbd>
+  </div>
+  <button id="banner" type="button" hidden></button>
   <nav id="sessions" aria-label="sessions"></nav>
   <section id="jobs-panel">
     <h2>scheduled</h2>
     <ul id="jobs"></ul>
   </section>
+  <footer class="side-foot">
+    <span id="addr"></span>
+    <button id="open-settings" type="button">Settings <kbd class="hint">,</kbd></button>
+  </footer>
 </aside>
 
 <main>
-  <header id="transcript-header">
-    <span id="workspace" class="workspace" title="the directory this session is rooted at"></span>
-  </header>
-  <div id="transcript" aria-live="polite"></div>
-  <div id="approvals"></div>
-  <form id="composer" autocomplete="off">
-    <textarea id="input" rows="3" placeholder="message spore… (enter to send, shift+enter for a newline)"></textarea>
-    <button type="submit" id="send">send</button>
-  </form>
-  <div id="status"></div>
+  <section id="chat">
+    <header id="header">
+      <div class="head-main">
+        <span id="head-glyph" class="glyph idle">○</span>
+        <span id="head-title">no session</span>
+        <span id="head-meta" class="meta"></span>
+      </div>
+      <div class="head-facts">
+        <span id="head-facts" class="meta"></span>
+        <button id="stop" type="button" hidden>Stop <kbd class="hint">esc</kbd></button>
+      </div>
+    </header>
+    <div id="transcript" aria-live="polite"></div>
+    <div id="approvals"></div>
+    <form id="composer" autocomplete="off">
+      <textarea id="input" rows="3" placeholder="Message spore — queued while a turn runs or an approval is pending (enter to send, shift+enter for a newline)"></textarea>
+      <button type="submit" id="send">Send</button>
+    </form>
+  </section>
+  <section id="view" hidden></section>
+  <div id="status" role="status"></div>
 </main>
+
+<div id="settings" class="overlay" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+  <div class="panel">
+    <h2 id="settings-title">Settings</h2>
+    <div class="setting">
+      <div>
+        <div class="label">Keyboard shortcuts</div>
+        <div class="meta">Single-key shortcuts outside text fields. Off: everything stays clickable.</div>
+      </div>
+      <button id="set-enabled" type="button" role="switch" aria-checked="true" class="switch"><span></span></button>
+    </div>
+    <div class="setting">
+      <div>
+        <div class="label">Show key hints</div>
+        <div class="meta">Show the key next to buttons and views.</div>
+      </div>
+      <button id="set-hints" type="button" role="switch" aria-checked="true" class="switch"><span></span></button>
+    </div>
+    <p class="note">Approval keys (y, n, s, p) never act while a text field has focus, so a letter typed mid-sentence cannot answer an approval. Press esc to leave the field first. This is not a setting.</p>
+    <p class="meta">Stored in this browser only.</p>
+    <div class="buttons"><button type="button" data-close>Close <kbd class="hint">esc</kbd></button></div>
+  </div>
+</div>
+
+<div id="help" class="overlay" role="dialog" aria-modal="true" aria-labelledby="help-title" hidden>
+  <div class="panel">
+    <h2 id="help-title">Keyboard shortcuts</h2>
+    <table id="help-keys" class="keys"></table>
+    <div class="buttons"><button type="button" data-close>Close <kbd class="hint">esc</kbd></button></div>
+  </div>
+</div>
 
 <script src="/static/app.js"></script>
 </body>

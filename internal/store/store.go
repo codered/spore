@@ -446,6 +446,20 @@ func (s *Store) SessionAncestors(ctx context.Context, id string) ([]string, erro
 	return nil, fmt.Errorf("session ancestry deeper than %d", maxAncestorWalk)
 }
 
+// RenameSessionFrom sets a session's title only while it is still from, so a
+// title a human set in the meantime is never overwritten. It leaves
+// updated_at alone: naming a session is not activity in it. It reports
+// whether the title changed.
+func (s *Store) RenameSessionFrom(ctx context.Context, id, from, to string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET title = ? WHERE id = ? AND title = ?`, to, id, from)
+	if err != nil {
+		return false, fmt.Errorf("rename session: %w", err)
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // SetSessionWorkspace re-roots a session. The root is fixed at creation for
 // every ordinary path; this exists for the CLI's deliberate "--workspace on a
 // resume" exception, and the caller is responsible for checking the new root

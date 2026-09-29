@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/codered/spore/internal/policy"
+	"github.com/codered/spore/internal/store"
 )
 
 // answeredTTL is how long to remember answered suspensions. This must exceed
@@ -25,6 +26,8 @@ type waiter struct {
 	// root of the parent chain.
 	rootID string
 	ch     chan policy.Answer
+	// deadline is when the guard gives up on this ask; zero for none.
+	deadline time.Time
 }
 
 // Broker is the daemon's policy.Approver. Ask cannot prompt a browser
@@ -68,7 +71,7 @@ func (b *Broker) Ask(ctx context.Context, a policy.Ask) (policy.Answer, error) {
 		rootID = a.SessionID
 	}
 	b.mu.Lock()
-	b.waiters[a.PendingID] = waiter{sessionID: a.SessionID, rootID: rootID, ch: ch}
+	b.waiters[a.PendingID] = waiter{sessionID: a.SessionID, rootID: rootID, ch: ch, deadline: a.Deadline}
 	b.mu.Unlock()
 	defer func() {
 		b.mu.Lock()
@@ -162,10 +165,30 @@ func (b *Broker) pruneAnswered() {
 	}
 }
 
+// deadline reports when a live ask times out. False means no waiter holds
+// it, so nothing will time it out.
+func (b *Broker) deadline(pendingID int64) (time.Time, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	w, ok := b.waiters[pendingID]
+	if !ok || w.deadline.IsZero() {
+		return time.Time{}, false
+	}
+	return w.deadline, true
+}
+
+func expiresAt(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
 func approvalEvent(a policy.Ask) WireEvent {
 	ev := WireEvent{
 		Type: WireApproval, PendingID: a.PendingID, Tool: a.Tool,
 		Args: string(a.Args), Rule: a.Rule, Pattern: a.Pattern,
+		Profile: a.Profile, ExpiresAt: expiresAt(a.Deadline),
 	}
 	// A child's ask is published to its root. Origin tells the human they
 	// are answering for a sub-agent, exactly as the replay path does.
@@ -195,22 +218,31 @@ func (s *Server) pendingApprovalEvents(ctx context.Context, sessionID string) []
 	}
 	out := make([]WireEvent, 0, len(pending))
 	for _, p := range pending {
-		// Ignore the ok flag: an empty pattern is exactly what the client
-		// needs to see to hide the option.
-		pattern, _ := policy.PatternFor(policy.Call{Tool: p.Tool, Args: p.ArgsJSON})
-		ev := WireEvent{
-			Type: WireApproval, PendingID: p.ID, Tool: p.Tool,
-			Args: string(p.ArgsJSON), Rule: p.Rule, Pattern: pattern,
-		}
-		// A child's ask carries its own session id. The client shows it so the
-		// human can see they are answering for a sub-agent, not for the
-		// conversation in front of them.
-		if p.SessionID != sessionID {
-			ev.Origin = p.SessionID
-		}
-		out = append(out, ev)
+		out = append(out, s.broker.replayEvent(p, sessionID))
 	}
 	return out
+}
+
+// replayEvent renders a persisted suspension as the approval event a live
+// ask would have published to root.
+func (b *Broker) replayEvent(p store.PendingCall, root string) WireEvent {
+	// Ignore the ok flag: an empty pattern is exactly what the client needs
+	// to see to hide the option.
+	pattern, _ := policy.PatternFor(policy.Call{Tool: p.Tool, Args: p.ArgsJSON})
+	ev := WireEvent{
+		Type: WireApproval, PendingID: p.ID, Tool: p.Tool,
+		Args: string(p.ArgsJSON), Rule: p.Rule, Pattern: pattern, Profile: p.Profile,
+	}
+	if d, ok := b.deadline(p.ID); ok {
+		ev.ExpiresAt = expiresAt(d)
+	}
+	// A child's ask carries its own session id. The client shows it so the
+	// human can see they are answering for a sub-agent, not for the
+	// conversation in front of them.
+	if p.SessionID != root {
+		ev.Origin = p.SessionID
+	}
+	return ev
 }
 
 // allPendingApprovalEvents is pendingApprovalEvents across every session.
@@ -227,14 +259,8 @@ func (s *Server) allPendingApprovalEvents(ctx context.Context) []WireEvent {
 		if anc, err := s.store.SessionAncestors(ctx, p.SessionID); err == nil && len(anc) > 0 {
 			root = anc[len(anc)-1]
 		}
-		pattern, _ := policy.PatternFor(policy.Call{Tool: p.Tool, Args: p.ArgsJSON})
-		ev := WireEvent{
-			Type: WireApproval, Session: root, PendingID: p.ID, Tool: p.Tool,
-			Args: string(p.ArgsJSON), Rule: p.Rule, Pattern: pattern,
-		}
-		if p.SessionID != root {
-			ev.Origin = p.SessionID
-		}
+		ev := s.broker.replayEvent(p, root)
+		ev.Session = root
 		out = append(out, ev)
 	}
 	return out

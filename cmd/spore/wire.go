@@ -27,6 +27,7 @@ import (
 	skillfiles "github.com/codered/spore/internal/skill"
 	"github.com/codered/spore/internal/store"
 	"github.com/codered/spore/internal/subagent"
+	"github.com/codered/spore/internal/title"
 	"github.com/codered/spore/internal/tool"
 	"github.com/codered/spore/internal/tool/fs"
 	"github.com/codered/spore/internal/tool/gorun"
@@ -221,6 +222,9 @@ func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, *mcphost.
 	}
 	ref.Notify = srv.PublishNote // set before any turn can run a round
 	srv.AttachRefiner(ref)
+	// Sessions are named on the router's title site, from the same registry
+	// and rules every other call uses.
+	srv.AttachTitler(title.New(ref.Registry, ref.Router))
 	return srv, host, mir, nil
 }
 
