@@ -138,8 +138,28 @@ func (m *Model) mainView() string {
 }
 
 func (m *Model) sidebarView() string {
-	body := renderSidebar(m.cache, m.cache.rows(m.showAll, m.filter, m.selected), m.selected, m.sideCursor, sidebarWidth, m.paneHeight())
-	return paneBox("sessions", body, sidebarOuter, m.bodyHeight(), m.focused() == paneSidebar, 0)
+	h := m.paneHeight()
+	body := renderSidebar(m.cache, m.cache.rows(m.showAll, m.filter, m.selected), m.selected, m.sideCursor, sidebarWidth, h)
+	return paneBox("sessions", withLegend(body, h), sidebarOuter, m.bodyHeight(), m.focused() == paneSidebar, 0)
+}
+
+// withLegend puts the state legend on the last of h rows when body leaves a
+// blank row above it. Otherwise the rows win and there is no legend.
+func withLegend(body string, h int) string {
+	if body == "" {
+		return strings.Repeat("\n", max(0, h-1)) + legendLine()
+	}
+	n := strings.Count(body, "\n") + 1
+	if n > h-2 {
+		return body
+	}
+	return body + strings.Repeat("\n", h-n) + legendLine()
+}
+
+// legendLine says what the sidebar's state glyphs mean.
+func legendLine() string {
+	return styAccent.Render("●") + styMuted.Render(" working  ") +
+		styWarn.Render("◐") + styMuted.Render(" blocked  ○ idle")
 }
 
 // paneBox frames body in w x h cells with title in the top border and pad

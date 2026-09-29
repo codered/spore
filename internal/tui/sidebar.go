@@ -217,8 +217,7 @@ func highlight(line string, width int, on bool) string {
 	if !on {
 		return line
 	}
-	plain := ansi.Strip(line)
-	return stySelected.Render(plain + strings.Repeat(" ", max(0, width-lipgloss.Width(plain))))
+	return fill(line, width, colFillSel)
 }
 
 func sessionRow(c *cache, r row, width int, selected bool) string {
@@ -255,8 +254,11 @@ func sessionRow(c *cache, r row, width int, selected bool) string {
 		line += strings.Repeat(" ", pad) + styMuted.Render(tag)
 	}
 	if selected {
-		plain := ansi.Strip(line)
-		return stySelected.Render(plain + strings.Repeat(" ", max(0, width-lipgloss.Width(plain))))
+		bg := colFillSel
+		if c.State(r.id) == daemon.SessionBlocked {
+			bg = colFillWarn
+		}
+		return fill(line, width, bg)
 	}
 	return line
 }
