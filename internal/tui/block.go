@@ -46,7 +46,7 @@ type block struct {
 
 	// Render cache. cacheKey covers everything render's output depends on
 	// except the block's own data, which touch() invalidates.
-	cacheKey string
+	cacheKey renderKey
 	cacheOut string
 
 	// The stable part of a streaming reply, rendered once per change.
@@ -55,13 +55,26 @@ type block struct {
 	stableOut   string
 }
 
+// renderKey is what a block's drawing depends on besides its own data. The
+// zero key matches no render, so touch() clears it to invalidate.
+type renderKey struct {
+	width              int
+	selected, expanded bool
+	ok                 bool
+}
+
 // touch invalidates the render cache after the block's data changed.
-func (b *block) touch() { b.cacheKey = "" }
+func (b *block) touch() { b.cacheKey = renderKey{} }
+
+// cached reports whether render would return the cached drawing.
+func (b *block) cached(width int, selected bool) bool {
+	return b.cacheKey == renderKey{width, selected, b.expanded, true}
+}
 
 // render draws the block at width. md may be nil. selected marks the tool
 // cursor.
 func (b *block) render(width int, md *glamour.TermRenderer, selected bool) string {
-	key := fmt.Sprintf("%d/%t/%t", width, selected, b.expanded)
+	key := renderKey{width, selected, b.expanded, true}
 	if key == b.cacheKey {
 		return b.cacheOut
 	}
@@ -74,17 +87,17 @@ func (b *block) draw(width int, md *glamour.TermRenderer, selected bool) string 
 	wrap := lipgloss.NewStyle().Width(max(10, width))
 	switch b.kind {
 	case kindUser:
-		return wrap.Render(styVisor.Render("› ") + b.text)
+		return wrap.Render(styVisor.Render("› ") + visibleLines(b.text))
 	case kindText:
 		return b.drawText(width, md)
 	case kindTool:
 		return b.drawTool(width, selected)
 	case kindNotice:
-		return wrap.Render(styMuted.Render("· " + b.text))
+		return wrap.Render(styMuted.Render("· " + visibleLines(b.text)))
 	case kindError:
-		return wrap.Render(styDanger.Render("✗ " + b.text))
+		return wrap.Render(styDanger.Render("✗ " + visibleLines(b.text)))
 	case kindFooter:
-		return styMuted.Render(clip(b.text, width))
+		return styMuted.Render(clip(visible(b.text), width))
 	}
 	return ""
 }
@@ -92,12 +105,14 @@ func (b *block) draw(width int, md *glamour.TermRenderer, selected bool) string 
 // drawText renders assistant prose. A finished block is markdown throughout.
 // A streaming one renders only the paragraphs that are complete and shows
 // the growing tail as plain wrapped text, so a half-written code fence or
-// list never makes the whole reply reflow on every delta.
+// list never makes the whole reply reflow on every delta. The model can
+// echo a tool's output, so its text gets the same visible pass.
 func (b *block) drawText(width int, md *glamour.TermRenderer) string {
+	text := visibleLines(b.text)
 	if !b.streaming {
-		return renderMarkdown(md, b.text)
+		return renderMarkdown(md, text)
 	}
-	stable, tail := splitStable(b.text)
+	stable, tail := splitStable(text)
 	if stable != b.stableSrc || width != b.stableWidth {
 		b.stableSrc, b.stableWidth, b.stableOut = stable, width, ""
 		if stable != "" {
@@ -138,7 +153,8 @@ func splitStable(text string) (stable, tail string) {
 
 // drawTool is one line collapsed -- `▸ bash go test ./…      ✗ exit 1  1.3s`,
 // with the status against the right edge -- and the full arguments and
-// result under a rule when expanded.
+// result under a rule when expanded. Every field is what a tool or the
+// model sent, so each goes through visible before it is drawn.
 func (b *block) drawTool(width int, selected bool) string {
 	marker := "▸ "
 	if b.expanded {
@@ -150,7 +166,7 @@ func (b *block) drawTool(width int, selected bool) string {
 	status := styMuted.Render("…")
 	if b.done {
 		if b.isError {
-			status = styDanger.Render("✗ " + clip(oneLine(firstLineOf(b.result)), 40))
+			status = styDanger.Render("✗ " + clip(visible(oneLine(firstLineOf(b.result))), 40))
 		} else {
 			status = styAccent.Render("✓ ") + styMuted.Render(summarise(b.result, b.truncated))
 		}
@@ -158,8 +174,8 @@ func (b *block) drawTool(width int, selected bool) string {
 			status += "  " + styMuted.Render(humanDur(b.doneAt.Sub(b.startedAt)))
 		}
 	}
-	head := styTool.Render(marker + b.tool)
-	args := clip(oneLine(b.args), width-lipgloss.Width(head)-lipgloss.Width(status)-3)
+	head := styTool.Render(marker + visible(b.tool))
+	args := clip(visible(oneLine(b.args)), width-lipgloss.Width(head)-lipgloss.Width(status)-3)
 	gap := max(2, width-lipgloss.Width(head)-1-lipgloss.Width(args)-lipgloss.Width(status))
 	line := head + " " + styMuted.Render(args) + strings.Repeat(" ", gap) + status
 	if selected {
@@ -168,9 +184,9 @@ func (b *block) drawTool(width int, selected bool) string {
 	if !b.expanded {
 		return line
 	}
-	body := prettyArgs(b.args, 40)
+	body := visibleLines(prettyArgs(b.args, 40))
 	if b.done {
-		body += "\n" + clipLines(b.result, 200)
+		body += "\n" + visibleLines(clipLines(b.result, 200))
 	}
 	wrapped := lipgloss.NewStyle().Width(max(10, width-4)).Render(body)
 	return line + "\n" + indent(wrapped, "  "+styMuted.Render("│")+" ")
@@ -182,7 +198,7 @@ func summarise(result string, truncated bool) string {
 	if trimmed := strings.TrimRight(result, "\n"); trimmed != "" {
 		n := strings.Count(trimmed, "\n") + 1
 		if n == 1 {
-			s = clip(oneLine(trimmed), 40)
+			s = clip(visible(oneLine(trimmed)), 40)
 		} else {
 			s = fmt.Sprintf("%d lines", n)
 		}

@@ -150,3 +150,51 @@ func TestStoredToolRowHasNoDuration(t *testing.T) {
 		t.Fatalf("row = %q", out)
 	}
 }
+
+// hostile carries a carriage return, a clear-screen, a window-title OSC and
+// a C1 CSI: each would act on the terminal if printed as it came.
+const hostile = "ok\r\x1b[2J\x1b]0;pwned\x07\u009b31m"
+
+func assertInert(t *testing.T, what, out string) {
+	t.Helper()
+	for _, raw := range []string{"\r", "\x1b[2J", "\x1b]0;", "\x07", "\u009b"} {
+		if strings.Contains(out, raw) {
+			t.Errorf("%s prints %q raw:\n%q", what, raw, out)
+		}
+	}
+	if !strings.Contains(out, "␛") {
+		t.Errorf("%s does not show the escape as ␛:\n%q", what, out)
+	}
+}
+
+func TestTranscriptBlocksShowControlCharactersInsteadOfActingOnThem(t *testing.T) {
+	md := newMarkdown(80)
+	cases := []struct {
+		name string
+		b    *block
+	}{
+		{"tool args", &block{kind: kindTool, tool: "bash", args: `{"cmd":"` + hostile + `"}`}},
+		{"tool raw args", &block{kind: kindTool, tool: "bash", args: hostile}},
+		{"tool name", &block{kind: kindTool, tool: "bash" + hostile}},
+		{"tool result", &block{kind: kindTool, tool: "bash", result: hostile, done: true}},
+		{"tool error", &block{kind: kindTool, tool: "bash", result: hostile, isError: true, done: true}},
+		{"expanded tool", &block{kind: kindTool, tool: "bash", args: hostile, result: "line one\n" + hostile, done: true, expanded: true}},
+		{"user", &block{kind: kindUser, text: hostile}},
+		{"notice", &block{kind: kindNotice, text: hostile}},
+		{"error", &block{kind: kindError, text: hostile}},
+		{"footer", &block{kind: kindFooter, text: hostile}},
+		{"text", &block{kind: kindText, text: "said " + hostile}},
+		{"streaming text", &block{kind: kindText, text: "para\n\nsaid " + hostile, streaming: true}},
+	}
+	for _, c := range cases {
+		assertInert(t, c.name, c.b.render(80, md, false))
+	}
+}
+
+func TestAnExpandedToolKeepsItsResultLines(t *testing.T) {
+	b := &block{kind: kindTool, tool: "bash", result: "first\tcol\nsecond", done: true, expanded: true}
+	out := ansi.Strip(b.render(80, nil, false))
+	if !strings.Contains(out, "first    col") || !strings.Contains(out, "second") || strings.Contains(out, "␊") {
+		t.Fatalf("expanded result lost its lines or tabs:\n%s", out)
+	}
+}

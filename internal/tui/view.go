@@ -53,21 +53,24 @@ func (m *Model) sync() {
 	// One row inside the pane is the session's facts.
 	m.vp.Height = max(1, m.paneHeight()-1-lipgloss.Height(m.inputView())-m.draftLineHeight())
 
-	base := m.transcript(w)
-	content := base
-	if wl := m.workingLine(); wl != "" {
-		if base != "" {
-			content += "\n\n"
+	// The viewport measures every line it is given, so it gets new content
+	// only when the transcript changes or the working line comes or goes.
+	// The line itself is drawn over its blank row in mainView.
+	base, rebuilt := m.transcript(w)
+	working := m.workingLine() != ""
+	if newBase := rebuilt && base != m.lastBase; newBase || working != m.lastWorking {
+		content := base
+		if working {
+			if base != "" {
+				content += "\n\n"
+			}
+			m.workRow = strings.Count(content, "\n")
 		}
-		content += wl
-	}
-	if content != m.lastContent {
 		m.vp.SetContent(content)
-		// A spinner frame changes content but is not something new to read.
-		if base != m.lastBase && !m.follow {
+		if newBase && !m.follow {
 			m.unseen = true
 		}
-		m.lastContent, m.lastBase = content, base
+		m.lastBase, m.lastWorking = base, working
 	}
 	if m.scrollToTool && m.toolCursor >= 0 && m.toolCursor < len(m.toolLines) {
 		m.follow = false
@@ -80,17 +83,32 @@ func (m *Model) sync() {
 	}
 }
 
+// transcriptCache is the last joined transcript and the blocks it was
+// joined from.
+type transcriptCache struct {
+	blocks []*block
+	width  int
+	out    string
+	ok     bool
+}
+
 // transcript joins the selected session's blocks, recording the line each
-// tool block starts on so the tool cursor can scroll to it.
-func (m *Model) transcript(width int) string {
-	m.toolLines = m.toolLines[:0]
-	if m.selected == "" {
-		return ""
+// tool block starts on so the tool cursor can scroll to it. It returns the
+// kept join, and false, when the same blocks would each draw from their
+// cache: a spinner frame then costs one pass over the block list.
+func (m *Model) transcript(width int) (string, bool) {
+	var blocks []*block
+	if m.selected != "" {
+		blocks = m.cache.get(m.selected).blocks
 	}
+	if m.transcriptKept(blocks, width) {
+		return m.ts.out, false
+	}
+	m.toolLines = m.toolLines[:0]
 	var b strings.Builder
 	line, tool := 0, 0
 	var prev *block
-	for _, blk := range m.cache.get(m.selected).blocks {
+	for _, blk := range blocks {
 		if prev != nil {
 			sep := "\n"
 			if blk.kind == kindUser || prev.kind == kindFooter {
@@ -110,7 +128,49 @@ func (m *Model) transcript(width int) string {
 		line += strings.Count(out, "\n")
 		prev = blk
 	}
-	return b.String()
+	m.ts = transcriptCache{blocks: append(m.ts.blocks[:0], blocks...), width: width, out: b.String(), ok: true}
+	return m.ts.out, true
+}
+
+// transcriptKept reports whether the kept join still stands for blocks: the
+// same blocks in the same order, each with its drawing cached for this
+// width, tool cursor and expansion.
+func (m *Model) transcriptKept(blocks []*block, width int) bool {
+	if !m.ts.ok || m.ts.width != width || len(m.ts.blocks) != len(blocks) {
+		return false
+	}
+	tool := 0
+	for i, blk := range blocks {
+		if blk != m.ts.blocks[i] {
+			return false
+		}
+		selected := false
+		if blk.kind == kindTool {
+			selected = tool == m.toolCursor
+			tool++
+		}
+		if !blk.cached(width, selected) {
+			return false
+		}
+	}
+	return true
+}
+
+// withWorkingLine draws the working line over its row in v, the viewport's
+// view, when that row is on screen.
+func (m *Model) withWorkingLine(v string) string {
+	wl := m.workingLine()
+	row := m.workRow - m.vp.YOffset
+	if wl == "" || !m.lastWorking || row < 0 || row >= m.vp.Height {
+		return v
+	}
+	lines := strings.Split(v, "\n")
+	if row >= len(lines) {
+		return v
+	}
+	wl = clip(wl, m.vp.Width)
+	lines[row] = wl + strings.Repeat(" ", max(0, m.vp.Width-ansi.StringWidth(wl)))
+	return strings.Join(lines, "\n")
 }
 
 func (m *Model) View() string {
@@ -137,7 +197,7 @@ func (m *Model) mainView() string {
 	if m.help {
 		return paneBox("help", helpText(), m.chatOuter(), m.bodyHeight(), on, 1, false)
 	}
-	vpView := m.vp.View()
+	vpView := m.withWorkingLine(m.vp.View())
 	if card := m.approvalCard(m.vp.Width, m.vp.Height); card != "" {
 		vpView = placeOver(faint(vpView), card, m.vp.Width)
 	}

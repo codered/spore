@@ -50,8 +50,8 @@ const (
 	refreshEvery = 2 * time.Second
 	// frameEvery turns the working line's spinner. secondEvery redraws an
 	// approval's countdown when nothing else on screen moves. A slower
-	// spinner reads as lag; each frame rejoins the transcript, about 2.8ms
-	// on 2,000 blocks (BenchmarkSyncLongTranscript).
+	// spinner reads as lag. A frame redraws one row and leaves the
+	// viewport's content alone (BenchmarkSyncLongTranscript).
 	frameEvery  = 120 * time.Millisecond
 	secondEvery = time.Second
 
@@ -165,9 +165,10 @@ type Model struct {
 	scrollToTool bool
 	// follow pins the viewport to the bottom; unseen marks output that
 	// arrived while the user was scrolled up.
-	follow      bool
-	unseen      bool
-	lastContent string
+	follow bool
+	unseen bool
+	// ts is the joined transcript kept between frames; see transcript.
+	ts transcriptCache
 
 	help         bool
 	confirm      *confirmState
@@ -190,9 +191,13 @@ type Model struct {
 	// ticking is true while a tick is in flight; see armTick.
 	ticking bool
 	tick    func(d time.Duration) tea.Cmd
-	// lastBase is the transcript without its working line, so a spinner
-	// frame is not mistaken for new output.
-	lastBase string
+	// lastBase is the transcript last given to the viewport, so output
+	// that did not change is not marked unseen. lastWorking says the
+	// viewport ends in the working line's row, workRow; mainView draws the
+	// line over it, so a spinner frame never re-sets the content.
+	lastBase    string
+	lastWorking bool
+	workRow     int
 	// flash is a one-line report in the status bar, such as what a delete
 	// did; the next key clears it.
 	flash string
