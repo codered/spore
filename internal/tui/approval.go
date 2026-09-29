@@ -30,36 +30,63 @@ func (m *Model) waiting() bool {
 }
 
 // approvalCard is the selected session's approval as a card for a w x h
-// area, or empty when nothing waits. When h is short the call box gives up
-// rows first, down to one; past that the card is taller than h, and the
-// pane clips its foot.
+// area, or empty when nothing waits. When h is short the card compacts
+// itself (see build) so the answers stay on screen.
 func (m *Model) approvalCard(w, h int) string {
 	_, ev, ok := m.cache.approvalFor(m.selected)
 	if !ok || m.selected == "" {
 		return ""
 	}
+	// Everything on the card comes from the model, a tool server or config,
+	// and the person approves what the card says; none of it may drive the
+	// terminal.
+	ev.Tool, ev.Origin, ev.Profile = visible(ev.Tool), visible(ev.Origin), visible(ev.Profile)
+	ev.Rule, ev.Pattern = visible(ev.Rule), visible(ev.Pattern)
 	cw := min(cardMaxWidth, w-4)
 	inner := max(10, cw-6)
-	build := func(box []string) string {
+	// build draws the card at a compaction level: 0 is the full card, 1
+	// drops its spacing, 2 also drops the origin and pattern rows. The
+	// title, rule, call, answers and deadline are never dropped.
+	build := func(box []string, level int) string {
+		gap := func(rows []string) []string {
+			if level == 0 {
+				return append(rows, "")
+			}
+			return rows
+		}
 		rows := []string{styApprovalTitle.Render(clip("spore wants to run "+ev.Tool, inner))}
-		if o := originLine(ev); o != "" {
+		if o := originLine(ev); o != "" && level < 2 {
 			rows = append(rows, clip(o, inner))
 		}
-		rows = append(rows, clip(ruleLine(ev.Rule), inner), "")
-		rows = append(rows, box...)
-		rows = append(rows, "", clip(styKey.Render("y")+styMuted.Render(" allow once   ")+
+		rows = gap(append(rows, clip(ruleLine(ev.Rule), inner)))
+		rows = gap(append(rows, box...))
+		rows = append(rows, clip(styKey.Render("y")+styMuted.Render(" allow once   ")+
 			styKey.Render("n")+styMuted.Render(" deny   ")+
 			styKey.Render("s")+styMuted.Render(" allow "+ev.Tool+" this session"), inner))
-		if ev.Pattern != "" {
+		if ev.Pattern != "" && level < 2 {
 			rows = append(rows, clip(styKey.Render("p")+styMuted.Render(" always allow ")+styAccent.Render(ev.Pattern), inner))
 		}
-		rows = append(rows, "", styMuted.Render(m.deadline(ev.ExpiresAt)))
-		return styApprovalCard.Width(cw - 2).Render(strings.Join(rows, "\n"))
+		rows = append(gap(rows), styMuted.Render(m.deadline(ev.ExpiresAt)))
+		sty := styApprovalCard
+		if level > 0 {
+			sty = sty.Padding(0, 2)
+		}
+		return sty.Width(cw - 2).Render(strings.Join(rows, "\n"))
 	}
+	// At each level the call box gives up rows first, down to one; past
+	// the last level the card is taller than h, and the pane clips its foot.
 	box := callBox(ev.Tool, ev.Args, callBoxLines, inner)
-	card := build(box)
-	if extra := lipgloss.Height(card) - h; extra > 0 {
-		card = build(callBox(ev.Tool, ev.Args, max(1, len(box)-extra), inner))
+	var card string
+	for level := 0; level <= 2; level++ {
+		card = build(box, level)
+		extra := lipgloss.Height(card) - h
+		if extra <= 0 {
+			return card
+		}
+		card = build(callBox(ev.Tool, ev.Args, max(1, len(box)-extra), inner), level)
+		if lipgloss.Height(card) <= h {
+			return card
+		}
 	}
 	return card
 }
@@ -101,6 +128,7 @@ func callBox(tool, args string, maxRows, w int) []string {
 		}
 		if json.Unmarshal([]byte(args), &in) == nil && in.Command != "" {
 			for i, l := range strings.Split(strings.TrimRight(in.Command, "\n"), "\n") {
+				l = visible(l)
 				if i == 0 {
 					l = "$ " + l
 				} else {
@@ -114,7 +142,11 @@ func callBox(tool, args string, maxRows, w int) []string {
 		}
 	}
 	if lines == nil {
-		lines = strings.Split(prettyArgs(args, 1<<30), "\n")
+		// prettyArgs re-marshals valid JSON, escaping its controls, but
+		// passes anything else through as it came.
+		for _, l := range strings.Split(prettyArgs(args, 1<<30), "\n") {
+			lines = append(lines, visible(l))
+		}
 	}
 	if len(lines) > maxRows {
 		if maxRows >= 2 {
@@ -129,6 +161,29 @@ func callBox(tool, args string, maxRows, w int) []string {
 		out[i] = fill(clip(" "+l, w), w, colFillCursor)
 	}
 	return out
+}
+
+// visible makes every control character in s show as a symbol instead of
+// acting on the terminal: a carriage return or an escape sequence in a
+// command must not repaint the row that asks the person to approve it.
+// Tabs become spaces, so widths are counted as they are drawn.
+func visible(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r == '\t':
+			b.WriteString("    ")
+		case r < 0x20:
+			b.WriteRune(0x2400 + r) // ␀..␟: ␍ for \r, ␛ for ESC
+		case r == 0x7f:
+			b.WriteRune('␡')
+		case r >= 0x80 && r < 0xa0:
+			b.WriteRune('\uFFFD') // C1 controls, CSI among them
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // deadline is when the daemon denies an unanswered approval. expires is
