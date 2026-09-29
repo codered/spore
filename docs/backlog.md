@@ -215,41 +215,34 @@ would not notice if it regressed.
 
 ## TUI: catch up with the web UI refresh
 
-Asked for after #49. The web UI refresh added three things the TUI does not
-do yet. The daemon already sends everything each one needs, so this is TUI
-work only: no new routes and no wire changes.
+Built on `tui-web-parity`. The TUI now does the three things #49 gave the web
+UI, with no daemon or wire changes:
 
-1. **A running turn shows nothing in the transcript.** The web UI ends the
-   transcript in a `spore is thinking…` row while a turn runs (`writing…`
-   while text streams, `running <tool>…` while a call waits), shown the
-   moment the message is sent and hidden while an approval waits. The TUI
-   only turns the sidebar glyph to `●`, so after pressing enter the person
-   cannot tell the message went through until text arrives. `sessionView`
-   already has `working` and `started`; the elapsed time could go on the row.
-2. **The approval prompt lacks profile and deadline.** The `approval` event
-   now carries `profile` and `expires_at` (RFC 3339, empty after a daemon
-   restart, when nothing will time the ask out). `view.go` renders the rule
-   and origin only. Show `profile <p>` beside the rule, and an
-   `auto-denies in m:ss` countdown, or `waiting (no timeout)` when
-   `expires_at` is empty. The countdown needs a one-second tick only while a
-   prompt is on screen.
-3. **Renaming a session moves it to the top of the list.** Sessions are now named
-   after their first turn, and the name arrives as a `session` event. The TUI's
-   `cache.Apply` sets `UpdatedAt = now` on every `session` event, so a
-   rename re-sorts the sidebar and the session under the cursor moves. Bump
-   `UpdatedAt` only for a session the cache did not already know, as the web
-   UI does. The web fix is in `apply()` in `web/app.js`.
+1. **Thinking row.** While the selected session's turn runs, a line pinned
+   above the input reads `● spore is thinking…` (`writing…` while text
+   streams, `running <tool>…` while a call has no result), with the elapsed
+   time once `turn_started` lands. It hides while an approval waits. It is
+   pinned rather than in the transcript so it stays visible when scrolled up.
+2. **Approval profile and deadline.** The prompt shows `profile <p>` beside
+   the rule and `auto-denies in m:ss`, or `waiting (no timeout)` when
+   `expires_at` is empty. The confirm modal does not repeat the countdown:
+   `resolve` already reports an approval that timed out while it was open.
+3. **Rename keeps its place.** A `session` event bumps `UpdatedAt` only for a
+   session the cache did not know (or knew without a timestamp), and an empty
+   field in the event no longer clears a known one.
 
-**Open questions**
+A one-second tick drives items 1 and 2. It runs only while the selected
+session is working or blocked, with at most one tick in flight. Key parity
+needed nothing: `o`/`O` and `b` already exist in the TUI.
 
-1. Should the thinking row be a transcript block (scrolls with the chat) or a
-   line pinned above the input (always visible)? The web UI chose the
-   transcript; a terminal with a long reply streaming may want it pinned.
-2. Does the countdown belong in the confirm modal too (`app.go`'s approval
-   confirm), or only in the prompt?
-3. Should the TUI adopt the web UI's single-key parity where it differs
-   (`b` for the next blocked session exists in both; `o`/`O` tool-row
-   toggles exist only in the web UI)?
+Followed by the canvas match on the same branch
+(`docs/superpowers/specs/2026-09-29-tui-canvas-match-design.md`). It moves
+the working line into the transcript with a spinner, draws the approval as
+a centred card over a dimmed transcript, and brings the header, sidebar,
+tool rows, placeholder and status bar to the canvas's chat and approval
+boards. Still missing, because they need daemon data: live token and cache
+figures on the working line, the rule's config location, and nested
+`spore.*` calls inside `go_run`.
 
 ## Web UI refresh: shipped
 

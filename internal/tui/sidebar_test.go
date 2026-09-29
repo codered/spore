@@ -231,3 +231,32 @@ func TestAFilterSearchesJobRunsToo(t *testing.T) {
 		t.Fatalf("filter backup = %q, want the matching run", got)
 	}
 }
+
+func TestWithLegendPutsItOnTheLastRow(t *testing.T) {
+	legend := ansi.Strip(legendLine())
+	if legend != "● working  ◐ blocked  ○ idle" {
+		t.Fatalf("legend = %q", legend)
+	}
+	got := strings.Split(ansi.Strip(withLegend("a\nb", 5)), "\n")
+	if len(got) != 5 || got[0] != "a" || got[1] != "b" || got[4] != legend {
+		t.Fatalf("two rows in five: %q", got)
+	}
+	if got := strings.Split(ansi.Strip(withLegend("", 3)), "\n"); len(got) != 3 || got[2] != legend {
+		t.Fatalf("empty body: %q", got)
+	}
+}
+
+func TestLegendGivesWayToRows(t *testing.T) {
+	body := "a\nb\nc\nd"
+	if got := withLegend(body, 5); got != body {
+		t.Fatalf("no blank row left, legend still drawn: %q", got)
+	}
+}
+
+func TestSidebarPaneEndsInTheLegend(t *testing.T) {
+	m := scene(t, 100, 24)
+	lines := strings.Split(ansi.Strip(m.sidebarView()), "\n")
+	if !strings.Contains(lines[len(lines)-2], "● working  ◐ blocked  ○ idle") {
+		t.Fatalf("row above the border = %q", lines[len(lines)-2])
+	}
+}

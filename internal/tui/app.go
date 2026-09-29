@@ -48,6 +48,15 @@ const (
 	inputMaxHeight = 8
 	// refreshEvery is how often an open view refetches.
 	refreshEvery = 2 * time.Second
+	// frameEvery turns the working line's spinner. secondEvery redraws an
+	// approval's countdown when nothing else on screen moves. A slower
+	// spinner reads as lag; each frame rejoins the transcript, about 2.8ms
+	// on 2,000 blocks (BenchmarkSyncLongTranscript).
+	frameEvery  = 120 * time.Millisecond
+	secondEvery = time.Second
+
+	placeholderInsert = "Ask spore something…"
+	placeholderNormal = "Ask spore something…  (i to type · : for commands)"
 )
 
 // Messages. Everything that changes the model arrives as one of these, so
@@ -88,6 +97,7 @@ type (
 		err           error
 	}
 	viewTickMsg   struct{ gen int }
+	tickMsg       struct{}
 	actionDoneMsg struct{ err error }
 	deletedMsg    struct {
 		res daemon.DeleteSessionsJSON
@@ -98,6 +108,8 @@ type (
 // Options configure a Model.
 type Options struct {
 	ShowCost bool
+	// Daemon is the daemon's address, for the header; empty hides it.
+	Daemon string
 	// Now is the clock; nil means time.Now. Tests pin it.
 	Now func() time.Time
 }
@@ -117,6 +129,9 @@ type confirmState struct {
 	// alt, when set, is what D does: the delete prompt's "and on Discord".
 	alt      func() tea.Cmd
 	altLabel string
+	// back is the mode the modal returns to; zero is NORMAL. An approval
+	// answered with alt+key from INSERT returns there, draft and all.
+	back mode
 }
 
 // do wraps a command that needs nothing from the model as a confirm action.
@@ -172,6 +187,12 @@ type Model struct {
 	viewGen  int
 	viewErr  string
 	viewTick func(gen int) tea.Cmd
+	// ticking is true while a tick is in flight; see armTick.
+	ticking bool
+	tick    func(d time.Duration) tea.Cmd
+	// lastBase is the transcript without its working line, so a spinner
+	// frame is not mistaken for new output.
+	lastBase string
 	// flash is a one-line report in the status bar, such as what a delete
 	// did; the next key clears it.
 	flash string
@@ -192,7 +213,7 @@ func New(ctx context.Context, be Backend, sessionID string, opts Options) *Model
 		opts.Now = time.Now
 	}
 	in := textarea.New()
-	in.Placeholder = "Ask spore something…"
+	in.Placeholder = placeholderInsert
 	in.Prompt = ""
 	in.ShowLineNumbers = false
 	in.CharLimit = 0
@@ -224,6 +245,9 @@ func New(ctx context.Context, be Backend, sessionID string, opts Options) *Model
 	m.viewTick = func(gen int) tea.Cmd {
 		return tea.Tick(refreshEvery, func(time.Time) tea.Msg { return viewTickMsg{gen: gen} })
 	}
+	m.tick = func(d time.Duration) tea.Cmd {
+		return tea.Tick(d, func(time.Time) tea.Msg { return tickMsg{} })
+	}
 	m.mode = modeInsert
 	m.input.Focus()
 	return m
@@ -236,7 +260,25 @@ func (m *Model) Init() tea.Cmd { return textarea.Blink }
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmd := m.update(msg)
 	m.sync()
+	if t := m.armTick(); t != nil {
+		cmd = tea.Batch(cmd, t)
+	}
 	return m, cmd
+}
+
+// armTick starts the redraw tick while something on screen moves with time:
+// the working line's spinner every frame, or an approval's countdown every
+// second. At most one tick is in flight, and it lapses once nothing moves.
+func (m *Model) armTick() tea.Cmd {
+	if m.ticking || m.table != nil || m.selected == "" || m.cache.State(m.selected) == daemon.SessionIdle {
+		return nil
+	}
+	m.ticking = true
+	d := secondEvery
+	if m.workingLine() != "" {
+		d = frameEvery
+	}
+	return m.tick(d)
 }
 
 func (m *Model) update(msg tea.Msg) tea.Cmd {
@@ -371,6 +413,10 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 
+	case tickMsg:
+		m.ticking = false
+		return nil
+
 	case viewTickMsg:
 		if m.table == nil || msg.gen != m.viewGen {
 			return nil
@@ -442,6 +488,25 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 	// arrives as alt+<key>. Read it as vim does: Esc, then the key. alt+enter
 	// is not a rune key, so it stays the INSERT newline.
 	if k.Alt && k.Type == tea.KeyRunes && (m.mode == modeInsert || m.mode == modeNormal) {
+		// alt+y/n/s/p answers an approval from INSERT without giving up
+		// the draft; a modifier cannot be typed by accident mid-sentence.
+		// y and n settle this one call and change no policy, so they
+		// answer at once. s and p change the policy past this call, so
+		// they still ask, and the question says what changes.
+		if m.mode == modeInsert && m.table == nil {
+			if root, ev, ok := m.cache.approvalFor(m.selected); ok {
+				ans, isKey, offered := answerFor(ev, string(k.Runes))
+				switch {
+				case isKey && offered && ans.Scope == policy.ScopeOnce:
+					return m.resolve(root, ev, ans)
+				case isKey && m.answer(root, ev, string(k.Runes)):
+					if m.confirm != nil {
+						m.confirm.back = modeInsert
+					}
+					return nil
+				}
+			}
+		}
 		m.mode = modeNormal
 		m.input.Blur()
 		plain := tea.KeyMsg{Type: tea.KeyRunes, Runes: k.Runes}
@@ -704,13 +769,17 @@ func (m *Model) keyConfirm(k tea.KeyMsg) tea.Cmd {
 	c := m.confirm
 	m.confirm = nil
 	m.mode = modeNormal
+	var cmd tea.Cmd
 	switch {
 	case c != nil && k.String() == "y":
-		return c.yes()
+		cmd = c.yes()
 	case c != nil && k.String() == "D" && c.alt != nil:
-		return c.alt()
+		cmd = c.alt()
 	}
-	return nil
+	if c != nil && c.back == modeInsert {
+		return tea.Batch(cmd, m.enterInsert())
+	}
+	return cmd
 }
 
 // command runs a `:` command. A view's name opens that view.
@@ -818,6 +887,9 @@ func (m *Model) submit(id, text string) tea.Cmd {
 	}
 	sv.addUser(text)
 	sv.working = true
+	// Until turn_started lands, the thinking row has no time to show; the
+	// last turn's start is not it.
+	sv.started = time.Time{}
 	m.follow = true
 	be, ctx := m.be, m.ctx
 	return func() tea.Msg {
@@ -838,28 +910,38 @@ func (m *Model) drainQueue(id string) tea.Cmd {
 	return m.submit(id, q[0])
 }
 
+// answerFor is the answer an approval key gives. ok is false when k is not
+// an approval key; offered is false for p when the ask carried no pattern.
+func answerFor(ev daemon.WireEvent, k string) (ans policy.Answer, ok, offered bool) {
+	switch k {
+	case "y":
+		return policy.Answer{Allow: true, Scope: policy.ScopeOnce}, true, true
+	case "n":
+		return policy.Answer{Allow: false, Scope: policy.ScopeOnce}, true, true
+	case "s":
+		return policy.Answer{Allow: true, Scope: policy.ScopeSession}, true, true
+	case "p":
+		return policy.Answer{Allow: true, Scope: policy.ScopePattern}, true, ev.Pattern != ""
+	}
+	return policy.Answer{}, false, false
+}
+
 // answer opens the modal that confirms an approval key, reporting whether k
 // was one.
 func (m *Model) answer(root string, ev daemon.WireEvent, k string) bool {
-	var ans policy.Answer
-	switch k {
-	case "y":
-		ans = policy.Answer{Allow: true, Scope: policy.ScopeOnce}
-	case "n":
-		ans = policy.Answer{Allow: false, Scope: policy.ScopeOnce}
-	case "s":
-		ans = policy.Answer{Allow: true, Scope: policy.ScopeSession}
-	case "p":
-		if ev.Pattern == "" {
-			return true // the option was never offered
-		}
-		ans = policy.Answer{Allow: true, Scope: policy.ScopePattern}
-	default:
-		return false
+	ans, ok, offered := answerFor(ev, k)
+	if !ok || !offered {
+		return ok // a p never offered is swallowed, not typed
 	}
 	detail := []string{`matched policy rule "` + ev.Rule + `"`}
 	if ev.Origin != "" {
 		detail = append(detail, "asked by sub-agent "+short(ev.Origin))
+	}
+	switch ans.Scope {
+	case policy.ScopeSession:
+		detail = append(detail, "changes the policy: "+ev.Tool+" runs without asking for the rest of this session")
+	case policy.ScopePattern:
+		detail = append(detail, "changes the policy: writes an allow rule to your config")
 	}
 	m.confirm = &confirmState{
 		question: answerQuestion(ev, ans),
@@ -1313,14 +1395,23 @@ func (m *Model) removeSessions(ids []string) tea.Cmd {
 	return m.selectSession(next)
 }
 
-func (m *Model) nextBlocked() tea.Cmd {
+// nextBlockedID is the next blocked session after the selected one, in
+// sidebar order, or empty when no other session is blocked.
+func (m *Model) nextBlockedID() string {
 	ids := m.selectable()
 	start := indexOf(ids, m.selected)
 	for k := 1; k <= len(ids); k++ {
 		id := ids[(start+k+len(ids))%len(ids)]
-		if m.cache.State(id) == daemon.SessionBlocked {
-			return m.selectSession(id)
+		if id != m.selected && m.cache.State(id) == daemon.SessionBlocked {
+			return id
 		}
+	}
+	return ""
+}
+
+func (m *Model) nextBlocked() tea.Cmd {
+	if id := m.nextBlockedID(); id != "" {
+		return m.selectSession(id)
 	}
 	return nil
 }

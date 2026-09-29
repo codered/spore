@@ -1,0 +1,24 @@
+ spore   chat  skills  agents  usage  jobs  ref… ◐ 2 blocked
+┏━ a1b2 fix flaky test · waiting on you ━━━━━━━━━━━━━━━━━━━┓
+┃ chat · /work/spore · sonnet-5 · ctx 38.0k                ┃
+┃ › fix the flaky tui test                                 ┃
+┃   ╔══════════════════════════════════════════════════╗   ┃
+┃ ▸ ║                                                  ║es ┃
+┃ ▸ ║  spore wants to run shell_exec                   ║ 1 ┃
+┃   ║  profile local                                   ║   ┃
+┃   ║  matched ask  shell_exec                         ║   ┃
+┃   ║                                                  ║   ┃
+┃   ║   $ go test -race -count=50 ./internal/tui/...   ║   ┃
+┃   ║                                                  ║   ┃
+┃   ║  y allow once   n deny   s allow shell_exec th…  ║   ┃
+┃   ║                                                  ║   ┃
+┃   ║  auto-deny in 4:32                               ║   ┃
+┃   ║                                                  ║   ┃
+┃   ╚══════════════════════════════════════════════════╝   ┃
+┃                                                          ┃
+┃                                                          ┃
+┃ ╭──────────────────────────────────────────────────────╮ ┃
+┃ │ Ask spore something…  (i to type · : for commands)   │ ┃
+┃ ╰──────────────────────────────────────────────────────╯ ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+ APPROVAL  y once  n deny  s session                esc stop

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -171,4 +172,46 @@ func TestGoldenJobsFolder(t *testing.T) {
 	golden(t, "jobs-badge-100", m.View())
 	press(m, "esc", "z")
 	golden(t, "jobs-open-100", m.View())
+}
+
+func TestGoldenWorking(t *testing.T) {
+	m := scene(t, 100, 24)
+	now := t0
+	clock := func() time.Time { return now }
+	m.opts.Now, m.cache.now = clock, clock
+	feed(m, wev("a1b2c3", daemon.WireTurnStarted))
+	feed(m, daemon.WireEvent{Session: "a1b2c3", Type: daemon.WireToolCall, ToolUseID: "t3", Tool: "fs_read", Args: `{"path":"internal/tui/app.go"}`})
+	now = now.Add(1300 * time.Millisecond)
+	feed(m, daemon.WireEvent{Session: "a1b2c3", Type: daemon.WireToolResult, ToolUseID: "t3", Content: "package tui\n\nimport (\n"})
+	feed(m, daemon.WireEvent{Session: "a1b2c3", Type: daemon.WireText, Text: "The flake is a race"})
+	now = now.Add(12 * time.Second)
+	run(m, tickMsg{})
+	golden(t, "working-100", m.View())
+}
+
+func TestPlaceholderFollowsTheMode(t *testing.T) {
+	m := newTestModel(t, &fakeBackend{}, "s1")
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "Ask spore something…") || strings.Contains(v, "(i to type") {
+		t.Fatalf("INSERT placeholder wrong:\n%s", v)
+	}
+	press(m, "esc")
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "Ask spore something…  (i to type · : for commands)") {
+		t.Fatalf("NORMAL placeholder wrong:\n%s", v)
+	}
+}
+
+func TestGoldenApprovalCard(t *testing.T) {
+	exp := t0.Add(4*time.Minute + 32*time.Second).Format(time.RFC3339)
+	m := scene(t, 60, 24)
+	feed(m, daemon.WireEvent{Session: "a1b2c3", Type: daemon.WireApproval, PendingID: 7, Tool: "shell_exec",
+		Args: `{"command":"go test -race -count=50 ./internal/tui/..."}`, Rule: "shell_exec", Profile: "local", ExpiresAt: exp})
+	press(m, "esc")
+	golden(t, "approval-card-60", m.View())
+
+	m = scene(t, 100, 30)
+	feed(m, daemon.WireEvent{Session: "a1b2c3", Type: daemon.WireApproval, PendingID: 8, Tool: "shell_exec",
+		Args: `{"command":"go test -race -count=50 ./internal/tui/...","timeout_seconds":300}`, Rule: "shell_exec",
+		Origin: "7f3e99", Profile: "local", Pattern: "shell_exec(command matches go test*)", ExpiresAt: exp})
+	press(m, "esc")
+	golden(t, "approval-subagent-100", m.View())
 }

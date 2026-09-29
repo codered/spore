@@ -1,14 +1,14 @@
  spore   chat  skills S  agents A  usage U  jobs J  refinements R                        ◐ 1 blocked
 ╭─ sessions ───────────────────╮┏━ a1b2 fix flaky test ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-│▸ jobs  2                     │┃ chat · /work/spore · sonnet-5 · ctx 38.0k                        ┃
+│▸ jobs                        │┃ chat · /work/spore · sonnet-5 · ctx 38.0k                        ┃
 │/work/spore                   │┃ › fix the flaky tui test                                         ┃
-│○ a1b2 fix flaky test     chat│┃   Looking at tui_test.go…                                        ┃
-│└ ○ 7f3e audit the tests      │┃ ▸ read {"path":"cmd/spore/tui_test.go"}                ✓ 3 lines ┃
-│◐ c9d0 lint audit         disc│┃ ▸ bash {"cmd":"go test ./cmd/spore"}                    ✗ exit 1 ┃
-│/work/web                     │┃                                                                  ┃
-│○ e5f6 notes              chat│┃                                                                  ┃
+│◐ c9d0 lint audit         disc│┃   Looking at tui_test.go…                                        ┃
+│● a1b2 fix flaky test     chat│┃ ▸ read {"path":"cmd/spore/tui_test.go"}                ✓ 3 lines ┃
+│└ ○ 7f3e audit the tests      │┃ ▸ bash {"cmd":"go test ./cmd/spore"}                    ✗ exit 1 ┃
+│/work/web                     │┃ ▸ fs_read {"path":"internal/tui/app.go"}         ✓ 3 lines  1.3s ┃
+│○ e5f6 notes              chat│┃ The flake is a race                                              ┃
 │                              │┃                                                                  ┃
-│                              │┃                                                                  ┃
+│                              │┃ ⠋ writing · 13s                                                  ┃
 │                              │┃                                                                  ┃
 │                              │┃                                                                  ┃
 │                              │┃                                                                  ┃

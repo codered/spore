@@ -189,6 +189,7 @@ func newTestModel(t *testing.T, fb *fakeBackend, selected string) *Model {
 	m.line.Cursor.SetMode(cursor.CursorStatic)
 	// A real refresh tick sleeps two seconds; tests drive ticks by hand.
 	m.viewTick = func(int) tea.Cmd { return nil }
+	m.tick = func(time.Duration) tea.Cmd { return nil }
 	// Initialize with a default session if none provided
 	if selected != "" && len(fb.sessions) == 0 {
 		fb.sessions = []daemon.SessionJSON{{ID: selected, Source: "chat", Workspace: "/tmp"}}
@@ -279,7 +280,7 @@ func TestAYTypedInInsertNeverAnswersAnApproval(t *testing.T) {
 	if m.input.Value() != "yes" {
 		t.Fatalf("input = %q, want the typed text", m.input.Value())
 	}
-	if !strings.Contains(m.View(), "esc, then y/n/s/p") {
+	if !strings.Contains(m.View(), "answer with alt+y/n/s/p, or esc then y/n/s/p") {
 		t.Fatal("the overlay does not tell an INSERT-mode user how to answer")
 	}
 

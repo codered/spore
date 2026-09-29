@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
@@ -21,10 +22,17 @@ import (
 // light background and a dark one.
 var (
 	colAccent = lipgloss.AdaptiveColor{Light: "#0B7A6B", Dark: "#3DDC97"}
-	colMuted  = lipgloss.AdaptiveColor{Light: "#6B7280", Dark: "#8A8F98"}
+	colMuted  = lipgloss.AdaptiveColor{Light: "#6B7280", Dark: "#8A9792"}
 	colDanger = lipgloss.AdaptiveColor{Light: "#B42318", Dark: "#FF6B6B"}
 	colWarn   = lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#FFB454"}
 	colTool   = lipgloss.AdaptiveColor{Light: "#5B21B6", Dark: "#C4A2FF"}
+	colVisor  = lipgloss.AdaptiveColor{Light: "#0E7490", Dark: "#67E8F9"}
+
+	// Fills sit behind a whole row. They mark the row, not its content, so
+	// the glyphs drawn on them keep their own colours.
+	colFillSel    = lipgloss.AdaptiveColor{Light: "#DDEFE7", Dark: "#1D2A26"}
+	colFillWarn   = lipgloss.AdaptiveColor{Light: "#FBEBD3", Dark: "#2A2418"}
+	colFillCursor = lipgloss.AdaptiveColor{Light: "#ECF1EF", Dark: "#1A2320"}
 )
 
 var (
@@ -44,8 +52,14 @@ var (
 		Background(colAccent).
 		Bold(true)
 
+	// styModeWarn is the mode badge while an approval waits on the person.
+	styModeWarn = styMode.Background(colWarn)
+
+	styVisor = lipgloss.NewStyle().Foreground(colVisor)
+	styFaint = lipgloss.NewStyle().Faint(true)
+
 	// styTabOn is the lit tab in the top nav.
-	styTabOn = lipgloss.NewStyle().Foreground(colAccent).Reverse(true).Bold(true)
+	styTabOn = lipgloss.NewStyle().Foreground(colAccent).Background(colFillSel).Bold(true)
 
 	// styInputBox frames the prompt while typing; styInputIdle is the same
 	// frame, dimmed, when the keys are driving navigation instead.
@@ -55,12 +69,13 @@ var (
 			Padding(0, 1)
 	styInputIdle = styInputBox.BorderForeground(colMuted)
 
-	styApprovalBox = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(colWarn).
-			Padding(0, 1)
-
 	styApprovalTitle = lipgloss.NewStyle().Foreground(colWarn).Bold(true)
+
+	// styApprovalCard frames the approval drawn over the transcript.
+	styApprovalCard = lipgloss.NewStyle().
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(colWarn).
+			Padding(1, 2)
 
 	// styModal frames a question that must be answered before anything
 	// else: approvals, deletes, stops.
@@ -195,3 +210,44 @@ func clip(s string, n int) string {
 
 // oneLine collapses any run of whitespace, newlines included, to one space.
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// fill draws line on a background of bg across width cells. Styled text
+// inside line resets its colours as it ends, which would also end the
+// background, so the background is put back after every reset.
+func fill(line string, width int, bg lipgloss.TerminalColor) string {
+	line += strings.Repeat(" ", max(0, width-ansi.StringWidth(line)))
+	return refill(line, bgSeq(bg))
+}
+
+// refill opens s with seq and reopens it after every SGR reset in s.
+func refill(s, seq string) string {
+	if seq == "" {
+		return s
+	}
+	s = strings.ReplaceAll(s, "\x1b[0m", "\x1b[0m"+seq)
+	s = strings.ReplaceAll(s, "\x1b[m", "\x1b[m"+seq)
+	return seq + s + "\x1b[0m"
+}
+
+// bgSeq is the escape sequence that sets bg in this terminal, or empty
+// when the terminal has no colour.
+func bgSeq(bg lipgloss.TerminalColor) string {
+	s := lipgloss.NewStyle().Background(bg).Render("\x00")
+	if i := strings.IndexByte(s, 0); i > 0 {
+		return s[:i]
+	}
+	return ""
+}
+
+// humanDur is a short elapsed time: 0.4s, 12s, 1m05s.
+func humanDur(d time.Duration) string {
+	d = max(0, d)
+	switch {
+	case d < 10*time.Second:
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	s := int(d.Seconds())
+	return fmt.Sprintf("%dm%02ds", s/60, s%60)
+}

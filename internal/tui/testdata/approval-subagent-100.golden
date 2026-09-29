@@ -4,19 +4,19 @@
 │/work/spore                   │┃ › fix the flaky tui test                                         ┃
 │◐ c9d0 lint audit         disc│┃   Looking at tui_test.go…                                        ┃
 │◐ a1b2 fix flaky test     chat│┃ ▸ read {"path":"cmd/spore/tui_test.go"}                ✓ 3 lines ┃
-│└ ○ 7f3e audit the tests      │┃ ▸ ╔══════════════════════════════════════════════════════════╗ 1 ┃
+│└ ◐ 7f3e audit the tests      │┃ ▸ ╔══════════════════════════════════════════════════════════╗ 1 ┃
 │/work/web                     │┃   ║                                                          ║   ┃
-│○ e5f6 notes              chat│┃   ║  spore wants to run fs.write                             ║   ┃
-│                              │┃   ║  matched ask  fs.write.ask                               ║   ┃
+│○ e5f6 notes              chat│┃   ║  spore wants to run shell_exec                           ║   ┃
+│                              │┃   ║  from sub-agent 7f3e · profile local                     ║   ┃
+│                              │┃   ║  matched ask  shell_exec                                 ║   ┃
 │                              │┃   ║                                                          ║   ┃
-│                              │┃   ║   {                                                      ║   ┃
-│                              │┃   ║     "path": "cmd/spore/tui_test.go"                      ║   ┃
-│                              │┃   ║   }                                                      ║   ┃
+│                              │┃   ║   $ go test -race -count=50 ./internal/tui/...           ║   ┃
+│                              │┃   ║   timeout 300s                                           ║   ┃
 │                              │┃   ║                                                          ║   ┃
-│                              │┃   ║  y allow once   n deny   s allow fs.write this session   ║   ┃
-│                              │┃   ║  p always allow fs.write:cmd/spore/*                     ║   ┃
+│                              │┃   ║  y allow once   n deny   s allow shell_exec this sessi…  ║   ┃
+│                              │┃   ║  p always allow shell_exec(command matches go test*)     ║   ┃
 │                              │┃   ║                                                          ║   ┃
-│                              │┃   ║  waiting (no timeout)                                    ║   ┃
+│                              │┃   ║  auto-deny in 4:32                                       ║   ┃
 │                              │┃   ║                                                          ║   ┃
 │                              │┃   ╚══════════════════════════════════════════════════════════╝   ┃
 │                              │┃                                                                  ┃
@@ -27,4 +27,4 @@
 │                              │┃ │ Ask spore something…  (i to type · : for commands)           │ ┃
 │● working  ◐ blocked  ○ idle  │┃ ╰──────────────────────────────────────────────────────────────╯ ┃
 ╰──────────────────────────────╯┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
- APPROVAL  y once  n deny  s session  p pattern  b next blocked (c9d0)                      esc stop
+ APPROVAL  y once  n deny  s session  p pattern  b next blocked (7f3e)                      esc stop

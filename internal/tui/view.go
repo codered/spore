@@ -38,6 +38,11 @@ func (m *Model) paneHeight() int { return max(1, m.bodyHeight()-2) }
 // sync re-lays-out after every update: input width, viewport size, and the
 // transcript of the selected session.
 func (m *Model) sync() {
+	if m.mode == modeInsert {
+		m.input.Placeholder = placeholderInsert
+	} else {
+		m.input.Placeholder = placeholderNormal
+	}
 	w := m.mainWidth()
 	m.input.SetWidth(max(10, w-4))
 	m.line.Width = max(10, w-6)
@@ -46,15 +51,23 @@ func (m *Model) sync() {
 	}
 	m.vp.Width = w
 	// One row inside the pane is the session's facts.
-	m.vp.Height = max(1, m.paneHeight()-1-lipgloss.Height(m.inputView())-m.overlayHeight())
+	m.vp.Height = max(1, m.paneHeight()-1-lipgloss.Height(m.inputView())-m.draftLineHeight())
 
-	content := m.transcript(w)
+	base := m.transcript(w)
+	content := base
+	if wl := m.workingLine(); wl != "" {
+		if base != "" {
+			content += "\n\n"
+		}
+		content += wl
+	}
 	if content != m.lastContent {
-		m.lastContent = content
 		m.vp.SetContent(content)
-		if !m.follow {
+		// A spinner frame changes content but is not something new to read.
+		if base != m.lastBase && !m.follow {
 			m.unseen = true
 		}
+		m.lastContent, m.lastBase = content, base
 	}
 	if m.scrollToTool && m.toolCursor >= 0 && m.toolCursor < len(m.toolLines) {
 		m.follow = false
@@ -118,35 +131,62 @@ func (m *Model) mainView() string {
 	if m.table != nil && !m.help {
 		w, h := m.width-2, m.paneHeight()
 		body := lipgloss.NewStyle().Width(w).Height(h).MaxHeight(h).Render(m.table.render(w, h))
-		return paneBox(m.table.title(), body, m.width, m.bodyHeight(), true, 0)
+		return paneBox(m.table.title(), body, m.width, m.bodyHeight(), true, 0, false)
 	}
 	on := m.focused() == paneChat
 	if m.help {
-		return paneBox("help", helpText(), m.chatOuter(), m.bodyHeight(), on, 1)
+		return paneBox("help", helpText(), m.chatOuter(), m.bodyHeight(), on, 1, false)
 	}
-	parts := []string{clip(m.sessionFacts(), m.mainWidth()), m.vp.View()}
-	if ov := m.overlayView(); ov != "" {
-		parts = append(parts, ov)
+	vpView := m.vp.View()
+	if card := m.approvalCard(m.vp.Width, m.vp.Height); card != "" {
+		vpView = placeOver(faint(vpView), card, m.vp.Width)
 	}
-	parts = append(parts, m.inputView())
-	return paneBox(m.paneTitle(), strings.Join(parts, "\n"), m.chatOuter(), m.bodyHeight(), on, 1)
+	parts := []string{clip(m.sessionFacts(), m.mainWidth()), vpView, m.inputView()}
+	if dl := m.draftLine(); dl != "" {
+		parts = append(parts, dl)
+	}
+	return paneBox(m.paneTitle(), strings.Join(parts, "\n"), m.chatOuter(), m.bodyHeight(), on, 1, m.waiting())
 }
 
 func (m *Model) sidebarView() string {
-	body := renderSidebar(m.cache, m.cache.rows(m.showAll, m.filter, m.selected), m.selected, m.sideCursor, sidebarWidth, m.paneHeight())
-	return paneBox("sessions", body, sidebarOuter, m.bodyHeight(), m.focused() == paneSidebar, 0)
+	h := m.paneHeight()
+	body := renderSidebar(m.cache, m.cache.rows(m.showAll, m.filter, m.selected), m.selected, m.sideCursor, sidebarWidth, h)
+	return paneBox("sessions", withLegend(body, h), sidebarOuter, m.bodyHeight(), m.focused() == paneSidebar, 0, false)
+}
+
+// withLegend puts the state legend on the last of h rows when body leaves a
+// blank row above it. Otherwise the rows win and there is no legend.
+func withLegend(body string, h int) string {
+	if body == "" {
+		return strings.Repeat("\n", max(0, h-1)) + legendLine()
+	}
+	n := strings.Count(body, "\n") + 1
+	if n > h-2 {
+		return body
+	}
+	return body + strings.Repeat("\n", h-n) + legendLine()
+}
+
+// legendLine says what the sidebar's state glyphs mean.
+func legendLine() string {
+	return styAccent.Render("●") + styMuted.Render(" working  ") +
+		styWarn.Render("◐") + styMuted.Render(" blocked  ○ idle")
 }
 
 // paneBox frames body in w x h cells with title in the top border and pad
 // blank columns inside each side. The focused pane gets a heavy accent
 // border, the other a light muted one, so the difference survives a
-// terminal without colour.
-func paneBox(title, body string, w, h int, focused bool, pad int) string {
+// terminal without colour. warn outranks focus: a pane waiting on the person
+// is heavy and amber whether or not it has focus.
+func paneBox(title, body string, w, h int, focused bool, pad int, warn bool) string {
 	iw, ih := max(1, w-2), max(1, h-2)
 	cw := max(1, iw-2*pad)
 	gap := strings.Repeat(" ", pad)
 	b, sty, tsty := lipgloss.RoundedBorder(), styMuted, styMuted
-	if focused {
+	switch {
+	case warn:
+		b, sty, tsty = lipgloss.ThickBorder(), styWarn, styApprovalTitle
+	case focused:
 		b, sty, tsty = lipgloss.ThickBorder(), styAccent, styKey
 	}
 	head := " " + clip(oneLine(title), max(0, iw-3)) + " "
@@ -213,52 +253,55 @@ func (m *Model) inputView() string {
 	return styInputIdle.Width(w).Render(m.input.View())
 }
 
-func (m *Model) overlayView() string {
-	_, ev, ok := m.cache.approvalFor(m.selected)
-	if !ok {
-		return ""
-	}
-	var b strings.Builder
-	title := "spore wants to run " + ev.Tool
-	if ev.Origin != "" {
-		title = "sub-agent " + short(ev.Origin) + ": " + title
-	}
-	b.WriteString(styApprovalTitle.Render(title) + "\n")
-	b.WriteString(styMuted.Render(`matched policy rule "`+ev.Rule+`"`) + "\n")
-	b.WriteString(prettyArgs(ev.Args, 8) + "\n")
-	if m.mode != modeNormal && m.mode != modeConfirm {
-		b.WriteString(styKey.Render("esc") + styMuted.Render(", then y/n/s/p"))
-	} else {
-		keys := []string{
-			styKey.Render("y") + styMuted.Render(" allow once"),
-			styKey.Render("n") + styMuted.Render(" deny"),
-			styKey.Render("s") + styMuted.Render(" allow "+ev.Tool+" this session"),
+// waitingTool names the latest call in the transcript's trailing run of
+// tool calls that has no result yet.
+func waitingTool(sv *sessionView) string {
+	for i := len(sv.blocks) - 1; i >= 0 && sv.blocks[i].kind == kindTool; i-- {
+		if !sv.blocks[i].done {
+			return sv.blocks[i].tool
 		}
-		if ev.Pattern != "" {
-			keys = append(keys, styKey.Render("p")+styMuted.Render(" always allow "+ev.Pattern))
-		}
-		b.WriteString(strings.Join(keys, styMuted.Render("  ·  ")))
 	}
-	return styApprovalBox.Width(max(10, m.mainWidth()-2)).Render(b.String())
+	return ""
 }
 
-func (m *Model) overlayHeight() int {
-	if ov := m.overlayView(); ov != "" {
-		return lipgloss.Height(ov)
+// spinnerFrames turn once per frameEvery while a turn runs.
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// workingLine ends the transcript while the selected session's turn runs:
+// a spinner, what spore is doing, and for how long. It hides while an
+// approval waits: then spore is waiting on the person, and the card says so.
+func (m *Model) workingLine() string {
+	if m.selected == "" || m.cache.State(m.selected) != daemon.SessionWorking {
+		return ""
 	}
-	return 0
+	sv := m.cache.get(m.selected)
+	label := "thinking"
+	if b := sv.last(); b != nil && b.kind == kindText && b.streaming {
+		label = "writing"
+	} else if tool := waitingTool(sv); tool != "" {
+		label = "running " + tool
+	}
+	now := m.opts.Now()
+	if !sv.started.IsZero() {
+		label += " · " + humanDur(now.Sub(sv.started))
+	}
+	frame := spinnerFrames[int(now.UnixMilli()/frameEvery.Milliseconds())%len(spinnerFrames)]
+	return styAccent.Render(frame) + " " + styMuted.Render(label)
 }
 
 // statusView is the mode badge and the keys that work here, with the few
 // signals that need the user now on the right.
 func (m *Model) statusView() string {
-	left := styMode.Render(" "+m.mode.String()+" ") + " " + m.keyHints()
+	badge := styMode.Render(" " + m.mode.String() + " ")
+	if m.approvalBar() {
+		badge = styModeWarn.Render(" APPROVAL ")
+	}
 	var right []string
 	if m.unseen {
 		right = append(right, styAccent.Render("↓ new"))
 	}
 	if m.mode == modeNormal && m.table == nil && m.cache.State(m.selected) != daemon.SessionIdle {
-		right = append(right, hint("esc", "stop"))
+		right = append(right, styWarn.Bold(true).Render("esc stop"))
 	}
 	if m.viewErr != "" {
 		right = append(right, styDanger.Render(m.viewErr))
@@ -266,7 +309,9 @@ func (m *Model) statusView() string {
 	if m.flash != "" {
 		right = append(right, styAccent.Render(m.flash))
 	}
-	return fitRow(left, strings.Join(right, styMuted.Render(" · ")), m.width)
+	r := strings.Join(right, styMuted.Render(" · "))
+	room := m.width - lipgloss.Width(badge) - 1 - lipgloss.Width(r) - 1
+	return fitRow(badge+" "+m.keyHints(max(0, room)), r, m.width)
 }
 
 func helpText() string {
@@ -286,6 +331,8 @@ func helpText() string {
 		styKey.Render("APPROVAL") + "  (normal mode, while one is showing)",
 		"  y allow once · n deny · s allow the tool this session · p always allow the pattern",
 		"  each asks first: y confirms, esc cancels",
+		"  while typing: alt+y / alt+n answer at once; alt+s / alt+p ask first, since they",
+		"  change the policy past this call. The draft is kept either way.",
 		"  n answers the approval, not \"new session\", until it is answered",
 		"",
 		styKey.Render("INSERT"),

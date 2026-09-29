@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -14,11 +15,14 @@ func (m *Model) bodyHeight() int { return max(1, m.height-2) }
 // headerView is the top nav: the brand, a tab per screen with the one on
 // show lit, and on the right the signals that concern every session.
 func (m *Model) headerView() string {
-	right := m.globalFacts()
+	right := m.globalFacts(true)
 	left := m.tabBar(true)
 	if lipgloss.Width(left)+lipgloss.Width(right)+1 > m.width {
 		// Narrow: the names matter more than the letters, which ? lists.
 		left = m.tabBar(false)
+	}
+	if lipgloss.Width(left)+lipgloss.Width(right)+1 > m.width {
+		right = m.globalFacts(false)
 	}
 	return fitRow(left, right, m.width)
 }
@@ -68,16 +72,37 @@ func (m *Model) activeTab() string {
 	return m.table.res.Name()
 }
 
-// globalFacts is what the top nav reports about every session at once.
-func (m *Model) globalFacts() string {
+// globalFacts is what the top nav reports about every session at once, and
+// where the daemon is when withDaemon is set.
+func (m *Model) globalFacts(withDaemon bool) string {
 	var out []string
 	if n := m.cache.BlockedCount(); n > 0 {
-		out = append(out, styWarn.Render(fmt.Sprintf("%d blocked", n)))
+		out = append(out, styWarn.Render(fmt.Sprintf("◐ %d blocked", n)))
 	}
 	if m.reconnecting {
 		out = append(out, styDanger.Render("reconnecting…"))
 	}
+	if d := daemonLabel(m.opts.Daemon); withDaemon && d != "" {
+		out = append(out, styMuted.Render(d))
+	}
 	return strings.Join(out, styMuted.Render(" · "))
+}
+
+// daemonLabel names the daemon for the header. A loopback host goes without
+// saying, so 127.0.0.1:7777 shows as :7777.
+func daemonLabel(addr string) string {
+	if addr == "" {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "daemon " + addr
+	}
+	switch host {
+	case "", "127.0.0.1", "localhost", "::1":
+		return "daemon :" + port
+	}
+	return "daemon " + addr
 }
 
 // sessionFacts is the chat pane's first line: where the selected session
@@ -104,7 +129,8 @@ func (m *Model) sessionFacts() string {
 	return styMuted.Render(strings.Join(out, " · "))
 }
 
-// paneTitle is the chat pane's border title: the session's id and title.
+// paneTitle is the chat pane's border title: the session's id and title,
+// and that it waits on the person while an approval does.
 func (m *Model) paneTitle() string {
 	if m.selected == "" {
 		return "no session"
@@ -113,11 +139,53 @@ func (m *Model) paneTitle() string {
 	if title == "" {
 		title = "untitled"
 	}
-	return short(m.selected) + " " + oneLine(title)
+	out := short(m.selected) + " " + oneLine(title)
+	if m.waiting() {
+		out += " · waiting on you"
+	}
+	return out
+}
+
+// approvalBar is whether the status bar belongs to the approval: NORMAL,
+// the chat on screen, and an approval waiting on the selected session.
+func (m *Model) approvalBar() bool {
+	return m.mode == modeNormal && m.table == nil && !m.help && m.waiting()
+}
+
+// approvalHints are the answers the card offers, and the next blocked
+// session when there is one.
+func (m *Model) approvalHints() []string {
+	_, ev, _ := m.cache.approvalFor(m.selected)
+	parts := []string{hint("y", "once"), hint("n", "deny"), hint("s", "session")}
+	if ev.Pattern != "" {
+		parts = append(parts, hint("p", "pattern"))
+	}
+	if id := m.nextBlockedID(); id != "" {
+		parts = append(parts, hint("b", "next blocked ("+short(id)+")"))
+	}
+	return parts
 }
 
 func hint(key, label string) string {
-	return styKey.Render("<"+key+">") + " " + styMuted.Render(label)
+	return styKey.Render(key) + " " + styMuted.Render(label)
+}
+
+// fitHints joins hints two spaces apart, dropping them from the end until
+// they fit in room cells. The last hint always stays: it is the way out, or
+// the way to the rest of the keys.
+func fitHints(parts []string, room int) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	last := parts[len(parts)-1]
+	head := parts[:len(parts)-1]
+	for n := len(head); n > 0; n-- {
+		s := strings.Join(append(append([]string{}, head[:n]...), last), "  ")
+		if lipgloss.Width(s) <= room {
+			return s
+		}
+	}
+	return last
 }
 
 // fitRow puts left and right on one line of width cells, cutting left first.
@@ -133,21 +201,42 @@ func fitRow(left, right string, width int) string {
 	return left + strings.Repeat(" ", width-lipgloss.Width(left)-rw) + right
 }
 
-// keyHints is the status bar's left half: the keys that work in this mode.
-func (m *Model) keyHints() string {
+// keyHints is the status bar's left half: the keys that work in this mode,
+// fitted to room cells.
+func (m *Model) keyHints(room int) string {
+	var parts []string
 	switch m.mode {
 	case modeInsert:
-		return hint("enter", "send") + "  " + hint("ctrl+j", "newline") + "  " + hint("esc", "normal")
+		if m.waiting() {
+			parts = append(parts, hint("alt+y/n/s/p", "answer"))
+		}
+		parts = append(parts, hint("enter", "send"), hint("ctrl+j", "newline"), hint("esc", "normal"))
 	case modeCommand:
-		return hint("enter", "run") + "  " + hint("tab", "complete") + "  " + hint("esc", "cancel")
+		parts = []string{hint("enter", "run"), hint("tab", "complete"), hint("esc", "cancel")}
 	case modeFilter:
-		return hint("enter", "keep") + "  " + hint("esc", "clear")
+		parts = []string{hint("enter", "keep"), hint("esc", "clear")}
 	case modeConfirm:
 		if m.confirm == nil {
 			return ""
 		}
-		return confirmKeys(m.confirm)
+		parts = confirmParts(m.confirm)
+	default:
+		if m.approvalBar() {
+			parts = m.approvalHints()
+			// The answers matter more than the way to the next blocked
+			// session, which fitHints would otherwise keep as the last hint.
+			if m.nextBlockedID() != "" && lipgloss.Width(strings.Join(parts, "  ")) > room {
+				parts = parts[:len(parts)-1]
+			}
+		} else {
+			parts = m.normalHints()
+		}
 	}
+	return fitHints(parts, room)
+}
+
+// normalHints are the NORMAL-mode keys for what is on screen.
+func (m *Model) normalHints() []string {
 	if m.table != nil {
 		esc := "back"
 		switch {
@@ -160,22 +249,24 @@ func (m *Model) keyHints() string {
 		for _, a := range m.table.res.Actions() {
 			parts = append(parts, hint(a.Key, a.Label))
 		}
-		return strings.Join(append(parts, hint("esc", esc)), "  ")
+		return append(parts, hint("esc", esc))
+	}
+	if m.focused() == paneSidebar {
+		return []string{hint("tab", "chat"), hint("j/k", "session"), hint("enter", "open"), hint("i", "type"), hint("n", "new"), hint("?", "help")}
 	}
 	var parts []string
-	if m.focused() == paneSidebar {
-		parts = []string{hint("tab", "chat"), hint("j/k", "session"), hint("enter", "open"), hint("i", "type"), hint("n", "new")}
-	} else {
-		if m.sidebarOn() {
-			parts = append(parts, hint("tab", "sessions"))
-		}
-		parts = append(parts, hint("i", "type"), hint("j/k", "scroll"), hint("[ ]", "tools"))
+	if m.sidebarOn() {
+		parts = append(parts, hint("tab", "sessions"))
 	}
-	return strings.Join(append(parts, hint("?", "help")), "  ")
+	parts = append(parts, hint("i", "type"), hint("j/k", "scroll"), hint("[ ]", "tools"), hint("o", "expand"), hint("n", "new"))
+	if m.nextBlockedID() != "" {
+		parts = append(parts, hint("b", "next blocked"))
+	}
+	return append(parts, hint(":", "cmd"), hint("?", "help"))
 }
 
-// confirmKeys is the modal's answer line: y, D when it applies, and esc.
-func confirmKeys(c *confirmState) string {
+// confirmParts are the modal's answers: y, D when it applies, and esc.
+func confirmParts(c *confirmState) []string {
 	yes := c.yesLabel
 	if yes == "" {
 		yes = "confirm"
@@ -184,5 +275,8 @@ func confirmKeys(c *confirmState) string {
 	if c.alt != nil {
 		parts = append(parts, hint("D", c.altLabel))
 	}
-	return strings.Join(append(parts, hint("esc", "cancel")), "  ")
+	return append(parts, hint("esc", "cancel"))
 }
+
+// confirmKeys is the modal's answer line.
+func confirmKeys(c *confirmState) string { return strings.Join(confirmParts(c), "  ") }

@@ -1,10 +1,10 @@
- spore   chat  skills S  agents A  usage U  jobs J  refinements R                          1 blocked
+ spore   chat  skills S  agents A  usage U  jobs J  refinements R                        ◐ 1 blocked
 ╭─ sessions ───────────────────╮┏━ a1b2 fix flaky test ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 │▾ jobs  2                     │┃ chat · /work/spore · sonnet-5 · ctx 38.0k                        ┃
 │  job 1 · Send me a joke      │┃ › fix the flaky tui test                                         ┃
 │└ ○ j0b1 Send me a joke    job│┃   Looking at tui_test.go…                                        ┃
-│└ ○ j0b2 Send me a joke    job│┃ ▸ read {"path":"cmd/spore/tui_test.go"}  ✓ 3 lines               ┃
-│  job 2 · nightly backup      │┃ ▸ bash {"cmd":"go test ./cmd/spore"}  ✗ exit 1                   ┃
+│└ ○ j0b2 Send me a joke    job│┃ ▸ read {"path":"cmd/spore/tui_test.go"}                ✓ 3 lines ┃
+│  job 2 · nightly backup      │┃ ▸ bash {"cmd":"go test ./cmd/spore"}                    ✗ exit 1 ┃
 │└ ○ j0b3 nightly backup    job│┃                                                                  ┃
 │/work/spore                   │┃                                                                  ┃
 │○ a1b2 fix flaky test     chat│┃                                                                  ┃
@@ -18,7 +18,7 @@
 │                              │┃                                                                  ┃
 │                              │┃                                                                  ┃
 │                              │┃ ╭──────────────────────────────────────────────────────────────╮ ┃
-│                              │┃ │ Ask spore something…                                         │ ┃
-│                              │┃ ╰──────────────────────────────────────────────────────────────╯ ┃
+│                              │┃ │ Ask spore something…  (i to type · : for commands)           │ ┃
+│● working  ◐ blocked  ○ idle  │┃ ╰──────────────────────────────────────────────────────────────╯ ┃
 ╰──────────────────────────────╯┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
- NORMAL  <tab> sessions  <i> type  <j/k> scroll  <[ ]> tools  <?> help                              
+ NORMAL  tab sessions  i type  j/k scroll  [ ] tools  o expand  n new  b next blocked  ? help       
