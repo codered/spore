@@ -61,6 +61,10 @@ type Ask struct {
 	// chain. The approval is published to the root's topic so clients actually
 	// subscribed to the human can see and answer it.
 	RootID string
+	// Profile is the asking session's policy profile, shown beside the rule.
+	Profile string
+	// Deadline is when an unanswered ask is denied. Zero means none.
+	Deadline time.Time
 }
 
 type Answer struct {
@@ -234,6 +238,8 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 		PendingID: pendingID,
 		Pattern:   pattern,
 		RootID:    rootID,
+		Profile:   string(sess.Profile),
+		Deadline:  askDeadline(askCtx),
 	})
 
 	// Bookkeeping writes use a context detached from the caller's. When a turn
@@ -498,4 +504,10 @@ func rootScopedDecision(ctx context.Context, st *store.Store, sessionID, tool st
 		return "", false, err
 	}
 	return st.SessionDecision(ctx, root, tool)
+}
+
+// askDeadline is the moment the approval context expires, or zero.
+func askDeadline(ctx context.Context) time.Time {
+	d, _ := ctx.Deadline()
+	return d
 }

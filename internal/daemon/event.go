@@ -71,6 +71,12 @@ type WireEvent struct {
 	// human can see they are answering for a sub-agent, not for the
 	// conversation in front of them.
 	Origin string `json:"origin_session,omitempty"`
+	// Profile is the asking session's policy profile. ExpiresAt is when the
+	// guard denies an unanswered ask, RFC 3339 UTC; it is empty when no live
+	// waiter holds the ask (a replay after a restart), since nothing will
+	// time it out. A string, not a time.Time, so WireEvent stays comparable.
+	Profile   string `json:"profile,omitempty"`
+	ExpiresAt string `json:"expires_at,omitempty"`
 
 	// session / agent_state. State is a sub-agent run state (running, done,
 	// failed, interrupted).
