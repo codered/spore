@@ -244,37 +244,28 @@ boards. Still missing, because they need daemon data: live token and cache
 figures on the working line, the rule's config location, and nested
 `spore.*` calls inside `go_run`.
 
-## Transcript rows print control characters raw
+## Transcript control characters: shipped
 
-The approval card in #50 passes everything it shows through `visible`
-(`internal/tui/approval.go`), so a carriage return or an escape sequence in
-a command shows as a symbol instead of acting on the terminal. The
-transcript does not. A tool row prints the call's arguments, the first line
-of its result in the status column, and the whole result when expanded,
-all as they came from the tool. A result holding `\r`, `ESC[2J` or a cursor
-move can repaint rows it does not own, including the approval card drawn
-over the transcript. This predates #50.
+Closed. #51 (04c07e7) runs every transcript field through `visible`, the
+pass the approval card got in #50, so a carriage return or an escape
+sequence shows as a symbol instead of repainting rows it does not own. The
+gap was wider than tool rows: user, notice, error and footer rows, and
+assistant prose, which can echo a tool's output, printed daemon text raw
+too. `visibleLines` does the same for multi-line text and keeps newlines.
 
-Fix: run every tool row field through `visible` before drawing it. The
-expanded body is several lines, so it needs a version that keeps `\n`.
-Assistant prose, notices and errors draw daemon text the same way and want
-the same treatment; assistant prose can echo a tool's output back.
+## Spinner frame cost: shipped
 
-## The spinner re-measures the whole transcript every frame
+Closed. #51 (04c07e7) cut a spinner frame on 2,000 blocks from 2.8 ms and
+1 MB to 61 us and 6 KB (`BenchmarkSyncLongTranscript`). #50 had put the
+cost down to rejoining the transcript; a profile put 63% in
+`viewport.SetContent` measuring every line and 17% in the join. The
+viewport now ends in a blank row that `mainView` draws the working line
+over, so its content changes only when the transcript does, and the joined
+transcript is kept between frames. Anything that changes every frame
+belongs over a row like that, not in the viewport's content.
 
-`sync` appends the working line to the transcript and hands the result to
-the viewport, so every 120 ms spinner frame is new viewport content. On
-2,000 blocks a frame costs about 2.8 ms (`BenchmarkSyncLongTranscript`).
-#50 put that down to rejoining the transcript; a profile says otherwise.
-About 63% is `viewport.SetContent` measuring the width of every line
-(`findLongestLineWidth`), and only about 17% is `transcript` joining blocks,
-most of that formatting each block's cache key.
-
-Fix: keep the spinner out of the viewport's content. Give the working line
-a fixed placeholder row, so the content changes only when the transcript
-does or the line appears or goes, and draw the line over that row when it
-is on screen. Then keep the joined transcript between frames, rebuilding
-it only when a block, the block list, the width or the tool cursor changed.
+The manual check -- watching a long session's spinner turn and stay on its
+row while scrolling -- was not confirmed before merge.
 
 ## Web UI refresh: shipped
 
