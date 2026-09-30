@@ -134,13 +134,11 @@ func buildRuleset(def string, allow, ask, deny []string, learned config.LearnedP
 	if err != nil {
 		return ruleset{}, err
 	}
-	// Learned allow rules are evaluated before configured ask rules, so a
-	// user's explicit "always allow this pattern" answer applies immediately
-	// without waiting for a restart. Deny rules still win outright, and config
-	// allow rules still take precedence over learned ones.
+	// Hand-written rules are evaluated before learned ones, so a rule the
+	// user typed always outranks one an approval prompt wrote.
 	rs.allowAndAsk = append(rs.allowAndAsk, tagged(allowRules, SourceConfig)...)
-	rs.allowAndAsk = append(rs.allowAndAsk, tagged(learnedAllow, SourceLearned)...)
 	rs.allowAndAsk = append(rs.allowAndAsk, tagged(askRules, SourceConfig)...)
+	rs.allowAndAsk = append(rs.allowAndAsk, tagged(learnedAllow, SourceLearned)...)
 	rs.allowAndAsk = append(rs.allowAndAsk, tagged(learnedAsk, SourceLearned)...)
 
 	switch def {

@@ -26,7 +26,10 @@ func newReloaderFix(t *testing.T) *reloaderFix {
 	if err := os.WriteFile(path, []byte("[policy]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	pc := config.PolicyConfig{Default: "ask", ApprovalTimeout: "5m", Workspace: "/ws", Ask: []string{"fs_write"}}
+	// fs_write is not in the Ask list, so it falls to the profile default (ask).
+	// A learned allow rule can apply because the hand-written ask rule
+	// does not directly match fs_write.
+	pc := config.PolicyConfig{Default: "ask", ApprovalTimeout: "5m", Workspace: "/ws"}
 	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
 	if err != nil {
 		t.Fatal(err)
