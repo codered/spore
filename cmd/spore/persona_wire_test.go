@@ -29,7 +29,7 @@ func buildAgentAt(t *testing.T, cfg *config.Config) *agentUnderTest {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	a, _, _, _, err := buildAgent(cfg, st, terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout})
+	a, _, err := buildAgent(cfg, st, terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout})
 	if err != nil {
 		t.Fatalf("buildAgent: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestBuildToolsRegistersAgentNote(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 
-	a, _, _, _, err := buildAgent(cfg, st, terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout})
+	a, _, err := buildAgent(cfg, st, terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout})
 	if err != nil {
 		t.Fatalf("buildAgent: %v", err)
 	}
