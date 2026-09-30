@@ -139,8 +139,8 @@ func TestEveryResourceIsReachableByNameAndHotkey(t *testing.T) {
 			t.Errorf("%s has %d flex columns, want at most one", r.Name(), flex)
 		}
 	}
-	if len(resources()) != 5 {
-		t.Fatalf("%d resources, want skills, agents, usage, jobs, refinements", len(resources()))
+	if len(resources()) != 8 {
+		t.Fatalf("%d resources, want skills, agents, usage, jobs, refinements, mcp, policy, memory", len(resources()))
 	}
 }
 
@@ -178,5 +178,113 @@ func TestRefinementRowsProposedFirstAndActionsByStatus(t *testing.T) {
 	_ = acts["x"].Run(ctx, fb, rows[1])
 	if len(fb.accepted) != 1 || fb.accepted[0] != 1 || len(fb.rolledBack) != 1 || fb.rolledBack[0] != "s1:r2" {
 		t.Fatalf("accepted=%v rolledBack=%v", fb.accepted, fb.rolledBack)
+	}
+}
+
+func TestMCPRowsAndToolsDrill(t *testing.T) {
+	fb := &fakeBackend{mcp: []daemon.MCPServerJSON{{
+		Name: "gh", Transport: "stdio", State: "up",
+		Tools: []daemon.MCPToolJSON{
+			{Name: "mcp__gh__search", Decision: "allow", Rule: "mcp__gh__*"},
+			{Name: "mcp__gh__write", Decision: "ask", Rule: "policy.default", DependsOnArgs: true},
+		},
+		Skipped: []daemon.MCPSkipJSON{{Tool: "bad", Reason: "schema too large"}},
+	}, {Name: "fs", Transport: "http", State: "down", LastError: "connection refused"}}}
+	rows := fetch(t, mcpRes{}, fb, "")
+	if got := strings.Join(rows[0].Cells, "|"); got != "gh|stdio|up|2|" {
+		t.Errorf("gh row = %q", got)
+	}
+	if rows[1].Cells[4] != "connection refused" {
+		t.Errorf("fs row = %q", rows[1].Cells)
+	}
+	reconnect := (mcpRes{}).Actions()[0]
+	if reconnect.Key != "r" || reconnect.Confirm != nil {
+		t.Error("r reconnects without asking")
+	}
+	_ = reconnect.Run(context.Background(), fb, rows[1])
+	if len(fb.reconnected) != 1 || fb.reconnected[0] != "fs" {
+		t.Errorf("reconnected = %v", fb.reconnected)
+	}
+	next, ok := (mcpRes{}).Drill(rows[0])
+	if !ok {
+		t.Fatal("enter must open the server's tools")
+	}
+	tools := fetch(t, next, fb, "")
+	var got []string
+	for _, r := range tools {
+		got = append(got, strings.Join(r.Cells, "|"))
+	}
+	want := "search|allow|mcp__gh__*\nwrite|ask|policy.default (depends on args)\nbad|skipped|schema too large"
+	if strings.Join(got, "\n") != want {
+		t.Errorf("tools:\n%s\nwant:\n%s", strings.Join(got, "\n"), want)
+	}
+}
+
+func TestPolicyRowsRevokeOnlyLearned(t *testing.T) {
+	fb := &fakeBackend{policy: daemon.PolicyJSON{Rules: []daemon.PolicyRuleJSON{
+		{Profile: "local", Decision: "deny", Rule: "fs_*(path outside workspace)", Source: "baseline"},
+		{Profile: "local", Decision: "allow", Rule: "fs_read", Source: "config"},
+		{Profile: "local", Decision: "deny", Rule: "probe", Source: "learned"},
+		{Profile: "remote", Decision: "deny", Rule: "probe", Source: "learned"},
+		{Profile: "local", Decision: "ask", Rule: "(default)", Source: "config"},
+	}}}
+	rows := fetch(t, policyRes{}, fb, "")
+	if got := strings.Join(rows[2].Cells, "|"); got != "local|deny|learned|probe" {
+		t.Errorf("learned row = %q", got)
+	}
+	ids := map[string]bool{}
+	for _, r := range rows {
+		if ids[r.ID] {
+			t.Errorf("duplicate row id %q", r.ID)
+		}
+		ids[r.ID] = true
+	}
+	revoke := (policyRes{}).Actions()[0]
+	if revoke.Applies(rows[0]) || revoke.Applies(rows[1]) || !revoke.Applies(rows[2]) {
+		t.Error("revoke must apply only to learned rows")
+	}
+	if got := revoke.Confirm(rows[2]); got != `revoke "probe"?` {
+		t.Errorf("confirm = %q", got)
+	}
+	_ = revoke.Run(context.Background(), fb, rows[2])
+	if len(fb.revoked) != 1 || fb.revoked[0] != "deny probe" {
+		t.Errorf("revoked = %v", fb.revoked)
+	}
+	if !strings.Contains((policyRes{}).Detail(rows[1]), "edit config.toml") {
+		t.Error("a config row's detail must point at config.toml")
+	}
+}
+
+func TestMemoryRowsAndSearch(t *testing.T) {
+	fb := &fakeBackend{memory: daemon.MemoryJSON{Facts: []daemon.FactJSON{
+		{Name: "prefers-tabs", Type: "feedback", Description: "indentation", Body: "Use tabs."},
+	}}}
+	rows := fetch(t, memoryRes{}, fb, "")
+	if got := strings.Join(rows[0].Cells, "|"); got != "prefers-tabs|feedback|indentation" {
+		t.Errorf("fact row = %q", got)
+	}
+	if (memoryRes{}).Detail(rows[0]) != "Use tabs." {
+		t.Error("detail is the fact body")
+	}
+	del := (memoryRes{}).Actions()[0]
+	if got := del.Confirm(rows[0]); got != `delete fact "prefers-tabs"?` {
+		t.Errorf("confirm = %q", got)
+	}
+	_ = del.Run(context.Background(), fb, rows[0])
+	if len(fb.deletedFacts) != 1 || fb.deletedFacts[0] != "prefers-tabs" {
+		t.Errorf("deleted = %v", fb.deletedFacts)
+	}
+
+	fb.memory = daemon.MemoryJSON{Query: "tabs", Hits: []daemon.MemoryHitJSON{{Name: "prefers-tabs", Score: 1.5, Excerpt: "Use [tabs]."}}}
+	q := memoryRes{query: "tabs"}
+	if q.Name() != `memory · "tabs"` {
+		t.Errorf("title = %q", q.Name())
+	}
+	rows = fetch(t, q, fb, "")
+	if got := strings.Join(rows[0].Cells, "|"); got != "prefers-tabs|1.50|Use [tabs]." {
+		t.Errorf("hit row = %q", got)
+	}
+	if last := fb.memoryQueries[len(fb.memoryQueries)-1]; last != "tabs" {
+		t.Errorf("query sent = %q", last)
 	}
 }

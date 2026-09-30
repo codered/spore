@@ -8,7 +8,7 @@ import (
 // resources is every view in hotkey order. The header's hint grid, the :
 // command completion and the hotkeys all come from it.
 func resources() []Resource {
-	return []Resource{skillsRes{}, agentsRes{}, usageRes{}, jobsRes{}, refinementsRes{}}
+	return []Resource{skillsRes{}, agentsRes{}, usageRes{}, jobsRes{}, refinementsRes{}, mcpRes{}, policyRes{}, memoryRes{}}
 }
 
 func resourceByName(name string) (Resource, bool) {

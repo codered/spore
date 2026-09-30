@@ -815,6 +815,9 @@ func (m *Model) command(line string) tea.Cmd {
 		return m.slash(name)
 	case "refine":
 		return m.refine(args)
+	case "memory":
+		// The one view that takes arguments: `:memory tabs` searches.
+		return m.openView(memoryRes{query: strings.Join(args, " ")})
 	}
 	if r, ok := resourceByName(name); ok {
 		return m.openView(r)

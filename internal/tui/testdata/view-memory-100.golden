@@ -1,11 +1,11 @@
  spore   chat  skills S  agents A  usage U  jobs J  refinements R  mcp C  policy P  memory M        
-┏━ skills(3) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃debug                                                                                             ┃
-┃systematic debugging                                                                              ┃
+┏━ memory(1) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃NAME          TYPE      DESCRIPTION                                                               ┃
+┃prefers-tabs  feedback  indentation                                                               ┃
 ┃                                                                                                  ┃
-┃# debug                                                                                           ┃
 ┃                                                                                                  ┃
-┃Find the root cause first.                                                                        ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
 ┃                                                                                                  ┃
 ┃                                                                                                  ┃
 ┃                                                                                                  ┃
@@ -21,4 +21,4 @@
 ┃                                                                                                  ┃
 ┃                                                                                                  ┃
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
- NORMAL  enter open  / filter  s sort  esc close                                                    
+ NORMAL  enter open  / filter  s sort  x delete  esc back                                           

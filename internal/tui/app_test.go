@@ -1033,3 +1033,13 @@ func TestSlashRefinePassesInstructionsAndRollback(t *testing.T) {
 		t.Fatalf("rolledBack = %v", fb.rolledBack)
 	}
 }
+
+func TestColonMemoryWithAQueryOpensTheSearch(t *testing.T) {
+	fb := &fakeBackend{}
+	m := newTestModel(t, fb, "a1b2c3")
+	run(m, tea.WindowSizeMsg{Width: 100, Height: 24})
+	m.command("memory tabs")
+	if m.table == nil || m.table.res.Name() != `memory · "tabs"` {
+		t.Fatalf("open view = %v", m.table)
+	}
+}
