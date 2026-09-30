@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -53,7 +54,7 @@ func TestMemoryListSearchAndDelete(t *testing.T) {
 		t.Fatalf("search = %d %s", code, body)
 	}
 	for _, q := range []string{`"tabs`, `tabs*`, `-x`, `a OR`} {
-		if code, body = send(t, "GET", ts.URL+"/api/memory?q="+url.QueryEscape(q), nil); code >= 500 {
+		if code, body = send(t, "GET", ts.URL+"/api/memory?q="+url.QueryEscape(q), nil); code != 200 {
 			t.Errorf("query %q = %d %s", q, code, body)
 		}
 	}
@@ -61,7 +62,7 @@ func TestMemoryListSearchAndDelete(t *testing.T) {
 	if code, body = send(t, "DELETE", ts.URL+"/api/memory/prefers-tabs", nil, "X-Spore-Client", "tui"); code != 200 {
 		t.Fatalf("delete = %d %s", code, body)
 	}
-	if _, err := os.Stat(s.cfg.MemoryDir() + "/prefers-tabs.md"); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(s.cfg.MemoryDir(), "prefers-tabs.md")); !os.IsNotExist(err) {
 		t.Error("fact file still exists")
 	}
 	if len(facts.Facts()) != 0 {

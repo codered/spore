@@ -51,9 +51,10 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 	}
 	hits, err := s.op.Recall.Search(r.Context(), recall.Query{Text: q, Kinds: []string{recall.KindFact}})
 	if err != nil {
-		// A query the backend cannot parse is the caller's input, not a
-		// daemon fault.
-		writeError(w, http.StatusBadRequest, "search: %v", err)
+		// The backend tokenizes the query before MATCH, so an error here is
+		// the backend's, not the caller's.
+		slog.Error("memory search failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "search: %v", err)
 		return
 	}
 	for _, h := range hits {
