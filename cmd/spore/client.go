@@ -20,11 +20,23 @@ import (
 // clients hit, so neither drifts into being the only tested one.
 type client struct {
 	base string
+	name string // name is sent as X-Spore-Client so the daemon's audit lines say which client acted. Empty sends nothing.
 	// short is for request/response calls; streamClient deliberately uses a client
 	// with no timeout, because an SSE connection is meant to stay open.
 	short        *http.Client
 	streamClient *http.Client
 }
+
+// httpError is a daemon error response. Error() is the text do has always
+// returned, so callers that match on it keep working; Status and Msg are for
+// the callers that need them.
+type httpError struct {
+	Status int
+	Msg    string // the daemon's JSON error, or the HTTP status text
+	text   string
+}
+
+func (e *httpError) Error() string { return e.text }
 
 func newClient(addr string) *client {
 	return &client{
@@ -51,6 +63,9 @@ func (c *client) do(ctx context.Context, method, path string, body, out any) err
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	if c.name != "" {
+		req.Header.Set("X-Spore-Client", c.name)
+	}
 	//nolint:gosec // G704: c.base is the local daemon URL
 	res, err := c.short.Do(req) //nolint:gosec // G704: c.base is the local daemon URL
 	if err != nil {
@@ -66,9 +81,9 @@ func (c *client) do(ctx context.Context, method, path string, body, out any) err
 			Error string `json:"error"`
 		}
 		if json.Unmarshal(payload, &e) == nil && e.Error != "" {
-			return fmt.Errorf("%s %s: %s", method, path, e.Error)
+			return &httpError{Status: res.StatusCode, Msg: e.Error, text: fmt.Sprintf("%s %s: %s", method, path, e.Error)}
 		}
-		return fmt.Errorf("%s %s: %s", method, path, res.Status)
+		return &httpError{Status: res.StatusCode, Msg: res.Status, text: fmt.Sprintf("%s %s: %s", method, path, res.Status)}
 	}
 	if out != nil {
 		return json.Unmarshal(payload, out)

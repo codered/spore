@@ -18,10 +18,11 @@ type table struct {
 	res     Resource
 	session string // the session a scoped resource was opened for
 
-	rows   []Row
-	loaded bool
-	err    error // the last fetch's error; the rows are then stale
-	gone   bool  // the daemon has no route for this view
+	rows    []Row
+	loaded  bool
+	err     error  // the last fetch's error; the rows are then stale
+	gone    bool   // the daemon has no route for this view
+	goneMsg string // the message to show when gone (for Unavailable)
 
 	cursor  string // selected row ID; survives refreshes that reorder rows
 	filter  string
@@ -36,11 +37,14 @@ func newTable(r Resource, session string) *table {
 }
 
 // setRows installs a fetch result. An error keeps the previous rows and marks
-// them stale; ErrOlderDaemon marks the whole view gone.
+// them stale; ErrOlderDaemon or Unavailable marks the whole view gone.
 func (t *table) setRows(rows []Row, err error) {
+	var u Unavailable
 	switch {
 	case errors.Is(err, ErrOlderDaemon):
-		t.gone, t.err = true, nil
+		t.gone, t.goneMsg, t.err = true, ErrOlderDaemon.Error(), nil
+	case errors.As(err, &u):
+		t.gone, t.goneMsg, t.err = true, u.Msg, nil
 	case err != nil:
 		t.err = err
 	default:
@@ -184,7 +188,7 @@ func (t *table) render(width, height int) string {
 	case t.detail != nil:
 		return t.detail.View()
 	case t.gone:
-		return styWarn.Render(ErrOlderDaemon.Error())
+		return styWarn.Render(t.goneMsg)
 	case !t.loaded:
 		return styMuted.Render("loading…")
 	}

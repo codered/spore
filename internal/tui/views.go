@@ -12,6 +12,13 @@ import (
 // empty.
 var ErrOlderDaemon = errors.New("this daemon is older than the TUI — restart it")
 
+// Unavailable is what a Views method returns when the daemon has the route
+// but not the subsystem behind it: no MCP servers configured, or no recall
+// backend. The view shows Msg in place of rows.
+type Unavailable struct{ Msg string }
+
+func (u Unavailable) Error() string { return u.Msg }
+
 // Views is the daemon as the resource views see it. It sits beside Backend so
 // the chat screen's interface stays small; cmd/spore's adapter implements
 // both, and New picks it up from the Backend it is given.
@@ -27,4 +34,10 @@ type Views interface {
 	AcceptRefinement(ctx context.Context, id int64) error
 	RejectRefinement(ctx context.Context, id int64) error
 	RollbackRound(ctx context.Context, sessionID, roundID string) error
+	MCP(ctx context.Context) ([]daemon.MCPServerJSON, error)
+	Reconnect(ctx context.Context, server string) error
+	Policy(ctx context.Context) (daemon.PolicyJSON, error)
+	Revoke(ctx context.Context, decision, rule string) error
+	Memory(ctx context.Context, query string) (daemon.MemoryJSON, error)
+	DeleteFact(ctx context.Context, name string) error
 }

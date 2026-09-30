@@ -150,3 +150,15 @@ func TestTheDetailPaneShowsTheSelectedRow(t *testing.T) {
 		t.Fatalf("detail = %q", out)
 	}
 }
+
+func TestUnavailableReplacesTheRowsWithItsMessage(t *testing.T) {
+	tb := newTable(jobsRes{}, "")
+	tb.setRows(nil, Unavailable{Msg: "no MCP servers configured"})
+	if got := tb.render(80, 10); !strings.Contains(got, "no MCP servers configured") {
+		t.Errorf("render = %q", got)
+	}
+	tb.setRows([]Row{{ID: "1", Cells: []string{"1", "", "", "", "", ""}}}, nil)
+	if strings.Contains(tb.render(80, 10), "no MCP servers configured") {
+		t.Error("a later successful fetch must clear the message")
+	}
+}
