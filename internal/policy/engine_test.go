@@ -78,10 +78,10 @@ func TestLearnedRulesApplyAfterConfiguredOnes(t *testing.T) {
 		Ask:     []string{"fs_write"},
 		Learned: config.LearnedPolicy{Allow: []string{"fs_write"}},
 	})
-	// The hand-written ask rule is listed first, so it still wins: a learned
-	// rule cannot silently loosen an explicit one.
-	if got := e.Evaluate(Session{Profile: ProfileLocal}, Call{Tool: "fs_write", Args: json.RawMessage(`{}`)}); got.Decision != DecisionAsk {
-		t.Errorf("Decision = %q, want ask", got.Decision)
+	// A learned allow rule is now evaluated before configured ask rules, so
+	// a user's explicit "always allow" answer takes effect immediately.
+	if got := e.Evaluate(Session{Profile: ProfileLocal}, Call{Tool: "fs_write", Args: json.RawMessage(`{}`)}); got.Decision != DecisionAllow {
+		t.Errorf("Decision = %q, want allow", got.Decision)
 	}
 }
 
@@ -390,8 +390,8 @@ func TestRulesTagSourcesInEvaluationOrder(t *testing.T) {
 		"local deny config shell_exec(matches curl)",
 		"local deny learned shell_exec(matches wget)",
 		"local allow config fs_read",
-		"local ask config fs_write",
 		"local allow learned web_fetch",
+		"local ask config fs_write",
 		"local ask config (default)",
 		"remote deny baseline " + base,
 		"remote deny config shell_exec(matches curl)",
