@@ -265,13 +265,13 @@ func (r *Refiner) write(ctx context.Context, kind, target, path string, content 
 	r.Facts.Reload()
 	for _, f := range r.Facts.Facts() {
 		if f.Name == target {
-			if err := r.Store.IndexFact(ctx, target, f.Description+"\n"+f.Body); err != nil {
+			if err := r.index.IndexFact(ctx, target, f.Description+"\n"+f.Body); err != nil {
 				slog.Warn("refinement wrote the file but could not update the recall index", "target", target, "error", err)
 			}
 			return nil
 		}
 	}
-	if err := r.Store.UnindexFact(ctx, target); err != nil {
+	if err := r.index.UnindexFact(ctx, target); err != nil {
 		slog.Warn("refinement wrote the file but could not update the recall index", "target", target, "error", err)
 	}
 	return nil

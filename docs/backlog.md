@@ -31,28 +31,6 @@ load" index in the system prompt was empty in every production turn. The fix
 is in this change -- the agent holds the same `*skill.Caches` the tools were
 built with, and `Snapshot` fills the index on every turn.
 
-## The skill cache never evicts
-
-`skill.Caches` holds one `Cache` per skills directory and nothing removes an
-entry. Under the default global scope that is exactly one entry and costs
-nothing. Under `skills.scope = "workspace"` it is one entry per distinct
-session root the daemon has ever served — a mutex, a timestamp and a list of
-names and descriptions each — so it grows with session history rather than
-with live sessions.
-
-This is the gap `internal/workspace/describers.go` used to have and no longer
-does: `Describers.Describe` sweeps entries idle beyond `idleTTL` on every
-miss, which is about ten lines and bounds the map by live use. The same sweep
-would work here unchanged.
-
-**Open questions**
-
-1. Is a TTL sweep the right rule for skills, given a skills directory is read
-   far less often than an environment section is rebuilt? A cache that is only
-   consulted once per turn may want a longer idle window than the describers'.
-2. Is anything else keyed by session root and unbounded, or are these the only
-   two?
-
 ## Sub-agents: shipped
 
 Closed. `agent_run` waits for a sub-agent's answer, `agent_spawn` starts one
@@ -188,30 +166,19 @@ hour belongs to a session that is over. The other question — whether anything
 else is keyed by session root and unbounded — was checked at the same time, and
 these two were the only ones.
 
-## Refinement: fix the two weak tests
+## Refinement's two weak tests: fixed
 
-Known gap from #48. Two refinement fixes shipped with tests that do not prove
-what they are named for. The behaviour is right in both cases; the suite just
-would not notice if it regressed.
+Closed. Both tests from #48 now fail when the behaviour they name is removed;
+each was checked by mutating the code and watching it go red.
 
-1. **Job sessions are excluded from the idle sweep, but the test would pass
-   without the exclusion.** The job case in `TestIdleSessionsEligibility`
-   (`internal/store/refine_test.go`) calls `MarkRefineAttempt` and
-   `SetRefinedThrough` right after the job's only user message. That closes
-   the other two guards in `IdleSessions`, so the case passes whether or not
-   `SourceJob` is in the `NOT IN` list. Fix: add a job session with an
-   unreviewed user message and no attempt recorded, next to an equivalent chat
-   session, and assert that only the chat session comes back. A throwaway
-   version of this test passed with the exclusion and failed without it.
-2. **Nothing forces a recall-index failure in `refine.write`.**
-   `TestWriteReturnsWriteTargetErrorNotIndexError`
-   (`internal/refine/round_test.go`) uses a `notes.append` edit, which returns
-   before the fact-only `IndexFact`/`UnindexFact` branch. So the rule that an
-   index error after a successful file write is only logged, and never marks
-   the row `failed`, is checked only by reading the code. Fix: put an interface
-   in front of the index calls (or inject a failing indexer) so a fact edit can
-   hit an index error, then assert that the row is `applied` and the file
-   changed.
+1. The job case in `TestIdleSessionsEligibility` no longer records an attempt
+   or a watermark, so it is shaped exactly like the fresh chat session and
+   only the `SourceJob` exclusion keeps it out of `IdleSessions`.
+2. `Refiner` reaches the recall index through an unexported `factIndexer`,
+   which `New` sets to the store. `TestIndexErrorAfterFactWriteStillApplies`
+   swaps in one that always fails and runs a `fact.create` and a
+   `fact.delete` round: both rows stay `applied`, both files change, and each
+   index method is called once.
 
 ## TUI: catch up with the web UI refresh
 
