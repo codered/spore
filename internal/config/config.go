@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -490,6 +491,11 @@ var baselineDeny = []string{
 	// (a pipe into "shuf") and is the right trade for a deny baseline.
 	"shell_exec(matches rm -rf /, sudo , mkfs, dd if=, :(){, | sh, |sh, | bash, |bash, git push --force, shutdown, reboot)",
 }
+
+// BaselineDeny returns the rules Load always prepends to policy.deny. It is a
+// copy: the policy view uses it to tell a baseline rule from one a human
+// wrote, and must not be able to change what is enforced.
+func BaselineDeny() []string { return slices.Clone(baselineDeny) }
 
 func Default() *Config {
 	home, _ := os.UserHomeDir()

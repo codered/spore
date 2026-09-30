@@ -1,9 +1,11 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,16 +28,17 @@ const (
 // process; spore is a single daemon, so a file lock is not warranted.
 var learnMu sync.Mutex
 
+// ErrNotLearned is UnlearnRule's answer for a rule the managed block does not
+// hold under that decision. Hand-written rules are never in the block, so
+// they are refused with it too.
+var ErrNotLearned = errors.New("rule is not in the spore-managed policy block")
+
 // LearnRule adds one rule to the managed block of a config file, creating the
 // block if it is absent. Existing learned rules are preserved and duplicates
 // are collapsed. Safe for concurrent callers.
 func LearnRule(path, decision, rule string) error {
-	learnMu.Lock()
-	defer learnMu.Unlock()
-	switch decision {
-	case "allow", "ask", "deny":
-	default:
-		return fmt.Errorf("learned rule decision must be allow, ask or deny, got %q", decision)
+	if err := checkDecision(decision); err != nil {
+		return err
 	}
 	// The block is rendered with basic TOML strings, so a rule containing a
 	// quote, a backslash or a newline is refused rather than escaped.
@@ -45,45 +48,125 @@ func LearnRule(path, decision, rule string) error {
 	if strings.TrimSpace(rule) == "" {
 		return fmt.Errorf("learned rule is empty")
 	}
+	return rewriteLearned(path, func(l *LearnedPolicy) error {
+		list := l.list(decision)
+		*list = appendUnique(*list, rule)
+		return nil
+	})
+}
+
+// UnlearnRule removes one rule from the managed block. The rule is compared
+// with surrounding whitespace ignored, because the policy engine shows rules
+// trimmed and that is the text a revoke sends back. A rule the block does not
+// hold under that decision is ErrNotLearned, and nothing is written.
+func UnlearnRule(path, decision, rule string) error {
+	if err := checkDecision(decision); err != nil {
+		return err
+	}
+	want := strings.TrimSpace(rule)
+	return rewriteLearned(path, func(l *LearnedPolicy) error {
+		list := l.list(decision)
+		i := slices.IndexFunc(*list, func(v string) bool { return strings.TrimSpace(v) == want })
+		if i < 0 {
+			return ErrNotLearned
+		}
+		*list = slices.Delete(*list, i, i+1)
+		return nil
+	})
+}
+
+// ReadLearned returns the rules in the managed block, or none when the file
+// has no block. It is what a running daemon re-reads after it rewrites the
+// block: the rest of the file is never read again after startup.
+func ReadLearned(path string) (LearnedPolicy, error) {
+	learnMu.Lock()
+	defer learnMu.Unlock()
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: path is from the config file and validated
+	if err != nil {
+		return LearnedPolicy{}, fmt.Errorf("read config: %w", err)
+	}
+	body := string(raw)
+	if err := checkMarkers(path, body); err != nil {
+		return LearnedPolicy{}, err
+	}
+	_, existing, _, found := splitManaged(body)
+	if !found {
+		return LearnedPolicy{}, nil
+	}
+	return parseManaged(existing)
+}
+
+func checkDecision(decision string) error {
+	switch decision {
+	case "allow", "ask", "deny":
+		return nil
+	}
+	return fmt.Errorf("learned rule decision must be allow, ask or deny, got %q", decision)
+}
+
+// list returns the slice a decision's rules live in, so an edit can change it
+// in place. The decision has already been checked.
+func (l *LearnedPolicy) list(decision string) *[]string {
+	switch decision {
+	case "allow":
+		return &l.Allow
+	case "ask":
+		return &l.Ask
+	}
+	return &l.Deny
+}
+
+// More than one marker means the file has a stale or half-deleted block, or
+// the marker text inside the user's own prose. splitManaged would pair the
+// wrong two, so refuse with something the user can act on rather than
+// rewriting around it.
+func checkMarkers(path, body string) error {
+	if n := strings.Count(body, ManagedBegin); n > 1 {
+		return fmt.Errorf("%s contains %d spore-managed policy markers; remove all but one block by hand before spore can learn new rules", path, n)
+	}
+	return nil
+}
+
+// parseManaged decodes the managed block on its own: it is the only part of
+// the file spore rewrites, so a syntax error elsewhere cannot be made worse
+// by a write.
+func parseManaged(inner string) (LearnedPolicy, error) {
+	var doc struct {
+		Policy struct {
+			Learned LearnedPolicy `toml:"learned"`
+		} `toml:"policy"`
+	}
+	if _, err := toml.Decode(inner, &doc); err != nil {
+		return LearnedPolicy{}, fmt.Errorf("the spore-managed policy block is not valid TOML: %w", err)
+	}
+	return doc.Policy.Learned, nil
+}
+
+// rewriteLearned is the read-modify-write both LearnRule and UnlearnRule
+// are. edit changes the parsed block; an error from it aborts with nothing
+// written.
+func rewriteLearned(path string, edit func(*LearnedPolicy) error) error {
+	learnMu.Lock()
+	defer learnMu.Unlock()
 
 	raw, err := os.ReadFile(path) //nolint:gosec // G304: path is from the config file and validated
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
 	}
 	body := string(raw)
-
-	// More than one marker means the file has a stale or half-deleted block,
-	// or the marker text inside the user's own prose. splitManaged would pair
-	// the wrong two, so refuse with something the user can act on rather than
-	// rewriting around it.
-	if n := strings.Count(body, ManagedBegin); n > 1 {
-		return fmt.Errorf("%s contains %d spore-managed policy markers; remove all but one block by hand before spore can learn new rules", path, n)
+	if err := checkMarkers(path, body); err != nil {
+		return err
 	}
 
 	before, existing, after, found := splitManaged(body)
 	learned := LearnedPolicy{}
 	if found {
-		// The managed block is parsed on its own: it is the only part of the
-		// file spore rewrites, so a syntax error elsewhere cannot be made
-		// worse by this write.
-		var doc struct {
-			Policy struct {
-				Learned LearnedPolicy `toml:"learned"`
-			} `toml:"policy"`
+		if learned, err = parseManaged(existing); err != nil {
+			return err
 		}
-		if _, err := toml.Decode(existing, &doc); err != nil {
-			return fmt.Errorf("the spore-managed policy block is not valid TOML: %w", err)
-		}
-		learned = doc.Policy.Learned
 	}
-
-	switch decision {
-	case "allow":
-		learned.Allow = appendUnique(learned.Allow, rule)
-	case "ask":
-		learned.Ask = appendUnique(learned.Ask, rule)
-	case "deny":
-		learned.Deny = appendUnique(learned.Deny, rule)
+	if err := edit(&learned); err != nil {
+		return err
 	}
 
 	block := renderManaged(learned)

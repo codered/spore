@@ -1,12 +1,15 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
 
 func TestLearnRuleCreatesTheManagedBlock(t *testing.T) {
@@ -316,5 +319,116 @@ func TestSetSectionKeyLeavesSimilarlyNamedKeysAlone(t *testing.T) {
 	}
 	if !cfg.Trace.Enabled {
 		t.Errorf("trace.enabled was not set:\n%s", out)
+	}
+}
+
+func TestUnlearnRuleRemovesOnlyThatLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	head := "# my config\n[policy]\ndefault = \"ask\"\nallow = [\"web_fetch\"]\n"
+	if err := os.WriteFile(path, []byte(head), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []struct{ d, rule string }{{"allow", "fs_write(path under /ws/**)"}, {"allow", "web_search"}, {"deny", "shell_exec(matches wget)"}} {
+		if err := LearnRule(path, r.d, r.rule); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := UnlearnRule(path, "allow", "web_search"); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	body := string(raw)
+	if !strings.HasPrefix(body, head) {
+		t.Errorf("text before the block changed:\n%s", body)
+	}
+	l, err := ReadLearned(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(l.Allow) != 1 || l.Allow[0] != "fs_write(path under /ws/**)" || len(l.Deny) != 1 {
+		t.Errorf("learned after unlearn = %+v", l)
+	}
+	var probe Config
+	if _, err := toml.Decode(body, &probe); err != nil {
+		t.Fatalf("result does not parse: %v", err)
+	}
+}
+
+func TestUnlearnRuleRefusesARuleThatWasNotLearned(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[policy]\nallow = [\"web_fetch\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := LearnRule(path, "allow", "web_search"); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(path)
+	for _, c := range []struct{ d, rule string }{
+		{"allow", "web_fetch"}, // hand-written, outside the block
+		{"deny", "web_search"}, // learned, but under another decision
+		{"allow", "nothing"},
+	} {
+		if err := UnlearnRule(path, c.d, c.rule); !errors.Is(err, ErrNotLearned) {
+			t.Errorf("UnlearnRule(%s, %s) = %v, want ErrNotLearned", c.d, c.rule, err)
+		}
+	}
+	after, _ := os.ReadFile(path)
+	if string(before) != string(after) {
+		t.Error("a refused unlearn changed the file")
+	}
+}
+
+func TestUnlearnRuleIgnoresSurroundingWhitespace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[policy]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := LearnRule(path, "allow", "web_search "); err != nil {
+		t.Fatal(err)
+	}
+	if err := UnlearnRule(path, "allow", "web_search"); err != nil {
+		t.Fatalf("the engine shows rules trimmed, so a trimmed revoke must match: %v", err)
+	}
+	if l, _ := ReadLearned(path); len(l.Allow) != 0 {
+		t.Errorf("allow = %v, want empty", l.Allow)
+	}
+}
+
+func TestUnlearnRuleRejectsABadDecision(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	_ = os.WriteFile(path, []byte("[policy]\n"), 0o600)
+	if err := UnlearnRule(path, "maybe", "x"); err == nil || errors.Is(err, ErrNotLearned) {
+		t.Fatalf("err = %v, want a decision error", err)
+	}
+}
+
+func TestReadLearned(t *testing.T) {
+	dir := t.TempDir()
+	none := filepath.Join(dir, "none.toml")
+	_ = os.WriteFile(none, []byte("[policy]\n"), 0o600)
+	if l, err := ReadLearned(none); err != nil || len(l.Allow)+len(l.Ask)+len(l.Deny) != 0 {
+		t.Errorf("no block: %+v %v", l, err)
+	}
+	one := filepath.Join(dir, "one.toml")
+	_ = os.WriteFile(one, []byte("[policy]\n"), 0o600)
+	_ = LearnRule(one, "ask", "memory")
+	if l, err := ReadLearned(one); err != nil || len(l.Ask) != 1 || l.Ask[0] != "memory" {
+		t.Errorf("one block: %+v %v", l, err)
+	}
+	two := filepath.Join(dir, "two.toml")
+	_ = os.WriteFile(two, []byte(ManagedBegin+"\n"+ManagedEnd+"\n"+ManagedBegin+"\n"+ManagedEnd+"\n"), 0o600)
+	if _, err := ReadLearned(two); err == nil {
+		t.Error("two markers must be refused")
+	}
+}
+
+func TestBaselineDenyIsACopy(t *testing.T) {
+	b := BaselineDeny()
+	if len(b) == 0 || b[0] != "fs_*(path outside workspace)" {
+		t.Fatalf("BaselineDeny() = %v", b)
+	}
+	b[0] = "changed"
+	if BaselineDeny()[0] == "changed" {
+		t.Error("BaselineDeny must return a copy")
 	}
 }
