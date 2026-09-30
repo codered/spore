@@ -45,6 +45,13 @@ const (
 	ProfileRemote Profile = "remote"
 )
 
+// Where a rule came from, as the policy view shows it.
+const (
+	SourceBaseline = "baseline" // the deny rules config.Load always adds
+	SourceConfig   = "config"   // written by a human in config.toml
+	SourceLearned  = "learned"  // written by an "always this pattern" answer
+)
+
 // Call is one tool invocation under evaluation.
 type Call struct {
 	Tool string
@@ -67,6 +74,9 @@ type Rule struct {
 	// Raw is the rule exactly as written in config, used in audit records,
 	// spans and the message the model sees when a call is denied.
 	Raw string
+	// Source is where the rule came from: SourceBaseline, SourceConfig or
+	// SourceLearned. buildRuleset sets it; the policy view shows it.
+	Source string
 
 	tool *regexp.Regexp
 	pred predicate
