@@ -60,6 +60,11 @@ type serverState struct {
 	// buffered and written non-blockingly: a burst of notifications collapses
 	// into one re-list, and the SDK's goroutine is never held up.
 	changed chan struct{}
+
+	// redial carries operator reconnect requests to the supervisor, which is
+	// the only goroutine that ever dials this server. Buffered and written
+	// non-blockingly, so repeated requests collapse into one.
+	redial chan struct{}
 }
 
 // Host owns spore's MCP client connections and presents their tools to the
@@ -102,6 +107,7 @@ func New(cfg config.MCPConfig, workspace string, log *slog.Logger) *Host {
 			cfg:     s,
 			state:   StateDown,
 			changed: make(chan struct{}, 1),
+			redial:  make(chan struct{}, 1),
 		})
 	}
 	// Production defaults: patient enough not to hammer a server that is
@@ -364,4 +370,28 @@ func (h *Host) Close() {
 	for _, st := range h.servers {
 		h.markDown(st, nil)
 	}
+}
+
+// ErrUnknownServer is Redial's answer for a name no [[mcp.server]] declares.
+var ErrUnknownServer = errors.New("mcp: no such server")
+
+// Redial asks the supervisor to drop the named server's session and dial it
+// again at once, or to stop waiting out its backoff if it is down. It never
+// dials itself, so there is only ever one dialler per server. After Close it
+// does nothing.
+func (h *Host) Redial(name string) error {
+	for _, st := range h.servers {
+		if st.cfg.Name != name {
+			continue
+		}
+		if h.isClosed() {
+			return nil
+		}
+		select {
+		case st.redial <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+	return ErrUnknownServer
 }

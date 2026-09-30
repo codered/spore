@@ -44,6 +44,9 @@ func (h *Host) superviseOne(ctx context.Context, st *serverState) {
 			select {
 			case <-ctx.Done():
 				return
+			case <-st.redial:
+				backoff = h.backoffMin
+				continue
 			case <-time.After(backoff):
 			}
 			backoff *= 2
@@ -55,11 +58,16 @@ func (h *Host) superviseOne(ctx context.Context, st *serverState) {
 		backoff = h.backoffMin
 		h.log.Info("mcp server connected", "server", st.cfg.Name)
 
-		if h.watch(ctx, st) {
+		switch h.watch(ctx, st) {
+		case endCancelled:
 			return // context cancelled: shutdown, not a drop
+		case endRedial:
+			h.log.Info("mcp server reconnect requested", "server", st.cfg.Name)
+			h.markDown(st, errRedialRequested)
+		default:
+			h.log.Warn("mcp server disconnected; redialling", "server", st.cfg.Name)
+			h.markDown(st, errServerGone)
 		}
-		h.log.Warn("mcp server disconnected; redialling", "server", st.cfg.Name)
-		h.markDown(st, errServerGone)
 	}
 }
 
@@ -67,19 +75,34 @@ func (h *Host) superviseOne(ctx context.Context, st *serverState) {
 // without spore asking it to.
 var errServerGone = errorString("the server closed the connection")
 
+// errRedialRequested is what Status reports between an operator's reconnect
+// and the new session coming up.
+var errRedialRequested = errorString("reconnect requested")
+
 type errorString string
 
 func (e errorString) Error() string { return string(e) }
 
+// watchEnd is why watch returned.
+type watchEnd int
+
+const (
+	endCancelled watchEnd = iota // shutdown: stop, do not redial
+	endGone                      // the session ended on its own
+	endRedial                    // an operator asked for a reconnect
+)
+
 // watch blocks until the session ends, re-listing whenever the server says
-// its tool list changed. It reports true when the context was cancelled,
-// meaning the caller should stop rather than redial.
-func (h *Host) watch(ctx context.Context, st *serverState) (cancelled bool) {
+// its tool list changed.
+func (h *Host) watch(ctx context.Context, st *serverState) watchEnd {
 	st.mu.RLock()
 	session := st.session
 	st.mu.RUnlock()
 	if session == nil {
-		return ctx.Err() != nil
+		if ctx.Err() != nil {
+			return endCancelled
+		}
+		return endGone
 	}
 
 	// One goroutine turns "the session ended" into a channel receive. Wait
@@ -94,9 +117,11 @@ func (h *Host) watch(ctx context.Context, st *serverState) (cancelled bool) {
 	for {
 		select {
 		case <-ctx.Done():
-			return true
+			return endCancelled
 		case <-gone:
-			return false
+			return endGone
+		case <-st.redial:
+			return endRedial
 		case <-st.changed:
 			if err := h.relist(ctx, st); err != nil {
 				h.log.Warn("mcp re-list failed", "server", st.cfg.Name, "err", err)
