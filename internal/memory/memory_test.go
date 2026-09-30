@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -254,5 +255,15 @@ func TestCachePreserveFactsOnDirectoryError(t *testing.T) {
 	}
 	if c.Facts()[0].Name != "a" {
 		t.Fatalf("cached fact should still be present: %+v", c.Facts())
+	}
+}
+
+func TestDeleteMissingFactIsErrNoFact(t *testing.T) {
+	err := Delete(t.TempDir(), "absent")
+	if !errors.Is(err, ErrNoFact) {
+		t.Fatalf("err = %v, want ErrNoFact", err)
+	}
+	if err.Error() != `no fact named "absent"` {
+		t.Errorf("message changed: %q", err.Error())
 	}
 }

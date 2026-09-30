@@ -174,6 +174,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/usage", s.handleUsage)
 	mux.HandleFunc("GET /api/policy", s.handlePolicy)
 	mux.HandleFunc("DELETE /api/policy/learned", s.handleRevoke)
+	mux.HandleFunc("GET /api/memory", s.handleMemory)
+	mux.HandleFunc("DELETE /api/memory/{name}", s.handleDeleteFact)
 	mux.HandleFunc("GET /api/mcp", s.handleMCP)
 	mux.HandleFunc("POST /api/mcp/{server}/reconnect", s.handleReconnect)
 	mux.HandleFunc("GET /static/{file}", s.handleStatic)

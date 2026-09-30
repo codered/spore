@@ -39,6 +39,15 @@ var Types = []string{"user", "feedback", "project", "reference"}
 // from per-file errors, so it preserves cached facts on directory-level failures.
 var ErrReadDir = errors.New("read memory dir")
 
+// ErrNoFact is Delete's answer for a name with no file. The message stays
+// the one callers have always shown.
+var ErrNoFact = errors.New("no such fact")
+
+type noFactError struct{ name string }
+
+func (e noFactError) Error() string        { return fmt.Sprintf("no fact named %q", e.name) }
+func (e noFactError) Is(target error) bool { return target == ErrNoFact }
+
 // nameRE is deliberately narrower than "a legal filename": lowercase kebab
 // only. The model chooses this string, and it becomes a path, so anything
 // that could traverse, collide case-insensitively, or need quoting is out.
@@ -233,7 +242,7 @@ func Delete(dir, name string) error {
 	}
 	if err := os.Remove(path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("no fact named %q", name)
+			return noFactError{name: name}
 		}
 		return err
 	}
