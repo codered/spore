@@ -278,4 +278,39 @@ from their first message on the `title` router site, and fixed
 
 The manual gate in that spec (§7) was covered by a headless browser run
 against a scripted daemon, not by hand. Policy, MCP and memory views are
-still absent from the web UI until TUI spec 2a-2 adds their endpoints.
+still absent from the web UI; their endpoints shipped with TUI 2a-2 (`/api/policy`, `/api/mcp`, `/api/memory`), so they are a web-only follow-up.
+
+## TUI views 2a-2: shipped
+
+MCP (`C`), policy (`P`) and memory (`M`) views, with reconnect, revoke and
+delete-fact. Design: `docs/superpowers/specs/2026-09-29-tui-views-2a2-design.md`.
+
+It also fixed a bug that predates it: a rule learned with `p` was written to
+`config.toml` but did not apply until the daemon restarted. The guard now
+holds its engine behind an atomic pointer, and a `policy.Reloader` rewrites
+the managed block, re-reads only that block and swaps in a rebuilt engine.
+Hand edits elsewhere in `config.toml` still need a restart, on purpose.
+
+Operator actions are audited as `operator action` log lines with
+`actor=<X-Spore-Client>`, not approval rows: `approvals.session_id` must name
+a session, and a view has none.
+
+## A pattern answer cannot outrank a hand-written ask
+
+Open. Found while building 2a-2. `p` ("always allow this pattern") writes a
+learned allow rule, and learned rules are evaluated after hand-written ones,
+so a rule the user typed always outranks one an approval prompt wrote. The
+default config lists `fs_write`, `shell_exec`, `schedule_create`,
+`schedule_cancel`, `mcp__*`, `memory`, `skill_install` and `agent_note` as
+hand-written `ask` rules, so a `p` answer on any of them is written to
+`config.toml` and never applies, before or after a restart. The live engine
+swap from 2a-2 helps only tools that reach the profile default.
+
+**Open questions**
+
+1. Should a learned allow outrank a hand-written ask for the same tool, or
+   should `p` refuse (or explain) when a hand-written ask would shadow the
+   rule it is about to write? Changing the order loosens policy, so it is a
+   decision, not a fix.
+2. Should the approval prompt stop offering `p` for a call whose deciding
+   rule is a hand-written ask?
