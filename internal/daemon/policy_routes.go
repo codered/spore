@@ -47,6 +47,8 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		Decision string `json:"decision"`
 		Rule     string `json:"rule"`
 	}
+	// A revoke body is one rule; anything larger is not a request this route serves.
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "body must be {\"decision\", \"rule\"}: %v", err)
 		return

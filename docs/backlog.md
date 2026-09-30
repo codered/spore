@@ -300,11 +300,12 @@ a session, and a view has none.
 Open. Found while building 2a-2. `p` ("always allow this pattern") writes a
 learned allow rule, and learned rules are evaluated after hand-written ones,
 so a rule the user typed always outranks one an approval prompt wrote. The
-default config lists `fs_write`, `shell_exec`, `schedule_create`,
-`schedule_cancel`, `mcp__*`, `memory`, `skill_install` and `agent_note` as
-hand-written `ask` rules, so a `p` answer on any of them is written to
-`config.toml` and never applies, before or after a restart. The live engine
-swap from 2a-2 helps only tools that reach the profile default.
+default config lists `fs_write`, `fs_edit`, `shell_exec`,
+`schedule_create`, `schedule_cancel`, `mcp__*`, `memory`, `skill_install`
+and `agent_note` as hand-written `ask` rules, so a `p` answer on any of
+them is written to `config.toml` and never applies, before or after a
+restart. The live engine swap from 2a-2 helps only tools that reach the
+profile default.
 
 **Open questions**
 
@@ -314,3 +315,20 @@ swap from 2a-2 helps only tools that reach the profile default.
    decision, not a fix.
 2. Should the approval prompt stop offering `p` for a call whose deciding
    rule is a hand-written ask?
+
+## Operator routes share the daemon's unauthenticated API
+
+Open. Found in the 2a-2 review. Revoke, reconnect and delete-fact are HTTP
+routes on the local daemon, which has no authentication, the same trust as
+every other route. Anything that can reach the daemon's address can call
+them, including a model whose `shell_exec` a human approved for the session:
+`curl -X DELETE` against `/api/policy/learned` would revoke a learned deny,
+which loosens policy. Baseline deny rules cannot be revoked this way.
+
+**Open questions**
+
+1. Should the baseline deny reach the daemon's own address from
+   `shell_exec` and `web_*` (for example `curl`/`wget` to the configured
+   `daemon.addr`)?
+2. Should the daemon require a per-process token, or check `Host`/`Origin`,
+   so only its own clients can call state-changing routes?

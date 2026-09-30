@@ -131,3 +131,67 @@ func TestRevokeWithoutAReloaderIs503(t *testing.T) {
 		t.Errorf("GET without a guard = %d, want 503", code)
 	}
 }
+
+func TestRevokeRefusesBaselineAndConfigRules(t *testing.T) {
+	s, ts := newTestServer(t)
+	attachPolicy(t, s)
+
+	// Get the policy list to find baseline and config rules
+	code, body := send(t, "GET", ts.URL+"/api/policy", nil)
+	if code != 200 {
+		t.Fatalf("GET = %d %s", code, body)
+	}
+	var got PolicyJSON
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatal(err)
+	}
+
+	var rulesToTest []*PolicyRuleJSON
+	for i := range got.Rules {
+		if got.Rules[i].Source == "baseline" || got.Rules[i].Source == "config" {
+			rulesToTest = append(rulesToTest, &got.Rules[i])
+			if len(rulesToTest) >= 2 {
+				break
+			}
+		}
+	}
+	if len(rulesToTest) == 0 {
+		t.Fatal("no baseline or config rules found in policy")
+	}
+
+	// Try to revoke each rule - should fail
+	for _, rule := range rulesToTest {
+		code, body = send(t, "DELETE", ts.URL+"/api/policy/learned",
+			map[string]string{"decision": rule.Decision, "rule": rule.Rule})
+		if code != 404 || !strings.Contains(body, "only rules added with p can be revoked here") {
+			t.Errorf("revoke %s rule %s = %d %s, want 404 with message", rule.Source, rule.Rule, code, body)
+		}
+
+		// Verify the rule is still there
+		code, body = send(t, "GET", ts.URL+"/api/policy", nil)
+		if code != 200 {
+			t.Fatalf("GET after revoke = %d %s", code, body)
+		}
+		var updatedPolicy PolicyJSON
+		if err := json.Unmarshal([]byte(body), &updatedPolicy); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, r := range updatedPolicy.Rules {
+			if r.Rule == rule.Rule && r.Source == rule.Source {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%s rule %s disappeared after failed revoke", rule.Source, rule.Rule)
+		}
+	}
+
+	// Test oversized body
+	oversized := map[string]string{"decision": "deny", "rule": strings.Repeat("a", 70*1024)}
+	code, _ = send(t, "DELETE", ts.URL+"/api/policy/learned", oversized)
+	if code != 400 {
+		t.Errorf("oversized body = %d, want 400", code)
+	}
+}
