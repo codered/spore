@@ -366,6 +366,12 @@ func PatternFor(c Call, workspace string) (string, bool) {
 	if len(paths) != 1 {
 		return "", false
 	}
+	// Without a workspace there is no root to refuse below, and a file
+	// directly in the home directory would learn all of it.
+	ws, err := Resolve(workspace, workspace)
+	if err != nil {
+		return "", false
+	}
 	abs, err := Resolve(workspace, paths[0])
 	if err != nil || !filepath.IsAbs(abs) {
 		return "", false
@@ -376,7 +382,7 @@ func PatternFor(c Call, workspace string) (string, bool) {
 	}
 	// A file at the workspace root has no directory narrower than the whole
 	// workspace, and the local workspace defaults to the home directory.
-	if ws, err := Resolve(workspace, workspace); err == nil && dir == ws {
+	if dir == ws {
 		return "", false
 	}
 	// The rule syntax reads * and ? as wildcards and a comma as a list

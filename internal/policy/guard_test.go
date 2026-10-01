@@ -820,3 +820,35 @@ func TestPatternForRefusesNamesTheRuleCannotSayLiterally(t *testing.T) {
 		}
 	}
 }
+
+// GlobSource quoted the glob a byte at a time through string(byte), which
+// re-encodes every byte above 0x7f as a two-byte rune: any rule naming a
+// non-ASCII directory was saved and never matched.
+func TestPathGlobsMatchNonASCIINames(t *testing.T) {
+	for _, dir := range []string{"héllo", "日本", "naïve café"} {
+		re, err := compilePathGlob("/ws/" + dir + "/**")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !re.MatchString("/ws/" + dir + "/f.go") {
+			t.Errorf("/ws/%s/** does not match a file inside it", dir)
+		}
+	}
+	ws := realTempDir(t)
+	rule, ok := PatternFor(Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"héllo/a.go"}`)}, ws)
+	if !ok {
+		t.Fatal("no pattern for a non-ASCII directory")
+	}
+	e := engine(t, config.PolicyConfig{Workspace: ws, Learned: config.LearnedPolicy{Allow: []string{rule}}})
+	if got := e.Evaluate(Session{Profile: ProfileLocal, Workspace: ws}, Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"héllo/b.go"}`)}); got.Decision != DecisionAllow {
+		t.Errorf("learned %q: decision %s by %q, want allow", rule, got.Decision, got.Rule)
+	}
+}
+
+// Without a workspace there is no root to refuse, and an absolute path
+// directly in the home directory would learn all of it.
+func TestPatternForNeedsAWorkspace(t *testing.T) {
+	if got, ok := PatternFor(Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"/ws/src/a.go"}`)}, ""); ok || got != "" {
+		t.Errorf("PatternFor with no workspace = (%q, %v), want no pattern", got, ok)
+	}
+}
