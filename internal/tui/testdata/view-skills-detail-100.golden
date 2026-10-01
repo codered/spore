@@ -1,4 +1,4 @@
- spore   chat  skills S  agents A  usage U  jobs J  refinements R                                   
+ spore   chat  skills S  agents A  usage U  jobs J  refinements R  mcp C  policy P  memory M        
 ┏━ skills(3) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃debug                                                                                             ┃
 ┃systematic debugging                                                                              ┃

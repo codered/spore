@@ -1,0 +1,24 @@
+ spore   chat  skills S  agents A  usage U  jobs J  refinements R  mcp C  policy P  memory M        
+┏━ policy(3) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃PROFILE  DECISION  SOURCE    RULE                                                                 ┃
+┃local    deny      baseline  fs_*(path outside workspace)                                         ┃
+┃local    allow     config    fs_read                                                              ┃
+┃local    deny      learned   probe                                                                ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+ NORMAL  enter open  / filter  s sort  x revoke  esc back                                           

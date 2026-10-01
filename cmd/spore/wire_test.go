@@ -49,7 +49,7 @@ func TestBuildAgentRegistersConfiguredProviders(t *testing.T) {
 	}
 	cfg.Routes = []config.Route{{When: "compaction|title|classify", Model: "ollama/qwen3:8b"}}
 
-	a, _, _, _, err := buildAgent(cfg, st, terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout})
+	a, _, err := buildAgent(cfg, st, terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout})
 	if err != nil {
 		t.Fatalf("buildAgent: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestBuildAgentRejectsUnknownProviderKind(t *testing.T) {
 	cfg.DefaultModel = "weird/model"
 	cfg.Providers = map[string]config.ProviderConfig{"weird": {Kind: "telepathy"}}
 
-	if _, _, _, _, err := buildAgent(cfg, st, terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout}); err == nil {
+	if _, _, err := buildAgent(cfg, st, terminalApprover{lines: scannerLines{sc: stdinLines}, out: os.Stdout}); err == nil {
 		t.Fatal("buildAgent accepted an unknown provider kind")
 	}
 }
@@ -185,10 +185,11 @@ workspace = "`+dir+`"
 	}
 	defer st.Close()
 
-	a, host, _, _, err := buildAgent(cfg, st, allowApprover{})
+	a, parts, err := buildAgent(cfg, st, allowApprover{})
 	if err != nil {
 		t.Fatalf("buildAgent: %v", err)
 	}
+	host := parts.host
 	if host != nil {
 		defer host.Close()
 	}
@@ -272,10 +273,11 @@ workspace = "`+dir+`"
 
 	// First startup: the directory is readable, so the fact gets indexed
 	// the ordinary way.
-	_, host, _, _, err := buildAgent(cfg, st, allowApprover{})
+	_, parts, err := buildAgent(cfg, st, allowApprover{})
 	if err != nil {
 		t.Fatalf("buildAgent: %v", err)
 	}
+	host := parts.host
 	if host != nil {
 		host.Close()
 	}
@@ -290,10 +292,11 @@ workspace = "`+dir+`"
 	t.Cleanup(func() { os.Chmod(memDir, 0o700) })
 
 	// Second startup: the directory is unreadable. Spore must still start.
-	_, host2, _, _, err := buildAgent(cfg, st, allowApprover{})
+	_, parts2, err := buildAgent(cfg, st, allowApprover{})
 	if err != nil {
 		t.Fatalf("buildAgent failed to start with an unreadable fact directory: %v", err)
 	}
+	host2 := parts2.host
 	if host2 != nil {
 		defer host2.Close()
 	}

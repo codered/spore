@@ -48,6 +48,10 @@ type Server struct {
 	// refiner runs continual refinement. Nil means the routes answer 503.
 	refiner *refine.Refiner
 
+	// op holds the operator views' subsystems. Its nil fields make their
+	// routes answer 503.
+	op Operator
+
 	// titler names sessions from their first message. Nil means sessions
 	// are named from the message's first line instead.
 	titler Titler
@@ -168,6 +172,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleCancelJob)
 	mux.HandleFunc("GET /api/jobs/{id}/runs", s.handleJobRuns)
 	mux.HandleFunc("GET /api/usage", s.handleUsage)
+	mux.HandleFunc("GET /api/policy", s.handlePolicy)
+	mux.HandleFunc("DELETE /api/policy/learned", s.handleRevoke)
+	mux.HandleFunc("GET /api/memory", s.handleMemory)
+	mux.HandleFunc("DELETE /api/memory/{name}", s.handleDeleteFact)
+	mux.HandleFunc("GET /api/mcp", s.handleMCP)
+	mux.HandleFunc("POST /api/mcp/{server}/reconnect", s.handleReconnect)
 	mux.HandleFunc("GET /static/{file}", s.handleStatic)
 	mux.HandleFunc("GET /", s.handleIndex)
 	return mux

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -132,4 +133,79 @@ func waitFor(t *testing.T, limit time.Duration, cond func() bool, msg string) {
 		time.Sleep(15 * time.Millisecond)
 	}
 	t.Fatal(msg)
+}
+
+func genOf(h *Host, name string) uint64 {
+	for _, st := range h.servers {
+		if st.cfg.Name == name {
+			st.mu.RLock()
+			defer st.mu.RUnlock()
+			return st.gen
+		}
+	}
+	return 0
+}
+
+func stateOf(h *Host, name string) string {
+	for _, s := range h.Status() {
+		if s.Name == name {
+			return s.State
+		}
+	}
+	return ""
+}
+
+func TestRedialReconnectsOnlyTheNamedServer(t *testing.T) {
+	bin := buildProbe(t)
+	h := New(config.MCPConfig{Servers: []config.MCPServer{
+		{Name: "a", Transport: "stdio", Command: bin},
+		{Name: "b", Transport: "stdio", Command: bin},
+	}}, t.TempDir(), slog.New(slog.DiscardHandler))
+	h.backoffMin, h.backoffMax = 10*time.Millisecond, 50*time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	wait := Supervise(ctx, h)
+	defer func() { cancel(); wait() }()
+
+	waitFor(t, 20*time.Second, func() bool { return stateOf(h, "a") == StateUp && stateOf(h, "b") == StateUp }, "servers never came up")
+	a0, b0 := genOf(h, "a"), genOf(h, "b")
+
+	if err := h.Redial("a"); err != nil {
+		t.Fatal(err)
+	}
+	// Two quick presses must not start a second dialler.
+	_ = h.Redial("a")
+	waitFor(t, 20*time.Second, func() bool { return genOf(h, "a") >= a0+2 && stateOf(h, "a") == StateUp }, "a was never redialled")
+	if genOf(h, "b") != b0 {
+		t.Error("redialling a touched b")
+	}
+}
+
+func TestRedialWakesABackoffSleep(t *testing.T) {
+	h := New(config.MCPConfig{Servers: []config.MCPServer{
+		{Name: "a", Transport: "stdio", Command: filepath.Join(t.TempDir(), "missing")},
+	}}, t.TempDir(), slog.New(slog.DiscardHandler))
+	h.backoffMin, h.backoffMax = time.Hour, time.Hour
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	wait := Supervise(ctx, h)
+	defer func() { cancel(); wait() }()
+
+	waitFor(t, 10*time.Second, func() bool { return genOf(h, "a") >= 1 }, "the first dial never failed")
+	g0 := genOf(h, "a")
+	if err := h.Redial("a"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 5*time.Second, func() bool { return genOf(h, "a") > g0 }, "redial did not wake the hour-long backoff")
+}
+
+func TestRedialUnknownAndClosed(t *testing.T) {
+	h := New(config.MCPConfig{Servers: []config.MCPServer{{Name: "a", Transport: "stdio", Command: "x"}}}, t.TempDir(), nil)
+	if err := h.Redial("nope"); !errors.Is(err, ErrUnknownServer) {
+		t.Errorf("err = %v, want ErrUnknownServer", err)
+	}
+	h.Close()
+	if err := h.Redial("a"); err != nil {
+		t.Errorf("redial after close = %v, want nil", err)
+	}
 }

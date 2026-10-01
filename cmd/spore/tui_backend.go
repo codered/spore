@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -129,6 +131,10 @@ func viewErr(err error) error {
 	if err != nil && strings.HasSuffix(err.Error(), ": 404 Not Found") {
 		return tui.ErrOlderDaemon
 	}
+	var he *httpError
+	if errors.As(err, &he) && he.Status == http.StatusServiceUnavailable {
+		return tui.Unavailable{Msg: he.Msg}
+	}
 	return err
 }
 
@@ -221,4 +227,38 @@ func (b tuiBackend) RejectRefinement(ctx context.Context, id int64) error {
 
 func (b tuiBackend) RollbackRound(ctx context.Context, sessionID, roundID string) error {
 	return viewErr(b.c.do(ctx, "POST", "/api/sessions/"+sessionID+"/refine/rollback", map[string]string{"round_id": roundID}, nil))
+}
+
+func (b tuiBackend) MCP(ctx context.Context) ([]daemon.MCPServerJSON, error) {
+	var out []daemon.MCPServerJSON
+	err := b.c.do(ctx, "GET", "/api/mcp", nil, &out)
+	return out, viewErr(err)
+}
+
+func (b tuiBackend) Reconnect(ctx context.Context, server string) error {
+	return viewErr(b.c.do(ctx, "POST", "/api/mcp/"+url.PathEscape(server)+"/reconnect", nil, nil))
+}
+
+func (b tuiBackend) Policy(ctx context.Context) (daemon.PolicyJSON, error) {
+	var out daemon.PolicyJSON
+	err := b.c.do(ctx, "GET", "/api/policy", nil, &out)
+	return out, viewErr(err)
+}
+
+func (b tuiBackend) Revoke(ctx context.Context, decision, rule string) error {
+	return viewErr(b.c.do(ctx, "DELETE", "/api/policy/learned", map[string]string{"decision": decision, "rule": rule}, nil))
+}
+
+func (b tuiBackend) Memory(ctx context.Context, query string) (daemon.MemoryJSON, error) {
+	var out daemon.MemoryJSON
+	path := "/api/memory"
+	if query != "" {
+		path += "?q=" + url.QueryEscape(query)
+	}
+	err := b.c.do(ctx, "GET", path, nil, &out)
+	return out, viewErr(err)
+}
+
+func (b tuiBackend) DeleteFact(ctx context.Context, name string) error {
+	return viewErr(b.c.do(ctx, "DELETE", "/api/memory/"+url.PathEscape(name), nil, nil))
 }

@@ -2,6 +2,7 @@ package policy
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -366,5 +367,64 @@ func TestOnlyTheMCPRuleFillsResultDetail(t *testing.T) {
 	allowRes := e.Evaluate(sess, Call{Tool: "fs_read", Args: json.RawMessage(`{"path":"/ws/a"}`)})
 	if allowRes.Detail != "" {
 		t.Errorf("allow Detail = %q, want empty", allowRes.Detail)
+	}
+}
+
+func TestRulesTagSourcesInEvaluationOrder(t *testing.T) {
+	base := config.BaselineDeny()[0]
+	e := engine(t, config.PolicyConfig{
+		Deny:    []string{base, "shell_exec(matches curl)"},
+		Allow:   []string{"fs_read"},
+		Ask:     []string{"fs_write"},
+		Learned: config.LearnedPolicy{Allow: []string{"web_fetch"}, Deny: []string{"shell_exec(matches wget)"}},
+		Profiles: map[string]config.ProfilePolicy{
+			"remote": {Deny: []string{"memory"}},
+		},
+	})
+	var got []string
+	for _, r := range e.Rules() {
+		got = append(got, fmt.Sprintf("%s %s %s %s", r.Profile, r.Decision, r.Source, r.Rule))
+	}
+	want := []string{
+		"local deny baseline " + base,
+		"local deny config shell_exec(matches curl)",
+		"local deny learned shell_exec(matches wget)",
+		"local allow config fs_read",
+		"local ask config fs_write",
+		"local allow learned web_fetch",
+		"local ask config (default)",
+		"remote deny baseline " + base,
+		"remote deny config shell_exec(matches curl)",
+		"remote deny config memory",
+		"remote deny learned shell_exec(matches wget)",
+		"remote allow config fs_read",
+		"remote ask config fs_write",
+		"remote ask config (default)",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("rules:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestProfilesPutLocalFirst(t *testing.T) {
+	e := engine(t, config.PolicyConfig{Profiles: map[string]config.ProfilePolicy{"zeta": {}, "remote": {}, "local": {}}})
+	got := fmt.Sprint(e.Profiles())
+	if got != "[local remote zeta]" {
+		t.Errorf("Profiles() = %s", got)
+	}
+}
+
+func TestToolDecisionFlagsArgumentRules(t *testing.T) {
+	e := engine(t, config.PolicyConfig{
+		Allow: []string{"mcp__gh__*"},
+		Ask:   []string{"mcp__fs__*(any path outside workspace)"},
+	})
+	res, dep := e.ToolDecision(ProfileLocal, "mcp__gh__search")
+	if res.Decision != DecisionAllow || res.Rule != "mcp__gh__*" || dep {
+		t.Errorf("gh: %+v dep=%v", res, dep)
+	}
+	res, dep = e.ToolDecision(ProfileLocal, "mcp__fs__read")
+	if res.Decision != DecisionAsk || !dep {
+		t.Errorf("fs: %+v dep=%v, want ask and depends on args", res, dep)
 	}
 }

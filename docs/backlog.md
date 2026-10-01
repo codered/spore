@@ -278,4 +278,85 @@ from their first message on the `title` router site, and fixed
 
 The manual gate in that spec (§7) was covered by a headless browser run
 against a scripted daemon, not by hand. Policy, MCP and memory views are
-still absent from the web UI until TUI spec 2a-2 adds their endpoints.
+still absent from the web UI; their endpoints shipped with TUI 2a-2 (`/api/policy`, `/api/mcp`, `/api/memory`), so they are a web-only follow-up.
+
+## TUI views 2a-2: shipped
+
+MCP (`C`), policy (`P`) and memory (`M`) views, with reconnect, revoke and
+delete-fact. Design: `docs/superpowers/specs/2026-09-29-tui-views-2a2-design.md`.
+
+It also fixed a bug that predates it: a rule learned with `p` was written to
+`config.toml` but did not apply until the daemon restarted. The guard now
+holds its engine behind an atomic pointer, and a `policy.Reloader` rewrites
+the managed block, re-reads only that block and swaps in a rebuilt engine.
+Hand edits elsewhere in `config.toml` still need a restart, on purpose.
+
+Operator actions are audited as `operator action` log lines with
+`actor=<X-Spore-Client>`, not approval rows: `approvals.session_id` must name
+a session, and a view has none.
+
+## A pattern answer cannot outrank a hand-written ask
+
+Open. Found while building 2a-2. `p` ("always allow this pattern") writes a
+learned allow rule, and learned rules are evaluated after hand-written ones,
+so a rule the user typed always outranks one an approval prompt wrote. The
+default config lists `fs_write`, `fs_edit`, `shell_exec`,
+`schedule_create`, `schedule_cancel`, `mcp__*`, `memory`, `skill_install`
+and `agent_note` as hand-written `ask` rules, so a `p` answer on any of
+them is written to `config.toml` and never applies, before or after a
+restart. The live engine swap from 2a-2 helps only tools that reach the
+profile default.
+
+In practice that is every prompt. `p` is offered only for a call with
+exactly one path argument, and every tool that takes one is decided before
+a learned rule is reached: the `fs_read` family is a hand-written allow,
+and `fs_write`, `fs_edit` and `mcp__*` are hand-written asks. Checked
+against a real config with `spore policy check`: a learned
+`fs_write(path matches uuid-server/**)` sat in the managed block while
+every `fs_write` into `uuid-server/` still asked, by the rule `fs_write`.
+
+**Open questions**
+
+1. Should a learned allow outrank a hand-written ask for the same tool, or
+   should `p` refuse (or explain) when a hand-written ask would shadow the
+   rule it is about to write? Changing the order loosens policy, so it is a
+   decision, not a fix.
+2. Should the approval prompt stop offering `p` for a call whose deciding
+   rule is a hand-written ask?
+
+## A learned pattern keeps the path form the model used
+
+Open. Found while testing 2a-2. `PatternFor` builds the rule from the
+call's path argument as written, so a call with `uuid-server/a.txt` learns
+`fs_write(path matches uuid-server/**)` and a call with an absolute path
+learns an absolute glob. Matching then depends on the next call using the
+same form. Checked with `spore policy check` on a config where `fs_write`
+reaches the default: the relative rule allowed `uuid-server/a.txt` and
+still asked for `<workspace>/uuid-server/a.txt`, the same file. The
+approval says "always", and it holds only while the model happens to spell
+the path the same way.
+
+**Open questions**
+
+1. Should `PatternFor` resolve the path against the session workspace
+   before writing the rule, so every learned path rule is absolute?
+2. Should `path matches` resolve a relative argument against the workspace
+   before matching, so existing relative rules keep working? Both may be
+   needed: the first fixes new rules, the second the ones already written.
+
+## Operator routes share the daemon's unauthenticated API
+
+Open. Found in the 2a-2 review. Revoke, reconnect and delete-fact are HTTP
+routes on the local daemon, which has no authentication, the same trust as
+every other route. Anything that can reach the daemon's address can call
+them, including a model whose `shell_exec` a human approved for the session:
+`curl -X DELETE` against `/api/policy/learned` would revoke a learned deny,
+which loosens policy. Baseline deny rules cannot be revoked this way.
+
+**Open questions**
+
+1. Should the baseline deny reach the daemon's own address from
+   `shell_exec` and `web_*` (for example `curl`/`wget` to the configured
+   `daemon.addr`)?
+2. Should the daemon require a per-process token, or check `Host`/`Origin`,
+   so only its own clients can call state-changing routes?

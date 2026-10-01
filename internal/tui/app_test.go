@@ -49,6 +49,14 @@ type fakeBackend struct {
 	rejected    []int64
 	rolledBack  []string
 	refined     []string
+
+	mcp           []daemon.MCPServerJSON
+	policy        daemon.PolicyJSON
+	memory        daemon.MemoryJSON
+	memoryQueries []string
+	reconnected   []string
+	revoked       []string
+	deletedFacts  []string
 }
 
 func (f *fakeBackend) Sessions(context.Context) ([]daemon.SessionJSON, error) { return f.sessions, nil }
@@ -179,6 +187,45 @@ func (f *fakeBackend) RefineRollback(_ context.Context, id string) (string, erro
 	defer f.mu.Unlock()
 	f.rolledBack = append(f.rolledBack, id+":latest")
 	return "rolled back 1", nil
+}
+
+func (f *fakeBackend) MCP(context.Context) ([]daemon.MCPServerJSON, error) {
+	f.fetched()
+	return f.mcp, f.viewErr
+}
+
+func (f *fakeBackend) Reconnect(_ context.Context, server string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reconnected = append(f.reconnected, server)
+	return nil
+}
+
+func (f *fakeBackend) Policy(context.Context) (daemon.PolicyJSON, error) {
+	f.fetched()
+	return f.policy, f.viewErr
+}
+
+func (f *fakeBackend) Revoke(_ context.Context, decision, rule string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.revoked = append(f.revoked, decision+" "+rule)
+	return nil
+}
+
+func (f *fakeBackend) Memory(_ context.Context, query string) (daemon.MemoryJSON, error) {
+	f.fetched()
+	f.mu.Lock()
+	f.memoryQueries = append(f.memoryQueries, query)
+	f.mu.Unlock()
+	return f.memory, f.viewErr
+}
+
+func (f *fakeBackend) DeleteFact(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deletedFacts = append(f.deletedFacts, name)
+	return nil
 }
 
 func newTestModel(t *testing.T, fb *fakeBackend, selected string) *Model {
@@ -984,5 +1031,15 @@ func TestSlashRefinePassesInstructionsAndRollback(t *testing.T) {
 	}
 	if len(fb.rolledBack) != 1 || fb.rolledBack[0] != "s1:latest" {
 		t.Fatalf("rolledBack = %v", fb.rolledBack)
+	}
+}
+
+func TestColonMemoryWithAQueryOpensTheSearch(t *testing.T) {
+	fb := &fakeBackend{}
+	m := newTestModel(t, fb, "a1b2c3")
+	run(m, tea.WindowSizeMsg{Width: 100, Height: 24})
+	m.command("memory tabs")
+	if m.table == nil || m.table.res.Name() != `memory · "tabs"` {
+		t.Fatalf("open view = %v", m.table)
 	}
 }

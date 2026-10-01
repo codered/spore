@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/codered/spore/internal/provider"
@@ -118,7 +119,7 @@ func WorkspaceFrom(ctx context.Context) string { return SessionFrom(ctx).Workspa
 // Guard evaluates every call before the wrapped runner sees it.
 type Guard struct {
 	inner    Runner
-	engine   *Engine
+	engine   atomic.Pointer[Engine]
 	approver Approver
 	store    *store.Store
 	// learn persists a rule accepted with ScopePattern. Nil disables the
@@ -127,8 +128,21 @@ type Guard struct {
 }
 
 func NewGuard(inner Runner, e *Engine, ap Approver, st *store.Store, learn func(Decision, string) error) *Guard {
-	return &Guard{inner: inner, engine: e, approver: ap, store: st, learn: learn}
+	g := &Guard{inner: inner, approver: ap, store: st, learn: learn}
+	g.engine.Store(e)
+	return g
 }
+
+// Engine is the engine calls are evaluated against now.
+func (g *Guard) Engine() *Engine { return g.engine.Load() }
+
+// SetEngine replaces the engine for every call that starts after it returns.
+func (g *Guard) SetEngine(e *Engine) { g.engine.Store(e) }
+
+// SetLearn replaces how a pattern answer is persisted. It is not
+// synchronised: call it before any turn can run, as the daemon does while it
+// is being wired.
+func (g *Guard) SetLearn(f func(Decision, string) error) { g.learn = f }
 
 func (g *Guard) Specs() []provider.ToolSpec { return g.inner.Specs() }
 func (g *Guard) ReadOnly(name string) bool  { return g.inner.ReadOnly(name) }
@@ -168,8 +182,9 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 		return denied(call.ID, "refusing %s: no workspace on the session context. Do not retry this call; choose another approach.", call.Name)
 	}
 
+	eng := g.engine.Load()
 	c := Call{Tool: call.Name, Args: call.Input}
-	res := g.engine.Evaluate(sess, c)
+	res := eng.Evaluate(sess, c)
 	sporetrace.RecordPolicy(ctx, string(res.Decision), res.Rule)
 
 	switch res.Decision {
@@ -218,7 +233,7 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 
 	// An approval nobody answers denies, so a turn started from a phone
 	// cannot sit half-executed forever.
-	askCtx, cancel := context.WithTimeout(ctx, g.engine.ApprovalTimeout())
+	askCtx, cancel := context.WithTimeout(ctx, eng.ApprovalTimeout())
 	defer cancel()
 
 	// The approval must be published to the root's topic so clients actually
@@ -259,7 +274,7 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 			_ = g.store.RecordApproval(book, sess.ID, call.Name, call.Input, "deny", "timeout")
 		}
 		sporetrace.RecordPolicy(ctx, "deny", "approval timed out")
-		return denied(call.ID, "approval for %s timed out after %s and was denied", call.Name, g.engine.ApprovalTimeout())
+		return denied(call.ID, "approval for %s timed out after %s and was denied", call.Name, eng.ApprovalTimeout())
 	case err != nil:
 		// Same as the timeout branch: resolve the suspension so it cannot be
 		// answered a second time. Unlike timeout, the error case writes no

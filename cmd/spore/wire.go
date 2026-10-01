@@ -102,9 +102,18 @@ func buildRecall(cfg *config.Config, st *store.Store, log *slog.Logger) (recall.
 		mirror.New(st, vector, weaviaterecall.Name, log), nil
 }
 
+// agentParts is what buildAgent builds besides the agent that the daemon
+// also needs.
+type agentParts struct {
+	host   *mcphost.Host
+	mirror *mirror.Mirror
+	sup    *subagent.Supervisor
+	recall recall.Recall
+}
+
 // buildAgent turns configuration into a wired agent. Plan 1 registers no
 // tools, so the agent runs text-only turns; Plan 2 passes a real ToolRunner.
-func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (*agent.Agent, *mcphost.Host, *mirror.Mirror, *subagent.Supervisor, error) {
+func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (*agent.Agent, agentParts, error) {
 	reg := provider.NewRegistry()
 	for name, pc := range cfg.Providers {
 		price := provider.ProviderPrice{
@@ -120,16 +129,16 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 			reg.Register(name, anthropic.New(pc.BaseURL, pc.APIKey, ws, pc.CacheEnabled(), nil), price)
 		case "openai", "openai-compatible":
 			if pc.BaseURL == "" {
-				return nil, nil, nil, nil, fmt.Errorf("provider %q: base_url is required for kind %q", name, pc.Kind)
+				return nil, agentParts{}, fmt.Errorf("provider %q: base_url is required for kind %q", name, pc.Kind)
 			}
 			reg.Register(name, openaicompat.New(pc.BaseURL, pc.APIKey, nil), price)
 		default:
-			return nil, nil, nil, nil, fmt.Errorf("provider %q: unknown kind %q (want anthropic or openai)", name, pc.Kind)
+			return nil, agentParts{}, fmt.Errorf("provider %q: unknown kind %q (want anthropic or openai)", name, pc.Kind)
 		}
 	}
 	rt, err := router.New(cfg.Routes, cfg.DefaultModel)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, agentParts{}, err
 	}
 
 	// The fact cache is loaded once here; the memory tool reloads it after
@@ -173,7 +182,7 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 
 	recallBackend, mir, err := buildRecall(cfg, st, slog.Default())
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, agentParts{}, err
 	}
 	// The same cache set feeds the skill tools and the prompt index: buildTools
 	// registers the tools around it, and Snapshot reads it every turn.
@@ -189,7 +198,7 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 
 	tools, host, err := buildTools(cfg, st, facts, recallBackend, skillsCache, sup, approver, ref)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, agentParts{}, err
 	}
 	a := agent.New(st, reg, rt, cfg, tools)
 	a.Facts = facts
@@ -197,7 +206,7 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	a.Env = workspace.NewDescribers().Describe
 	a.Refine = ref
 	sup.Attach(a)
-	return a, host, mir, sup, nil
+	return a, agentParts{host: host, mirror: mir, sup: sup, recall: recallBackend}, nil
 }
 
 // buildServer wires the daemon. The ordering here is load-bearing: the guard
@@ -206,7 +215,7 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 // tools have been built around the server's broker.
 func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, *mcphost.Host, *mirror.Mirror, error) {
 	srv := daemon.New(daemon.Options{Store: st, Cfg: cfg})
-	a, host, mir, sup, err := buildAgent(cfg, st, srv.Approver())
+	a, parts, err := buildAgent(cfg, st, srv.Approver())
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -214,8 +223,13 @@ func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, *mcphost.
 	if !ok {
 		return nil, nil, nil, fmt.Errorf("internal: agent tools are %T, want *policy.Guard", a.Tools)
 	}
+	// A learned rule is live the moment it is written: the reloader rewrites
+	// the managed block and swaps a rebuilt engine into this guard. Set
+	// before any turn can run.
+	reloader := policy.NewReloader(cfg.Path, cfg.Policy, guard)
+	guard.SetLearn(reloader.Learn)
 	srv.Attach(a, guard)
-	srv.AttachSubagents(sup)
+	srv.AttachSubagents(parts.sup)
 	ref, ok := a.Refine.(*refine.Refiner)
 	if !ok {
 		return nil, nil, nil, fmt.Errorf("internal: agent refine hook is %T, want *refine.Refiner", a.Refine)
@@ -225,7 +239,12 @@ func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, *mcphost.
 	// Sessions are named on the router's title site, from the same registry
 	// and rules every other call uses.
 	srv.AttachTitler(title.New(ref.Registry, ref.Router))
-	return srv, host, mir, nil
+	op := daemon.Operator{Policy: reloader, Facts: a.Facts, FactIndex: st, Recall: parts.recall}
+	if parts.host.Configured() {
+		op.MCP = parts.host
+	}
+	srv.AttachOperator(op)
+	return srv, parts.host, parts.mirror, nil
 }
 
 // buildBridge constructs the Discord bridge, or reports (nil, nil) when it is

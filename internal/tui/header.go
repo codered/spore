@@ -15,14 +15,15 @@ func (m *Model) bodyHeight() int { return max(1, m.height-2) }
 // headerView is the top nav: the brand, a tab per screen with the one on
 // show lit, and on the right the signals that concern every session.
 func (m *Model) headerView() string {
-	right := m.globalFacts(true)
 	left := m.tabBar(true)
+	right := m.globalFacts(true)
 	if lipgloss.Width(left)+lipgloss.Width(right)+1 > m.width {
-		// Narrow: the names matter more than the letters, which ? lists.
-		left = m.tabBar(false)
+		// The daemon label is the least useful fact on the line, so it drops
+		// first. Then the names matter more than the letters, which ? lists.
+		right = m.globalFacts(false)
 	}
 	if lipgloss.Width(left)+lipgloss.Width(right)+1 > m.width {
-		right = m.globalFacts(false)
+		left = m.tabBar(false)
 	}
 	return fitRow(left, right, m.width)
 }

@@ -84,3 +84,30 @@ func TestHeaderShowsBlockedGlyphAndDaemon(t *testing.T) {
 		t.Fatalf("narrow header = %q", head)
 	}
 }
+
+func TestHeaderGoldenAt80WithDaemon(t *testing.T) {
+	m := scene(t, 80, 24)
+	m.opts.Daemon = "127.0.0.1:7777"
+	// Remove the blocked session so we get a clean header
+	m.cache.sessions = map[string]*sessionView{}
+	run(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	golden(t, "header-80", m.View())
+}
+
+func TestHeaderGoldenAt100WithDaemonKeepsLetters(t *testing.T) {
+	m := scene(t, 100, 24)
+	m.opts.Daemon = "127.0.0.1:7777"
+	// Remove the blocked session so we get a clean header with just daemon
+	m.cache.sessions = map[string]*sessionView{}
+	run(m, tea.WindowSizeMsg{Width: 100, Height: 24})
+	golden(t, "header-100-daemon", m.View())
+
+	// Assert that the header contains hotkey letters at this width
+	head := ansi.Strip(strings.Split(m.View(), "\n")[0])
+	if !strings.Contains(head, "skills S") {
+		t.Errorf("header missing 'skills S': %q", head)
+	}
+	if !strings.Contains(head, "memory M") {
+		t.Errorf("header missing 'memory M': %q", head)
+	}
+}

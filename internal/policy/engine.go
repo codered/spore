@@ -3,6 +3,8 @@ package policy
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
+	"sort"
 	"time"
 
 	"github.com/codered/spore/internal/config"
@@ -99,11 +101,22 @@ func NewEngine(cfg config.PolicyConfig) (*Engine, error) {
 
 func buildRuleset(def string, allow, ask, deny []string, learned config.LearnedPolicy) (ruleset, error) {
 	var rs ruleset
-	denyRules, err := parseAll(DecisionDeny, append(append([]string{}, deny...), learned.Deny...))
+	configDeny, err := parseAll(DecisionDeny, deny)
 	if err != nil {
 		return ruleset{}, err
 	}
-	rs.deny = denyRules
+	baseline := config.BaselineDeny()
+	for i := range configDeny {
+		configDeny[i].Source = SourceConfig
+		if slices.Contains(baseline, configDeny[i].Raw) {
+			configDeny[i].Source = SourceBaseline
+		}
+	}
+	learnedDeny, err := parseAll(DecisionDeny, learned.Deny)
+	if err != nil {
+		return ruleset{}, err
+	}
+	rs.deny = append(configDeny, tagged(learnedDeny, SourceLearned)...)
 
 	allowRules, err := parseAll(DecisionAllow, allow)
 	if err != nil {
@@ -123,10 +136,10 @@ func buildRuleset(def string, allow, ask, deny []string, learned config.LearnedP
 	}
 	// Hand-written rules are evaluated before learned ones, so a rule the
 	// user typed always outranks one an approval prompt wrote.
-	rs.allowAndAsk = append(rs.allowAndAsk, allowRules...)
-	rs.allowAndAsk = append(rs.allowAndAsk, askRules...)
-	rs.allowAndAsk = append(rs.allowAndAsk, learnedAllow...)
-	rs.allowAndAsk = append(rs.allowAndAsk, learnedAsk...)
+	rs.allowAndAsk = append(rs.allowAndAsk, tagged(allowRules, SourceConfig)...)
+	rs.allowAndAsk = append(rs.allowAndAsk, tagged(askRules, SourceConfig)...)
+	rs.allowAndAsk = append(rs.allowAndAsk, tagged(learnedAllow, SourceLearned)...)
+	rs.allowAndAsk = append(rs.allowAndAsk, tagged(learnedAsk, SourceLearned)...)
 
 	switch def {
 	case "allow":
@@ -139,8 +152,83 @@ func buildRuleset(def string, allow, ask, deny []string, learned config.LearnedP
 	return rs, nil
 }
 
+func tagged(rs []Rule, source string) []Rule {
+	for i := range rs {
+		rs[i].Source = source
+	}
+	return rs
+}
+
 func (e *Engine) Workspace() string              { return e.env.Workspace }
 func (e *Engine) ApprovalTimeout() time.Duration { return e.timeout }
+
+// ruleset is the rules a session on profile p is evaluated against: its own,
+// or the base set when no profile of that name is configured. Evaluate makes
+// the same choice.
+func (e *Engine) ruleset(p Profile) ruleset {
+	if rs, ok := e.profiles[p]; ok {
+		return rs
+	}
+	return e.base
+}
+
+// Profiles lists the profiles the policy view shows: local first, because it
+// is the operator's own, then every configured profile by name.
+func (e *Engine) Profiles() []Profile {
+	out := []Profile{ProfileLocal}
+	names := make([]string, 0, len(e.profiles))
+	for p := range e.profiles {
+		if p != ProfileLocal {
+			names = append(names, string(p))
+		}
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		out = append(out, Profile(n))
+	}
+	return out
+}
+
+// RuleRow is one line of the policy view.
+type RuleRow struct {
+	Profile  Profile
+	Decision Decision
+	Rule     string
+	Source   string
+}
+
+// Rules lists every profile's rules in the order Evaluate tries them, with
+// the profile's default decision as its last row.
+func (e *Engine) Rules() []RuleRow {
+	var out []RuleRow
+	for _, p := range e.Profiles() {
+		rs := e.ruleset(p)
+		for _, r := range rs.deny {
+			out = append(out, RuleRow{Profile: p, Decision: r.Decision, Rule: r.Raw, Source: r.Source})
+		}
+		for _, r := range rs.allowAndAsk {
+			out = append(out, RuleRow{Profile: p, Decision: r.Decision, Rule: r.Raw, Source: r.Source})
+		}
+		out = append(out, RuleRow{Profile: p, Decision: rs.fallback, Rule: "(default)", Source: SourceConfig})
+	}
+	return out
+}
+
+// ToolDecision is what a call to tool with no arguments gets under profile
+// p, and whether an allow or ask rule with an argument predicate names the
+// tool, so that a call with arguments could be decided differently. Deny
+// rules with predicates are not counted: they are bounds that hold for every
+// call, and the policy view lists them.
+func (e *Engine) ToolDecision(p Profile, tool string) (Result, bool) {
+	res := e.Evaluate(Session{Profile: p}, Call{Tool: tool, Args: json.RawMessage(`{}`)})
+	name := normaliseToolName(tool)
+	for _, r := range e.ruleset(p).allowAndAsk {
+		if r.pred != nil && r.tool.MatchString(name) {
+			return res, true
+		}
+	}
+	return res, false
+}
 
 // Evaluate resolves one call for one session. Deny rules are checked first
 // and win outright; then allow and ask rules in configured order; then the

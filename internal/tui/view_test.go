@@ -131,6 +131,21 @@ func viewScene(t *testing.T) (*Model, *fakeBackend) {
 			},
 		},
 		jobs: []daemon.JobJSON{{ID: 7, Kind: "cron", Spec: "0 9 * * *", Prompt: "morning briefing", Enabled: true, NextRun: fixedNow().Add(2 * time.Hour)}},
+		mcp: []daemon.MCPServerJSON{{
+			Name: "gh", Transport: "stdio", State: "up",
+			Tools: []daemon.MCPToolJSON{
+				{Name: "mcp__gh__search", Decision: "allow", Rule: "mcp__gh__*"},
+				{Name: "mcp__gh__write", Decision: "ask", Rule: "policy.default", DependsOnArgs: true},
+			},
+		}},
+		policy: daemon.PolicyJSON{Rules: []daemon.PolicyRuleJSON{
+			{Profile: "local", Decision: "deny", Rule: "fs_*(path outside workspace)", Source: "baseline"},
+			{Profile: "local", Decision: "allow", Rule: "fs_read", Source: "config"},
+			{Profile: "local", Decision: "deny", Rule: "probe", Source: "learned"},
+		}},
+		memory: daemon.MemoryJSON{Facts: []daemon.FactJSON{
+			{Name: "prefers-tabs", Type: "feedback", Description: "indentation", Body: "Use tabs."},
+		}},
 	}
 	m := newTestModel(t, fb, "a1b2c3")
 	run(m, tea.WindowSizeMsg{Width: 100, Height: 24})
@@ -158,6 +173,18 @@ func TestGoldenViews(t *testing.T) {
 	fb.viewErr = errors.New("connection refused")
 	press(m, "ctrl+r")
 	golden(t, "view-stale-100", m.View())
+
+	m, _ = viewScene(t)
+	press(m, "esc", "C")
+	golden(t, "view-mcp-100", m.View())
+
+	m, _ = viewScene(t)
+	press(m, "esc", "P")
+	golden(t, "view-policy-100", m.View())
+
+	m, _ = viewScene(t)
+	press(m, "esc", "M")
+	golden(t, "view-memory-100", m.View())
 }
 
 func TestGoldenJobsFolder(t *testing.T) {
