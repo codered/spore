@@ -324,25 +324,28 @@ every `fs_write` into `uuid-server/` still asked, by the rule `fs_write`.
 2. Should the approval prompt stop offering `p` for a call whose deciding
    rule is a hand-written ask?
 
-## A learned pattern keeps the path form the model used
+## A learned pattern keeps the path form the model used: fixed
 
-Open. Found while testing 2a-2. `PatternFor` builds the rule from the
-call's path argument as written, so a call with `uuid-server/a.txt` learns
-`fs_write(path matches uuid-server/**)` and a call with an absolute path
-learns an absolute glob. Matching then depends on the next call using the
-same form. Checked with `spore policy check` on a config where `fs_write`
-reaches the default: the relative rule allowed `uuid-server/a.txt` and
-still asked for `<workspace>/uuid-server/a.txt`, the same file. The
-approval says "always", and it holds only while the model happens to spell
-the path the same way.
+Closed. `PatternFor` now takes the session's workspace and resolves the
+path with `Resolve` -- `~` expanded, `..` cleaned, symlinks followed, the
+same resolution `path matches` applies to arguments -- so every new learned
+rule is an absolute glob. It matches the file however the next call spells
+it, and only in the workspace it was learned in: a relative rule had applied
+to the same relative path in every workspace. The prompt's offered pattern
+(`Run`, and `replayEvent` for a reconnecting client) and the learned one
+(`Resolve`) are computed against the same workspace, so the rule written is
+the rule shown.
 
-**Open questions**
+Two narrowings came with it. A file directly in the workspace root gets no
+pattern whichever way it is spelled; before, only the relative spelling was
+refused and the absolute one learned the whole workspace, which for the
+local profile defaults to the home directory. And a directory whose name
+holds `*`, `?`, `,`, a quote, a backslash or a newline gets no pattern,
+because the rule syntax cannot say it literally.
 
-1. Should `PatternFor` resolve the path against the session workspace
-   before writing the rule, so every learned path rule is absolute?
-2. Should `path matches` resolve a relative argument against the workspace
-   before matching, so existing relative rules keep working? Both may be
-   needed: the first fixes new rules, the second the ones already written.
+Rules already learned in relative form are left as they are: they still
+match only relative arguments, in any workspace. Revoke them in the `P`
+view.
 
 ## Operator routes share the daemon's unauthenticated API
 

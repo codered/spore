@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -473,11 +474,40 @@ func TestReplayWithoutWaiterHasNoExpiry(t *testing.T) {
 	ev := b.replayEvent(store.PendingCall{
 		ID: 5, SessionID: "child", Tool: "fs_write", Profile: "local", Rule: "fs_write",
 		ArgsJSON: []byte(`{"path":"a"}`),
-	}, "root")
+	}, "root", "/ws")
 	if ev.ExpiresAt != "" {
 		t.Errorf("ExpiresAt = %q, want empty with no live waiter", ev.ExpiresAt)
 	}
 	if ev.Profile != "local" || ev.Origin != "child" || ev.Type != WireApproval || ev.PendingID != 5 {
 		t.Errorf("replayed %+v, want profile local, origin child, pending 5", ev)
+	}
+}
+
+// The prompt a reconnecting client sees must offer the pattern the guard
+// will learn: resolved against the asking session's workspace, not the
+// path as the model happened to write it.
+func TestReplayedApprovalOffersTheAbsolutePattern(t *testing.T) {
+	s, _ := newTestServer(t)
+	ctx := context.Background()
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid, err := s.Store().CreateSession(ctx, "t", ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Store().AddPendingCall(ctx, store.PendingCall{
+		SessionID: sid, ToolUseID: "c1", Tool: "fs_write", Profile: "local", Rule: "fs_write",
+		ArgsJSON: []byte(`{"path":"src/a.go"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	evs := s.allPendingApprovalEvents(ctx)
+	if len(evs) != 1 {
+		t.Fatalf("events = %+v, want one", evs)
+	}
+	if want := "fs_write(path matches " + ws + "/src/**)"; evs[0].Pattern != want {
+		t.Errorf("pattern = %q, want %q", evs[0].Pattern, want)
 	}
 }

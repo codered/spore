@@ -51,12 +51,12 @@ func TestLearnAndRevokeAreLiveThroughTheDaemon(t *testing.T) {
 	defer ts.Close()
 
 	ws := filepath.Join(dir, "ws")
-	_ = os.MkdirAll(ws, 0o700)
+	_ = os.MkdirAll(filepath.Join(ws, "notes"), 0o700)
 	sid, _ := st.CreateSession(context.Background(), "t", ws)
 	ctx := policy.WithSession(context.Background(), policy.Session{ID: sid, Profile: policy.ProfileLocal, Workspace: ws})
 	g := srv.Guard()
 	call := func(id string) provider.Block {
-		args, _ := json.Marshal(map[string]string{"path": filepath.Join(ws, "a.txt"), "content": "x"})
+		args, _ := json.Marshal(map[string]string{"path": filepath.Join(ws, "notes", "a.txt"), "content": "x"})
 		return provider.Block{Type: provider.BlockToolUse, ID: id, Name: "fs_write", Input: args}
 	}
 	pending := func() []store.PendingCall {
