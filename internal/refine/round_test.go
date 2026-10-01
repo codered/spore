@@ -452,6 +452,64 @@ func TestWriteReturnsWriteTargetErrorNotIndexError(t *testing.T) {
 	}
 }
 
+// failingIndex fails every call and counts them, so a test can tell the
+// index branch ran.
+type failingIndex struct{ index, unindex int }
+
+func (x *failingIndex) IndexFact(context.Context, string, string) error {
+	x.index++
+	return errors.New("index down")
+}
+
+func (x *failingIndex) UnindexFact(context.Context, string) error {
+	x.unindex++
+	return errors.New("index down")
+}
+
+func TestIndexErrorAfterFactWriteStillApplies(t *testing.T) {
+	f := newFix(t, store.SourceChat, createTabs,
+		`{"edits":[{"kind":"fact.delete","name":"prefers-tabs","rationale":"user: spaces now"}]}`)
+	idx := &failingIndex{}
+	f.r.index = idx
+
+	applied := func(res Result) {
+		t.Helper()
+		if len(res.Applied) != 1 || len(res.Failed) != 0 {
+			t.Fatalf("result = %+v, want one applied and none failed", res)
+		}
+		row, ok, err := f.st.Refinement(context.Background(), res.Applied[0].ID)
+		if err != nil || !ok || row.Status != store.RefineApplied {
+			t.Fatalf("ledger row = %+v %v %v, want applied", row, ok, err)
+		}
+	}
+
+	f.say(t, "user", text("use tabs"))
+	res, err := f.r.Round(context.Background(), f.sid, TriggerManual, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied(res)
+	if idx.index != 1 {
+		t.Fatalf("IndexFact calls = %d, want 1", idx.index)
+	}
+	if body, ok := read(t, f.factPath("prefers-tabs")); !ok || !strings.Contains(body, "Use tabs.") {
+		t.Fatalf("fact file = %q %v", body, ok)
+	}
+
+	f.say(t, "user", text("actually, spaces"))
+	res, err = f.r.Round(context.Background(), f.sid, TriggerManual, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied(res)
+	if idx.unindex != 1 {
+		t.Fatalf("UnindexFact calls = %d, want 1", idx.unindex)
+	}
+	if _, ok := read(t, f.factPath("prefers-tabs")); ok {
+		t.Fatal("fact file survived its delete")
+	}
+}
+
 func TestRollbackHandlesUnreadableTargets(t *testing.T) {
 	f := newFix(t, store.SourceChat)
 

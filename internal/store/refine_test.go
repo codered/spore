@@ -137,10 +137,10 @@ func TestIdleSessionsEligibility(t *testing.T) {
 	child, _ := st.CreateChildSession(ctx, "child", "", fresh)
 	appendText(t, st, child, "user", "hello")
 
+	// Shaped like fresh -- an unreviewed user message and no attempt -- so
+	// only the source exclusion keeps it out.
 	job, _ := st.CreateSessionFrom(ctx, "job", "", SourceJob)
 	appendText(t, st, job, "user", "run task")
-	_ = st.MarkRefineAttempt(ctx, job)
-	_ = st.SetRefinedThrough(ctx, job, 1)
 
 	ids, err := st.IdleSessions(ctx, later)
 	if err != nil {
