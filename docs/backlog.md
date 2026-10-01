@@ -307,6 +307,14 @@ them is written to `config.toml` and never applies, before or after a
 restart. The live engine swap from 2a-2 helps only tools that reach the
 profile default.
 
+In practice that is every prompt. `p` is offered only for a call with
+exactly one path argument, and every tool that takes one is decided before
+a learned rule is reached: the `fs_read` family is a hand-written allow,
+and `fs_write`, `fs_edit` and `mcp__*` are hand-written asks. Checked
+against a real config with `spore policy check`: a learned
+`fs_write(path matches uuid-server/**)` sat in the managed block while
+every `fs_write` into `uuid-server/` still asked, by the rule `fs_write`.
+
 **Open questions**
 
 1. Should a learned allow outrank a hand-written ask for the same tool, or
@@ -315,6 +323,26 @@ profile default.
    decision, not a fix.
 2. Should the approval prompt stop offering `p` for a call whose deciding
    rule is a hand-written ask?
+
+## A learned pattern keeps the path form the model used
+
+Open. Found while testing 2a-2. `PatternFor` builds the rule from the
+call's path argument as written, so a call with `uuid-server/a.txt` learns
+`fs_write(path matches uuid-server/**)` and a call with an absolute path
+learns an absolute glob. Matching then depends on the next call using the
+same form. Checked with `spore policy check` on a config where `fs_write`
+reaches the default: the relative rule allowed `uuid-server/a.txt` and
+still asked for `<workspace>/uuid-server/a.txt`, the same file. The
+approval says "always", and it holds only while the model happens to spell
+the path the same way.
+
+**Open questions**
+
+1. Should `PatternFor` resolve the path against the session workspace
+   before writing the rule, so every learned path rule is absolute?
+2. Should `path matches` resolve a relative argument against the workspace
+   before matching, so existing relative rules keep working? Both may be
+   needed: the first fixes new rules, the second the ones already written.
 
 ## Operator routes share the daemon's unauthenticated API
 
