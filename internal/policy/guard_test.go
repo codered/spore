@@ -263,12 +263,12 @@ func TestPatternScopeLearnsARule(t *testing.T) {
 }
 
 func TestPatternForNarrowsToTheDirectory(t *testing.T) {
-	got, ok := PatternFor(Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"/ws/src/a.go"}`)})
+	got, ok := PatternFor(Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"/ws/src/a.go"}`)}, "/ws")
 	if got != "fs_write(path matches /ws/src/**)" || !ok {
 		t.Errorf("PatternFor = (%q, %v)", got, ok)
 	}
 	// With no path to generalise from, the pattern degrades.
-	got, ok = PatternFor(Call{Tool: "shell_exec", Args: json.RawMessage(`{"command":"ls"}`)})
+	got, ok = PatternFor(Call{Tool: "shell_exec", Args: json.RawMessage(`{"command":"ls"}`)}, "/ws")
 	if got != "" || ok {
 		t.Errorf("PatternFor(shell) = (%q, %v), want (\"\", false)", got, ok)
 	}
@@ -553,7 +553,7 @@ func TestPatternForReportsDegradation(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name:   "a bare filename has no directory to generalise to",
+			name:   "a file at the workspace root has no directory narrower than the workspace",
 			call:   Call{Tool: "fs_read", Args: json.RawMessage(`{"path":"notes.md"}`)},
 			want:   "",
 			wantOK: false,
@@ -561,7 +561,7 @@ func TestPatternForReportsDegradation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := PatternFor(tc.call)
+			got, ok := PatternFor(tc.call, "/w")
 			if got != tc.want || ok != tc.wantOK {
 				t.Fatalf("PatternFor = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.wantOK)
 			}
@@ -587,7 +587,7 @@ func TestSkillInstallIsNeverLearnable(t *testing.T) {
 	pattern, learnable := PatternFor(Call{
 		Tool: "skill_install",
 		Args: json.RawMessage(`{"path":"/tmp/foo"}`),
-	})
+	}, "/ws")
 	if learnable {
 		t.Fatalf("skill_install must never offer a pattern scope, even with a path-shaped argument")
 	}
@@ -682,7 +682,7 @@ func TestAgentNoteIsNeverLearnable(t *testing.T) {
 	pattern, learnable := PatternFor(Call{
 		Tool: "agent_note",
 		Args: json.RawMessage(`{"path":"/tmp/foo"}`),
-	})
+	}, "/ws")
 	if learnable {
 		t.Fatal("agent_note must never offer a pattern scope, even with a path-shaped argument")
 	}
@@ -725,5 +725,189 @@ workspace = "`+dir+`"
 	)
 	if res.Decision != DecisionDeny {
 		t.Fatalf("remote profile decision for agent_note = %q, want deny", res.Decision)
+	}
+}
+
+// realTempDir is a temp directory with symlinks resolved, because Resolve
+// follows them: on macOS t.TempDir sits under a symlinked /var, and a
+// pattern compared against the unresolved name would never match.
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	d, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+// The bug: a pattern kept the path as the model wrote it, so a rule learned
+// from "src/a.go" never matched "<ws>/src/a.go", the same file.
+func TestPatternForIsAbsoluteWhateverTheArgumentForm(t *testing.T) {
+	ws := realTempDir(t)
+	rel, okRel := PatternFor(Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"src/a.go"}`)}, ws)
+	abs, okAbs := PatternFor(Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"` + ws + `/src/a.go"}`)}, ws)
+	want := "fs_write(path matches " + ws + "/src/**)"
+	if rel != want || abs != want || !okRel || !okAbs {
+		t.Fatalf("relative = (%q, %v), absolute = (%q, %v), want both %q", rel, okRel, abs, okAbs, want)
+	}
+	e := engine(t, config.PolicyConfig{Workspace: ws, Learned: config.LearnedPolicy{Allow: []string{rel}}})
+	for _, arg := range []string{`{"path":"src/b.go"}`, `{"path":"` + ws + `/src/b.go"}`, `{"path":"src/../src/c.go"}`} {
+		if got := e.Evaluate(Session{Profile: ProfileLocal, Workspace: ws}, Call{Tool: "fs_write", Args: json.RawMessage(arg)}); got.Decision != DecisionAllow {
+			t.Errorf("%s: decision = %s by %q, want allow by the learned rule", arg, got.Decision, got.Rule)
+		}
+	}
+}
+
+// A relative rule applied in every workspace; an absolute one only where it
+// was learned.
+func TestALearnedPatternStaysInItsWorkspace(t *testing.T) {
+	a, b := realTempDir(t), realTempDir(t)
+	rule, ok := PatternFor(Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"src/a.go"}`)}, a)
+	if !ok {
+		t.Fatal("no pattern")
+	}
+	e := engine(t, config.PolicyConfig{Workspace: a, Learned: config.LearnedPolicy{Allow: []string{rule}}})
+	if got := e.Evaluate(Session{Profile: ProfileLocal, Workspace: b}, Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"src/a.go"}`)}); got.Decision == DecisionAllow {
+		t.Errorf("a rule learned in %s allowed a write in %s", a, b)
+	}
+}
+
+func TestPatternForResolvesHomeDotsAndSymlinks(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	ws := realTempDir(t)
+	if real, err := filepath.EvalSymlinks(home); err == nil {
+		home = real
+	}
+	if got, _ := PatternFor(Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"~/spore-pattern-test/a.go"}`)}, ws); got != "fs_write(path matches "+filepath.Join(home, "spore-pattern-test")+"/**)" {
+		t.Errorf("~ path = %q", got)
+	}
+	if got, _ := PatternFor(Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"x/../src/a.go"}`)}, ws); got != "fs_write(path matches "+ws+"/src/**)" {
+		t.Errorf(".. path = %q", got)
+	}
+
+	// A workspace reached through a symlink learns the real directory, which
+	// is what the matcher resolves arguments to.
+	real := filepath.Join(ws, "real")
+	if err := os.MkdirAll(filepath.Join(real, "src"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(ws, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	rule, ok := PatternFor(Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"src/a.go"}`)}, link)
+	if !ok || rule != "fs_write(path matches "+real+"/src/**)" {
+		t.Fatalf("symlinked workspace = (%q, %v), want the real directory", rule, ok)
+	}
+	e := engine(t, config.PolicyConfig{Workspace: link, Learned: config.LearnedPolicy{Allow: []string{rule}}})
+	if got := e.Evaluate(Session{Profile: ProfileLocal, Workspace: link}, Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"src/b.go"}`)}); got.Decision != DecisionAllow {
+		t.Errorf("through the symlink: %s by %q, want allow", got.Decision, got.Rule)
+	}
+}
+
+// A directory whose name the rule syntax would read as a wildcard or a list
+// separator must not become a rule: it would allow more than was approved,
+// or not parse.
+func TestPatternForRefusesNamesTheRuleCannotSayLiterally(t *testing.T) {
+	ws := realTempDir(t)
+	for _, dir := range []string{"a*b", "a?b", "a,b", `a"b`} {
+		args, _ := json.Marshal(map[string]string{"path": dir + "/f.go"})
+		if got, ok := PatternFor(Call{Tool: "fs_write", Args: args}, ws); ok || got != "" {
+			t.Errorf("%q: PatternFor = (%q, %v), want no pattern", dir, got, ok)
+		}
+	}
+}
+
+// GlobSource quoted the glob a byte at a time through string(byte), which
+// re-encodes every byte above 0x7f as a two-byte rune: any rule naming a
+// non-ASCII directory was saved and never matched.
+func TestPathGlobsMatchNonASCIINames(t *testing.T) {
+	for _, dir := range []string{"héllo", "日本", "naïve café"} {
+		re, err := compilePathGlob("/ws/" + dir + "/**")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !re.MatchString("/ws/" + dir + "/f.go") {
+			t.Errorf("/ws/%s/** does not match a file inside it", dir)
+		}
+	}
+	ws := realTempDir(t)
+	rule, ok := PatternFor(Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"héllo/a.go"}`)}, ws)
+	if !ok {
+		t.Fatal("no pattern for a non-ASCII directory")
+	}
+	e := engine(t, config.PolicyConfig{Workspace: ws, Learned: config.LearnedPolicy{Allow: []string{rule}}})
+	if got := e.Evaluate(Session{Profile: ProfileLocal, Workspace: ws}, Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"héllo/b.go"}`)}); got.Decision != DecisionAllow {
+		t.Errorf("learned %q: decision %s by %q, want allow", rule, got.Decision, got.Rule)
+	}
+}
+
+// Without a workspace there is no root to refuse, and an absolute path
+// directly in the home directory would learn all of it.
+func TestPatternForNeedsAWorkspace(t *testing.T) {
+	if got, ok := PatternFor(Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"/ws/src/a.go"}`)}, ""); ok || got != "" {
+		t.Errorf("PatternFor with no workspace = (%q, %v), want no pattern", got, ok)
+	}
+}
+
+// The rule learned on answer is the pattern stored when the call was
+// suspended, never one re-derived from the arguments: between the ask and
+// the answer a directory can become a symlink, or the session be re-rooted,
+// and the human approved what they were shown.
+func TestResolveLearnsTheStoredPatternNotARederivedOne(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sid, err := st.CreateSession(ctx, "t", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var learned []string
+	g := NewGuard(nil, engine(t, config.PolicyConfig{}), nil, st, func(d Decision, rule string) error {
+		learned = append(learned, string(d)+" "+rule)
+		return nil
+	})
+	const shown = "fs_write(path matches /ws/notes/**)"
+	// The arguments would now derive something else entirely.
+	id, err := st.AddPendingCall(ctx, store.PendingCall{
+		SessionID: sid, ToolUseID: "tu1", Tool: "fs_write", Profile: "local", Rule: "fs_write",
+		ArgsJSON: []byte(`{"path":"/elsewhere/x/a.go"}`), Pattern: shown,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Resolve(ctx, sid, id, Answer{Allow: true, Scope: ScopePattern}); err != nil {
+		t.Fatal(err)
+	}
+	if len(learned) != 1 || learned[0] != "allow "+shown {
+		t.Fatalf("learned = %v, want exactly the pattern that was shown", learned)
+	}
+}
+
+// The suspension stores exactly the pattern the approver was shown, so an
+// answer that arrives after a restart (through Resolve, with no live
+// waiter) learns what the human saw.
+func TestRunStoresThePatternItOffers(t *testing.T) {
+	ctx := context.Background()
+	ws := realTempDir(t)
+	ap := &scriptedApprover{answer: Answer{Allow: false, Scope: ScopeOnce}}
+	g, _, st, sid := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}, Workspace: ws}, ap)
+	g.Run(WithSession(ctx, Session{ID: sid, Profile: ProfileLocal, Workspace: ws}), toolCall("fs_write", "c1", `{"path":"notes/a.txt"}`))
+	if len(ap.asked) != 1 {
+		t.Fatalf("asked %d times, want 1", len(ap.asked))
+	}
+	ask := ap.asked[0]
+	if want := "fs_write(path matches " + ws + "/notes/**)"; ask.Pattern != want {
+		t.Fatalf("offered %q, want %q", ask.Pattern, want)
+	}
+	p, found, err := st.PendingCallByID(ctx, ask.PendingID)
+	if err != nil || !found || p.Pattern != ask.Pattern {
+		t.Errorf("stored pattern = %q (%v %v), want the offered %q", p.Pattern, found, err, ask.Pattern)
 	}
 }

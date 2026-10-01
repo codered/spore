@@ -218,7 +218,7 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 	// An empty pattern is the wire signal to every approver — terminal,
 	// browser and bridge — that the "always this pattern" option must not
 	// be offered for this call.
-	pattern, patternOK := PatternFor(c)
+	pattern, patternOK := PatternFor(c, sess.Workspace)
 	pendingID, err := g.store.AddPendingCall(ctx, store.PendingCall{
 		SessionID: sess.ID,
 		ToolUseID: call.ID,
@@ -226,6 +226,10 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 		ArgsJSON:  call.Input,
 		Profile:   string(sess.Profile),
 		Rule:      res.Rule,
+		// Stored with the suspension so an answer arriving later learns
+		// this exact rule, not one re-derived from a filesystem that may
+		// have changed since it was shown.
+		Pattern: pattern,
 	})
 	if err != nil {
 		return denied(call.ID, "could not record the approval request: %v", err)
@@ -331,13 +335,6 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 	return g.inner.Run(ctx, call)
 }
 
-// PatternFor proposes the rule an "always allow this pattern" answer would
-// write, and reports whether a real pattern exists. Deriving one needs a
-// single path-shaped argument. Without one the only thing left is the bare
-// tool name, and a rule that broad is not a pattern — it is a blanket allow
-// for the tool, bounded only by the baseline deny list. Rather than return
-// something that reads like a narrow rule and behaves like a wide one, this
-// reports false and callers suppress the option.
 // nonLearnable are tools whose approval must never widen into a standing
 // rule, whatever their arguments look like. A skill written once shapes every
 // later turn in every session, so each install is approved on its own: the
@@ -354,7 +351,18 @@ var nonLearnable = map[string]bool{
 	"agent_note": true,
 }
 
-func PatternFor(c Call) (string, bool) {
+// PatternFor proposes the rule an "always allow this pattern" answer would
+// write, and reports whether a real pattern exists. Deriving one needs a
+// single path-shaped argument. Without one the only thing left is the bare
+// tool name, and a rule that broad is not a pattern — it is a blanket allow
+// for the tool, bounded only by the baseline deny list. Rather than return
+// something that reads like a narrow rule and behaves like a wide one, this
+// reports false and callers suppress the option.
+//
+// The path is resolved against the session's workspace the way the matcher
+// resolves arguments, so the rule is absolute: it matches the file however
+// the next call spells it, and only in the workspace it was learned in.
+func PatternFor(c Call, workspace string) (string, bool) {
 	if nonLearnable[c.Tool] {
 		return "", false
 	}
@@ -362,11 +370,33 @@ func PatternFor(c Call) (string, bool) {
 	if len(paths) != 1 {
 		return "", false
 	}
-	dir := filepath.Dir(paths[0])
-	if dir == "." || dir == string(filepath.Separator) {
+	// Without a workspace there is no root to refuse below, and a file
+	// directly in the home directory would learn all of it.
+	ws, err := Resolve(workspace, workspace)
+	if err != nil {
 		return "", false
 	}
-	return fmt.Sprintf("%s(path matches %s/**)", c.Tool, strings.TrimSuffix(dir, "/")), true
+	abs, err := Resolve(workspace, paths[0])
+	if err != nil || !filepath.IsAbs(abs) {
+		return "", false
+	}
+	dir := filepath.Dir(abs)
+	if dir == string(filepath.Separator) {
+		return "", false
+	}
+	// A file at the workspace root has no directory narrower than the whole
+	// workspace, and the local workspace defaults to the home directory.
+	if dir == ws {
+		return "", false
+	}
+	// The rule syntax reads * and ? as wildcards and a comma as a list
+	// separator, and LearnRule refuses quotes, backslashes and newlines. A
+	// directory named with any of them cannot be said literally, so it gets
+	// no pattern rather than a wider one or one that is never saved.
+	if strings.ContainsAny(dir, "*?,\"\\\n\r") {
+		return "", false
+	}
+	return fmt.Sprintf("%s(path matches %s/**)", c.Tool, dir), true
 }
 
 // Pending lists the session's unanswered approval requests. A client that
@@ -431,16 +461,8 @@ func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, 
 	// an audit row that says "pattern" when no rule was learned is a lie in
 	// the log. Reading the row first is safe — a suspension's arguments never
 	// change, and the claim itself is still the atomic step.
-	if ans.Scope == ScopePattern {
-		p, found, err := g.store.PendingCallByID(ctx, pendingID)
-		if err != nil {
-			return err
-		}
-		if found {
-			if _, ok := PatternFor(Call{Tool: p.Tool, Args: p.ArgsJSON}); !ok {
-				ans.Scope = ScopeOnce
-			}
-		}
+	if ans.Scope == ScopePattern && found && p.Pattern == "" {
+		ans.Scope = ScopeOnce
 	}
 	// One transaction claims the suspension and writes its audit row together.
 	// Two clients answering at once cannot both record an answer, and a
@@ -463,8 +485,7 @@ func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, 
 		}
 	}
 	if ans.Scope == ScopePattern && g.learn != nil {
-		pattern, ok := PatternFor(Call{Tool: claimed.Tool, Args: claimed.ArgsJSON})
-		if ok {
+		if pattern := claimed.Pattern; pattern != "" {
 			if err := g.learn(decision, pattern); err != nil {
 				// Same invariant as Run: failing to persist a learned rule must not
 				// undo an answer already recorded, or the caller retries and is

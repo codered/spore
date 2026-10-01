@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -479,5 +480,40 @@ func TestReplayWithoutWaiterHasNoExpiry(t *testing.T) {
 	}
 	if ev.Profile != "local" || ev.Origin != "child" || ev.Type != WireApproval || ev.PendingID != 5 {
 		t.Errorf("replayed %+v, want profile local, origin child, pending 5", ev)
+	}
+}
+
+// The prompt a reconnecting client sees must offer the pattern the guard
+// will learn: the one stored when the call was suspended, never one
+// re-derived from the arguments against a filesystem that may have changed.
+func TestReplayedApprovalOffersTheStoredPattern(t *testing.T) {
+	s, _ := newTestServer(t)
+	ctx := context.Background()
+	ws, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid, err := s.Store().CreateSession(ctx, "t", ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const shown = "fs_write(path matches /ws/notes/**)"
+	for _, p := range []store.PendingCall{
+		{SessionID: sid, ToolUseID: "c1", Tool: "fs_write", Profile: "local", Rule: "fs_write", ArgsJSON: []byte(`{"path":"src/a.go"}`), Pattern: shown},
+		{SessionID: sid, ToolUseID: "c2", Tool: "fs_write", Profile: "local", Rule: "fs_write", ArgsJSON: []byte(`{"path":"src/b.go"}`)},
+	} {
+		if _, err := s.Store().AddPendingCall(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	evs := s.allPendingApprovalEvents(ctx)
+	if len(evs) != 2 {
+		t.Fatalf("events = %+v, want two", evs)
+	}
+	if evs[0].Pattern != shown {
+		t.Errorf("pattern = %q, want the stored %q", evs[0].Pattern, shown)
+	}
+	if evs[1].Pattern != "" {
+		t.Errorf("a call stored with no pattern replayed %q; the option must stay hidden", evs[1].Pattern)
 	}
 }

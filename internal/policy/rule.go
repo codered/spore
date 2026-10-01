@@ -186,7 +186,10 @@ func GlobSource(g string) string {
 		case '?':
 			b.WriteString(`[^/]`)
 		default:
-			b.WriteString(regexp.QuoteMeta(string(g[i])))
+			// A one-byte slice, not string(g[i]): converting a byte makes a
+			// rune, which re-encodes every byte of a non-ASCII name and
+			// leaves a glob that can never match it.
+			b.WriteString(regexp.QuoteMeta(g[i : i+1]))
 		}
 	}
 	b.WriteString(`\z`)
