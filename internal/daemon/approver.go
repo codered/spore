@@ -218,22 +218,19 @@ func (s *Server) pendingApprovalEvents(ctx context.Context, sessionID string) []
 	}
 	out := make([]WireEvent, 0, len(pending))
 	for _, p := range pending {
-		out = append(out, s.broker.replayEvent(p, sessionID, policy.SessionWorkspace(ctx, s.store, p.SessionID)))
+		out = append(out, s.broker.replayEvent(p, sessionID))
 	}
 	return out
 }
 
 // replayEvent renders a persisted suspension as the approval event a live
-// ask would have published to root. workspace is the asking session's root,
-// which the offered pattern is resolved against exactly as the guard will
-// resolve the one it learns.
-func (b *Broker) replayEvent(p store.PendingCall, root, workspace string) WireEvent {
-	// Ignore the ok flag: an empty pattern is exactly what the client needs
-	// to see to hide the option.
-	pattern, _ := policy.PatternFor(policy.Call{Tool: p.Tool, Args: p.ArgsJSON}, workspace)
+// ask would have published to root. The pattern is the one stored when the
+// call was suspended -- the one the guard will learn -- and empty when none
+// was offered, which is what the client needs to hide the option.
+func (b *Broker) replayEvent(p store.PendingCall, root string) WireEvent {
 	ev := WireEvent{
 		Type: WireApproval, PendingID: p.ID, Tool: p.Tool,
-		Args: string(p.ArgsJSON), Rule: p.Rule, Pattern: pattern, Profile: p.Profile,
+		Args: string(p.ArgsJSON), Rule: p.Rule, Pattern: p.Pattern, Profile: p.Profile,
 	}
 	if d, ok := b.deadline(p.ID); ok {
 		ev.ExpiresAt = expiresAt(d)
@@ -261,7 +258,7 @@ func (s *Server) allPendingApprovalEvents(ctx context.Context) []WireEvent {
 		if anc, err := s.store.SessionAncestors(ctx, p.SessionID); err == nil && len(anc) > 0 {
 			root = anc[len(anc)-1]
 		}
-		ev := s.broker.replayEvent(p, root, policy.SessionWorkspace(ctx, s.store, p.SessionID))
+		ev := s.broker.replayEvent(p, root)
 		ev.Session = root
 		out = append(out, ev)
 	}

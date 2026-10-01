@@ -852,3 +852,62 @@ func TestPatternForNeedsAWorkspace(t *testing.T) {
 		t.Errorf("PatternFor with no workspace = (%q, %v), want no pattern", got, ok)
 	}
 }
+
+// The rule learned on answer is the pattern stored when the call was
+// suspended, never one re-derived from the arguments: between the ask and
+// the answer a directory can become a symlink, or the session be re-rooted,
+// and the human approved what they were shown.
+func TestResolveLearnsTheStoredPatternNotARederivedOne(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sid, err := st.CreateSession(ctx, "t", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var learned []string
+	g := NewGuard(nil, engine(t, config.PolicyConfig{}), nil, st, func(d Decision, rule string) error {
+		learned = append(learned, string(d)+" "+rule)
+		return nil
+	})
+	const shown = "fs_write(path matches /ws/notes/**)"
+	// The arguments would now derive something else entirely.
+	id, err := st.AddPendingCall(ctx, store.PendingCall{
+		SessionID: sid, ToolUseID: "tu1", Tool: "fs_write", Profile: "local", Rule: "fs_write",
+		ArgsJSON: []byte(`{"path":"/elsewhere/x/a.go"}`), Pattern: shown,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Resolve(ctx, sid, id, Answer{Allow: true, Scope: ScopePattern}); err != nil {
+		t.Fatal(err)
+	}
+	if len(learned) != 1 || learned[0] != "allow "+shown {
+		t.Fatalf("learned = %v, want exactly the pattern that was shown", learned)
+	}
+}
+
+// The suspension stores exactly the pattern the approver was shown, so an
+// answer that arrives after a restart (through Resolve, with no live
+// waiter) learns what the human saw.
+func TestRunStoresThePatternItOffers(t *testing.T) {
+	ctx := context.Background()
+	ws := realTempDir(t)
+	ap := &scriptedApprover{answer: Answer{Allow: false, Scope: ScopeOnce}}
+	g, _, st, sid := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}, Workspace: ws}, ap)
+	g.Run(WithSession(ctx, Session{ID: sid, Profile: ProfileLocal, Workspace: ws}), toolCall("fs_write", "c1", `{"path":"notes/a.txt"}`))
+	if len(ap.asked) != 1 {
+		t.Fatalf("asked %d times, want 1", len(ap.asked))
+	}
+	ask := ap.asked[0]
+	if want := "fs_write(path matches " + ws + "/notes/**)"; ask.Pattern != want {
+		t.Fatalf("offered %q, want %q", ask.Pattern, want)
+	}
+	p, found, err := st.PendingCallByID(ctx, ask.PendingID)
+	if err != nil || !found || p.Pattern != ask.Pattern {
+		t.Errorf("stored pattern = %q (%v %v), want the offered %q", p.Pattern, found, err, ask.Pattern)
+	}
+}

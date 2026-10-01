@@ -982,3 +982,76 @@ func TestRenameSessionFromOnlyReplacesTheExpectedTitle(t *testing.T) {
 		t.Errorf("updated_at moved from %v to %v; naming is not activity", before.UpdatedAt, after.UpdatedAt)
 	}
 }
+
+// The pattern an approval offered is stored with the suspension, so the rule
+// learned on answer is the rule that was shown, not one re-derived later.
+func TestPendingCallKeepsTheOfferedPattern(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+	sid, err := st.CreateSession(ctx, "t", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pattern = "fs_write(path matches /ws/notes/**)"
+	id, err := st.AddPendingCall(ctx, PendingCall{SessionID: sid, ToolUseID: "c1", Tool: "fs_write", ArgsJSON: []byte(`{}`), Pattern: pattern})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID, found, err := st.PendingCallByID(ctx, id)
+	if err != nil || !found || byID.Pattern != pattern {
+		t.Errorf("PendingCallByID = %+v %v %v", byID, found, err)
+	}
+	for name, list := range map[string]func() ([]PendingCall, error){
+		"session": func() ([]PendingCall, error) { return st.PendingCalls(ctx, sid) },
+		"all":     func() ([]PendingCall, error) { return st.PendingCallsAll(ctx) },
+		"tree":    func() ([]PendingCall, error) { return st.PendingCallsTree(ctx, sid) },
+	} {
+		got, err := list()
+		if err != nil || len(got) != 1 || got[0].Pattern != pattern {
+			t.Errorf("%s: %+v %v", name, got, err)
+		}
+	}
+	claimed, won, err := st.ClaimPendingCall(ctx, id, sid, "allow", "pattern")
+	if err != nil || !won || claimed.Pattern != pattern {
+		t.Errorf("ClaimPendingCall = %+v %v %v", claimed, won, err)
+	}
+}
+
+// A suspension written before the column existed must still load, with no
+// pattern: "always" is then simply not offered for it.
+func TestPendingCallsGainPattern(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	old, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`CREATE TABLE pending_calls (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_id  TEXT NOT NULL,
+		tool_use_id TEXT NOT NULL,
+		tool        TEXT NOT NULL,
+		args        TEXT NOT NULL,
+		profile     TEXT NOT NULL DEFAULT '',
+		rule        TEXT NOT NULL DEFAULT '',
+		state       TEXT NOT NULL DEFAULT 'pending',
+		created_at  TEXT NOT NULL,
+		decided_at  TEXT
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`INSERT INTO pending_calls (session_id, tool_use_id, tool, args, created_at) VALUES ('s1', 'c1', 'fs_write', '{}', '2026-09-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	p, found, err := st.PendingCallByID(context.Background(), 1)
+	if err != nil || !found || p.Pattern != "" {
+		t.Errorf("old row = %+v %v %v, want found with no pattern", p, found, err)
+	}
+}

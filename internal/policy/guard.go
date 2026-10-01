@@ -226,6 +226,10 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 		ArgsJSON:  call.Input,
 		Profile:   string(sess.Profile),
 		Rule:      res.Rule,
+		// Stored with the suspension so an answer arriving later learns
+		// this exact rule, not one re-derived from a filesystem that may
+		// have changed since it was shown.
+		Pattern: pattern,
 	})
 	if err != nil {
 		return denied(call.ID, "could not record the approval request: %v", err)
@@ -395,17 +399,6 @@ func PatternFor(c Call, workspace string) (string, bool) {
 	return fmt.Sprintf("%s(path matches %s/**)", c.Tool, dir), true
 }
 
-// SessionWorkspace is where a session is rooted, or "" when it cannot be
-// read. The pattern an approval offers and the pattern it learns are both
-// resolved against it, so the rule written is the rule that was shown.
-func SessionWorkspace(ctx context.Context, st *store.Store, id string) string {
-	sess, ok, err := st.Session(ctx, id)
-	if err != nil || !ok {
-		return ""
-	}
-	return sess.Workspace
-}
-
 // Pending lists the session's unanswered approval requests. A client that
 // attaches to a session — after a restart, or as a second client — calls this
 // to find out what is waiting on a human.
@@ -468,16 +461,8 @@ func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, 
 	// an audit row that says "pattern" when no rule was learned is a lie in
 	// the log. Reading the row first is safe — a suspension's arguments never
 	// change, and the claim itself is still the atomic step.
-	if ans.Scope == ScopePattern {
-		p, found, err := g.store.PendingCallByID(ctx, pendingID)
-		if err != nil {
-			return err
-		}
-		if found {
-			if _, ok := PatternFor(Call{Tool: p.Tool, Args: p.ArgsJSON}, SessionWorkspace(ctx, g.store, p.SessionID)); !ok {
-				ans.Scope = ScopeOnce
-			}
-		}
+	if ans.Scope == ScopePattern && found && p.Pattern == "" {
+		ans.Scope = ScopeOnce
 	}
 	// One transaction claims the suspension and writes its audit row together.
 	// Two clients answering at once cannot both record an answer, and a
@@ -500,8 +485,7 @@ func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, 
 		}
 	}
 	if ans.Scope == ScopePattern && g.learn != nil {
-		pattern, ok := PatternFor(Call{Tool: claimed.Tool, Args: claimed.ArgsJSON}, SessionWorkspace(ctx, g.store, claimed.SessionID))
-		if ok {
+		if pattern := claimed.Pattern; pattern != "" {
 			if err := g.learn(decision, pattern); err != nil {
 				// Same invariant as Run: failing to persist a learned rule must not
 				// undo an answer already recorded, or the caller retries and is

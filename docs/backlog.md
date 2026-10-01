@@ -331,10 +331,17 @@ path with `Resolve` -- `~` expanded, `..` cleaned, symlinks followed, the
 same resolution `path matches` applies to arguments -- so every new learned
 rule is an absolute glob. It matches the file however the next call spells
 it, and only in the workspace it was learned in: a relative rule had applied
-to the same relative path in every workspace. The prompt's offered pattern
-(`Run`, and `replayEvent` for a reconnecting client) and the learned one
-(`Resolve`) are computed against the same workspace, so the rule written is
-the rule shown.
+to the same relative path in every workspace. The pattern is computed once,
+when the call is suspended, and stored on the `pending_calls` row (new
+`pattern` column): a reconnecting client is shown that string and an answer
+through `Resolve` learns it, so the rule written is the rule shown even if a
+symlink appeared or the session was re-rooted in between. Rows from before
+the column have no pattern, and "always" is not offered on them.
+
+The review of this change found a bug old enough to predate it: path globs
+were quoted a byte at a time through `string(byte)`, which re-encodes every
+non-ASCII byte, so any `path matches` rule naming a non-ASCII directory --
+learned or hand-written, allow or deny -- never matched. Fixed with it.
 
 Two narrowings came with it. A file directly in the workspace root gets no
 pattern whichever way it is spelled; before, only the relative spelling was

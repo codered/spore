@@ -155,6 +155,41 @@ func migrateRecallSync(db *sql.DB) error {
 	return nil
 }
 
+// migratePendingCalls adds pending_calls.pattern when it is missing. Like
+// del_cursor it lives here rather than in schemaSQL, so a fresh database and
+// an upgraded one cannot disagree about it. A row written before it existed
+// keeps an empty pattern, which offers no "always" answer.
+func migratePendingCalls(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(pending_calls)`)
+	if err != nil {
+		return fmt.Errorf("inspect pending_calls table: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var havePattern bool
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "pattern" {
+			havePattern = true
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !havePattern {
+		if _, err := db.Exec(`ALTER TABLE pending_calls ADD COLUMN pattern TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add pending_calls.pattern: %w", err)
+		}
+	}
+	return nil
+}
+
 // migrateSessions adds missing columns to a database written before they
 // were added. Unlike migrateJobs this preserves every row: sessions hold
 // real transcripts. Added columns land empty and are filled by BackfillSessionWorkspaces
@@ -301,6 +336,10 @@ func Open(path string) (*Store, error) {
 	// above: recall_sync is created by schemaSQL on a fresh database, so the
 	// column has to be added to a table that already exists either way.
 	if err := migrateRecallSync(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := migratePendingCalls(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -661,6 +700,12 @@ type PendingCall struct {
 	Tool      string
 	Profile   string
 	Rule      string
+	// Pattern is the rule an "always this pattern" answer would learn, as
+	// it was offered when the call was suspended; empty when none was. It
+	// is stored rather than re-derived on answer, so the rule learned is
+	// the rule shown even if the filesystem or the session's root changed
+	// in between.
+	Pattern   string
 	ArgsJSON  []byte
 	CreatedAt time.Time
 }
@@ -668,9 +713,9 @@ type PendingCall struct {
 // AddPendingCall records a suspension before the turn blocks on an answer.
 func (s *Store) AddPendingCall(ctx context.Context, p PendingCall) (int64, error) {
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO pending_calls (session_id, tool_use_id, tool, args, profile, rule, state, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
-		p.SessionID, p.ToolUseID, p.Tool, string(p.ArgsJSON), p.Profile, p.Rule,
+		`INSERT INTO pending_calls (session_id, tool_use_id, tool, args, profile, rule, pattern, state, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+		p.SessionID, p.ToolUseID, p.Tool, string(p.ArgsJSON), p.Profile, p.Rule, p.Pattern,
 		time.Now().UTC().Format(timeFormat))
 	if err != nil {
 		return 0, fmt.Errorf("add pending call: %w", err)
@@ -681,7 +726,7 @@ func (s *Store) AddPendingCall(ctx context.Context, p PendingCall) (int64, error
 // PendingCalls returns the session's unanswered approvals, oldest first.
 func (s *Store) PendingCalls(ctx context.Context, sessionID string) ([]PendingCall, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, tool_use_id, tool, args, profile, rule, created_at
+		`SELECT id, session_id, tool_use_id, tool, args, profile, rule, pattern, created_at
 		 FROM pending_calls WHERE session_id = ? AND state = 'pending' ORDER BY id`, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("read pending calls: %w", err)
@@ -691,7 +736,7 @@ func (s *Store) PendingCalls(ctx context.Context, sessionID string) ([]PendingCa
 	for rows.Next() {
 		var p PendingCall
 		var args, created string
-		if err := rows.Scan(&p.ID, &p.SessionID, &p.ToolUseID, &p.Tool, &args, &p.Profile, &p.Rule, &created); err != nil {
+		if err := rows.Scan(&p.ID, &p.SessionID, &p.ToolUseID, &p.Tool, &args, &p.Profile, &p.Rule, &p.Pattern, &created); err != nil {
 			return nil, err
 		}
 		p.ArgsJSON = []byte(args)
@@ -705,7 +750,7 @@ func (s *Store) PendingCalls(ctx context.Context, sessionID string) ([]PendingCa
 // oldest first. The global event feed replays them to a client attaching.
 func (s *Store) PendingCallsAll(ctx context.Context) ([]PendingCall, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, tool_use_id, tool, args, profile, rule, created_at
+		`SELECT id, session_id, tool_use_id, tool, args, profile, rule, pattern, created_at
 		 FROM pending_calls WHERE state = 'pending' ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("read pending calls: %w", err)
@@ -715,7 +760,7 @@ func (s *Store) PendingCallsAll(ctx context.Context) ([]PendingCall, error) {
 	for rows.Next() {
 		var p PendingCall
 		var args, created string
-		if err := rows.Scan(&p.ID, &p.SessionID, &p.ToolUseID, &p.Tool, &args, &p.Profile, &p.Rule, &created); err != nil {
+		if err := rows.Scan(&p.ID, &p.SessionID, &p.ToolUseID, &p.Tool, &args, &p.Profile, &p.Rule, &p.Pattern, &created); err != nil {
 			return nil, err
 		}
 		p.ArgsJSON = []byte(args)
@@ -733,7 +778,7 @@ func (s *Store) PendingCallsTree(ctx context.Context, sessionID string) ([]Pendi
 		  UNION
 		  SELECT s.id FROM sessions s JOIN tree t ON s.parent_id = t.id
 		)
-		SELECT p.id, p.session_id, p.tool_use_id, p.tool, p.args, p.profile, p.rule, p.created_at
+		SELECT p.id, p.session_id, p.tool_use_id, p.tool, p.args, p.profile, p.rule, p.pattern, p.created_at
 		FROM pending_calls p JOIN tree ON p.session_id = tree.id
 		WHERE p.state = 'pending' ORDER BY p.id`, sessionID)
 	if err != nil {
@@ -744,7 +789,7 @@ func (s *Store) PendingCallsTree(ctx context.Context, sessionID string) ([]Pendi
 	for rows.Next() {
 		var p PendingCall
 		var args, created string
-		if err := rows.Scan(&p.ID, &p.SessionID, &p.ToolUseID, &p.Tool, &args, &p.Profile, &p.Rule, &created); err != nil {
+		if err := rows.Scan(&p.ID, &p.SessionID, &p.ToolUseID, &p.Tool, &args, &p.Profile, &p.Rule, &p.Pattern, &created); err != nil {
 			return nil, err
 		}
 		p.ArgsJSON = []byte(args)
@@ -761,9 +806,9 @@ func (s *Store) PendingCallByID(ctx context.Context, id int64) (PendingCall, boo
 	var p PendingCall
 	var args, created string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, session_id, tool_use_id, tool, args, profile, rule, created_at
+		`SELECT id, session_id, tool_use_id, tool, args, profile, rule, pattern, created_at
 		 FROM pending_calls WHERE id = ?`, id).
-		Scan(&p.ID, &p.SessionID, &p.ToolUseID, &p.Tool, &args, &p.Profile, &p.Rule, &created)
+		Scan(&p.ID, &p.SessionID, &p.ToolUseID, &p.Tool, &args, &p.Profile, &p.Rule, &p.Pattern, &created)
 	if err == sql.ErrNoRows {
 		return PendingCall{}, false, nil
 	}
@@ -811,9 +856,9 @@ func (s *Store) ClaimPendingCall(ctx context.Context, id int64, sessionID, decis
 	var p PendingCall
 	var args, created string
 	err = tx.QueryRowContext(ctx,
-		`SELECT id, session_id, tool_use_id, tool, args, profile, rule, created_at
+		`SELECT id, session_id, tool_use_id, tool, args, profile, rule, pattern, created_at
 		 FROM pending_calls WHERE id = ? AND session_id = ? AND state = 'pending'`,
-		id, sessionID).Scan(&p.ID, &p.SessionID, &p.ToolUseID, &p.Tool, &args, &p.Profile, &p.Rule, &created)
+		id, sessionID).Scan(&p.ID, &p.SessionID, &p.ToolUseID, &p.Tool, &args, &p.Profile, &p.Rule, &p.Pattern, &created)
 	if err == sql.ErrNoRows {
 		return PendingCall{}, false, nil
 	}
