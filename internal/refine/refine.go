@@ -66,13 +66,22 @@ type Refiner struct {
 	// beforeApply, when set, runs between the planner call and apply. Tests
 	// use it to change a file underneath a round.
 	beforeApply func()
+	// index keeps the recall index in step with fact writes. New sets it to
+	// Store; tests swap in one that fails.
+	index factIndexer
+}
+
+// factIndexer is the slice of the store a fact write needs after the file.
+type factIndexer interface {
+	IndexFact(ctx context.Context, name, text string) error
+	UnindexFact(ctx context.Context, name string) error
 }
 
 func New(st *store.Store, reg *provider.Registry, rt *router.Router, cfg *config.Config, facts *memory.Cache) *Refiner {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Refiner{
 		Store: st, Registry: reg, Router: rt, Cfg: cfg, Facts: facts,
-		ctx: ctx, cancel: cancel,
+		ctx: ctx, cancel: cancel, index: st,
 		inFlight: map[string]bool{}, requests: map[string]string{},
 	}
 }
