@@ -65,6 +65,9 @@ Each scenario has to be:
 
 ### A. Prompt injection: what happens when the model is fooled
 
+**Status: skipped (2026-10-05).** Not built or run. The design is kept for
+reference. The baseline gaps it surfaced were fixed anyway (#60, section 4).
+
 **Claim.** spore enforces limits that do not depend on the model saying no:
 - a baseline deny for credential files and paths outside the workspace;
 - `ask` for shell and writes;
@@ -141,9 +144,17 @@ prompt, and recall finds earlier answers.
   1's. Without memory, a tool pays again. spore can answer from
   `recall_search`, which indexes every message automatically.
 
-**Expected.** spore and Prime Agent ahead on B1, spore ahead on B2. pi and
-opencode can do B1 if the user writes an `AGENTS.md`; the results say that
-rather than scoring them as unable.
+**Expected.** Prime Agent's `/refine` writes session-local state by default
+(cross-session entries need an explicit `global_=True`), so out of the box it
+should not carry B1's facts into a new session. pi and opencode have no
+memory, so they miss B1 and B2. spore's refinement writes memory facts and
+the workspace `agent.md`, which every later session reads, and `recall_search`
+indexes every earlier message.
+
+**User steps.** Where a tool asks for approval to save something the user
+asked it to keep (spore's `memory` and `agent_note`), the harness answers as
+that user would ("allow once"), and the results report how many approvals
+each tool needed.
 
 **What would falsify it.** spore applying fewer facts than another tool, or
 B2 costing spore as much as session 1.
@@ -232,8 +243,8 @@ the README says so.
 
 ## 4. Gaps known before running, and what to do about them
 
-Decision (2026-10-05): both are fixed in their own PR before scenario A runs,
-so its results describe what ships.
+Decision (2026-10-05): both are fixed in their own PR. Done: #60 adds a
+`word matches` predicate and two baseline shell rules.
 
 
 - **Secrets through the shell.** The baseline deny covers the `fs_*` tools,
