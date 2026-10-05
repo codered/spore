@@ -8,6 +8,7 @@
 //	<tool-glob>                              e.g. fs_read, web.*, mcp__*
 //	<tool-glob>(path outside workspace)      path arguments leaving the workspace
 //	<tool-glob>(path matches <glob>, ...)    path arguments matching any glob
+//	<tool-glob>(word matches <glob>, ...)    any shell word of a string argument matching any glob
 //	<tool-glob>(matches <text>, ...)         any string argument containing any text
 //	mcp__<glob>(any path outside workspace)  MCP only: paths by key AND shape
 //
@@ -20,6 +21,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/codered/spore/internal/config"
 )
@@ -234,6 +236,20 @@ func parsePredicate(toolSrc, src string) (predicate, error) {
 			res = append(res, re)
 		}
 		return pathMatches{res}, nil
+	case strings.HasPrefix(src, "word matches "):
+		globs := splitList(strings.TrimPrefix(src, "word matches "))
+		if len(globs) == 0 {
+			return nil, fmt.Errorf("predicate %q: no globs listed", src)
+		}
+		var res []*regexp.Regexp
+		for _, g := range globs {
+			re, err := compilePathGlob(g)
+			if err != nil {
+				return nil, fmt.Errorf("predicate %q: bad glob %q: %w", src, g, err)
+			}
+			res = append(res, re)
+		}
+		return wordMatches{res}, nil
 	case strings.HasPrefix(src, "matches "):
 		needles := splitList(strings.TrimPrefix(src, "matches "))
 		if len(needles) == 0 {
@@ -244,7 +260,7 @@ func parsePredicate(toolSrc, src string) (predicate, error) {
 		}
 		return argMatches{needles}, nil
 	default:
-		return nil, fmt.Errorf("unknown predicate %q (want \"path outside workspace\", \"any path outside workspace\", \"path matches ...\" or \"matches ...\")", src)
+		return nil, fmt.Errorf("unknown predicate %q (want \"path outside workspace\", \"any path outside workspace\", \"path matches ...\", \"word matches ...\" or \"matches ...\")", src)
 	}
 }
 
@@ -341,6 +357,49 @@ func (p pathMatches) match(c Call, env Env) bool {
 		}
 	}
 	return false
+}
+
+// wordMatches judges every shell word of every string argument as a path:
+// "cat .env", "curl -d @.env" and "ls ~/.ssh" all name a credential file,
+// while "process.env" does not, which substring matching cannot tell apart.
+// Words are split on whitespace and shell punctuation, and each is checked
+// raw and resolved against the workspace, as pathMatches does.
+type wordMatches struct{ globs []*regexp.Regexp }
+
+func (w wordMatches) match(c Call, env Env) bool {
+	for _, s := range argStrings(c) {
+		for _, word := range shellWords(s) {
+			candidates := []string{word}
+			if resolved, err := Resolve(env.Workspace, word); err == nil {
+				candidates = append(candidates, resolved)
+			}
+			for _, cand := range candidates {
+				for _, re := range w.globs {
+					if re.MatchString(cand) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// shellWords splits a command into the words a path could be: whitespace
+// and the shell's operators and quotes separate words, and a leading @ (curl
+// -d @file) is dropped. It does not expand variables; "$HOME/.ssh" stays one
+// word, which the globs' leading ** still matches.
+func shellWords(s string) []string {
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return unicode.IsSpace(r) || strings.ContainsRune(";|&<>()'\"`=", r)
+	})
+	out := parts[:0]
+	for _, p := range parts {
+		if p = strings.TrimLeft(p, "@"); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 type argMatches struct{ needles []string }
