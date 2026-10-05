@@ -5,9 +5,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/codered/spore/internal/daemon"
 	"github.com/codered/spore/internal/policy"
 )
 
@@ -61,10 +65,43 @@ func TestTerminalApproverShowsTheCallAndTheRule(t *testing.T) {
 
 func TestTerminalApproverDeniesOnEOF(t *testing.T) {
 	// A non-interactive run (spore once in a pipeline) has no one to ask.
-	// Closing input must deny, never allow.
+	// Closing input must deny, never allow, and the deny must be an answer
+	// that can be sent: an error left the approval pending until it timed out.
 	got, _, err := ask(t, "")
-	if err == nil && got.Allow {
-		t.Error("EOF was treated as approval")
+	if err != nil {
+		t.Fatalf("EOF returned an error instead of a deny: %v", err)
+	}
+	if want := (policy.Answer{Allow: false, Scope: policy.ScopeOnce}); got != want {
+		t.Errorf("EOF = %+v, want %+v", got, want)
+	}
+}
+
+// With no input, approve must post the deny to the daemon at once. It used
+// to print "denying" and post nothing, so the turn sat blocked for the whole
+// approval_timeout (5 minutes by default) before the daemon denied it.
+func TestApproveWithoutInputPostsADeny(t *testing.T) {
+	var path string
+	var body struct {
+		Allow bool   `json:"allow"`
+		Scope string `json:"scope"`
+	}
+	posted := false
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, posted = r.URL.Path, true
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer ts.Close()
+	c := &client{base: ts.URL, short: ts.Client(), streamClient: ts.Client()}
+	ap := terminalApprover{lines: scannerLines{sc: bufio.NewScanner(strings.NewReader(""))}, out: io.Discard}
+
+	approve(context.Background(), c, ap, "s1", daemon.WireEvent{Type: daemon.WireApproval, Tool: "shell_exec", PendingID: 7})
+
+	if !posted {
+		t.Fatal("no answer was posted; the approval would wait for its timeout")
+	}
+	if path != "/api/sessions/s1/approvals/7" || body.Allow {
+		t.Errorf("posted %s allow=%v, want a deny to /api/sessions/s1/approvals/7", path, body.Allow)
 	}
 }
 
