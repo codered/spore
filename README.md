@@ -36,6 +36,14 @@ servers and spawn sub-agents. Every one of those actions is still checked,
 one call at a time, against rules that you wrote and that no prompt can talk
 its way past.
 
+<div align="center">
+
+<img src="assets/tui-demo.gif" alt="spore chat: the model writes Go programs to inspect the repo, asks before writing .editorconfig, and continues once the write is allowed" width="900">
+
+<sub>The model inspects the repo with <code>go_run</code> programs, stops to ask before it writes a file, and finishes once you press <kbd>alt</kbd>+<kbd>y</kbd>.</sub>
+
+</div>
+
 ## ✨ Why spore
 
 <table>
@@ -221,6 +229,29 @@ work.
 
 **Slash commands**: `/clear`, `/compact`, `/context` (token breakdown of the
 prompt), `/usage`, `/agents`, `/skills`, `/refine [focus]`, `/refine rollback`.
+
+</details>
+
+<details open>
+<summary><b>Web UI</b>: the same sessions in your browser, served from the binary</summary>
+
+<br>
+
+Open `http://127.0.0.1:7777/` while the daemon runs. Nothing needs to be
+built or installed. It has the session list, transcripts with collapsible tool
+calls, the model and cost of each step, scheduled jobs, and approvals with a
+countdown to the automatic deny.
+
+<table>
+<tr>
+<td width="50%"><img src="assets/web-transcript.png" alt="Web UI transcript: one go_run program counts Go lines per package, and the answer lists the five largest packages"></td>
+<td width="50%"><img src="assets/web-approval.png" alt="Web UI approval: an fs_write from inside a go_run program waits for Allow once, Deny or This session"></td>
+</tr>
+<tr>
+<td align="center"><sub>One <code>go_run</code> program answers a question that needs dozens of file reads.</sub></td>
+<td align="center"><sub>A file write from inside a program waits for your answer.</sub></td>
+</tr>
+</table>
 
 </details>
 
