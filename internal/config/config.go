@@ -490,6 +490,14 @@ var baselineDeny = []string{
 	// denied on the pipe itself, which costs the occasional false positive
 	// (a pipe into "shuf") and is the right trade for a deny baseline.
 	"shell_exec(matches rm -rf /, sudo , mkfs, dd if=, :(){, | sh, |sh, | bash, |bash, git push --force, shutdown, reboot)",
+	// The credential files the fs_* rule protects, held against the shell as
+	// well: without this, "cat .env" read what fs_read could not, wherever a
+	// user had allowed shell_exec. Each word of the command is judged as a
+	// path, so "process.env" is not caught.
+	"shell_exec(word matches **/.env, **/.env.*, **/.ssh, **/.ssh/**, **/*_rsa, **/*_ed25519, **/.aws, **/.aws/**, **/.gnupg, **/.gnupg/**)",
+	// rm -rf / is above; the home directory is the other target no task needs
+	// to delete whole.
+	"shell_exec(matches rm -rf ~, rm -rf $HOME, rm -rf ${HOME}, rm -fr ~, rm -fr /, rm -fr $HOME)",
 }
 
 // BaselineDeny returns the rules Load always prepends to policy.deny. It is a
