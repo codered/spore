@@ -23,8 +23,11 @@ The interpreter is Go 1.21 without three builtins: min, max and clear are undefi
 - `func Shell(command string) (string, error)` — Run a bash command in the workspace.
 - `func Recall(query string) (string, error)` — Search past conversations.
 - `func Call(tool string, args map[string]any) (string, error)` — Call any tool below by name with its JSON arguments.
+- `func Help(tool string) (string, error)` — A tool's full description and JSON schema, with what each argument means.
 
 ### Other tools (via spore.Call)
 
-- `mcp__gh__list_prs` — List pull requests. Arguments: `{"type":"object","properties":{"repo":{"type":"string"}}}`
-- `schedule_list` — List scheduled jobs. Arguments: `{"type":"object","properties":{}}`
+Each line gives a tool's arguments; ? marks an optional one and a|b the allowed values. When a line is not enough, print spore.Help(name) for the full schema.
+
+- `mcp__gh__list_prs(repo?: string)` — List pull requests.
+- `schedule_list()` — List scheduled jobs.

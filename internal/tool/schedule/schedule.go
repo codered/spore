@@ -37,12 +37,10 @@ type createTool struct{ st *store.Store }
 
 func (createTool) Name() string { return "schedule_create" }
 func (createTool) Description() string {
-	return "Schedule a prompt to run later. spec is either a five-field cron expression " +
-		"(minute hour day-of-month month day-of-week, UTC) for a repeating job, or an " +
-		"RFC3339 instant such as 2026-12-25T09:00:00Z for a one-off. Each run starts a " +
-		"NEW session. After its first successful run spore reports back in this chat and " +
-		"asks how the user wants to hear about later runs; record the answer with " +
-		"schedule_notify. Read a run's reply later with job_output."
+	return "Schedule a prompt. spec is a five-field UTC cron expression (minute hour " +
+		"day-of-month month day-of-week) to repeat, or an RFC3339 instant such as " +
+		"2026-12-25T09:00:00Z to run once. Each run is a NEW session. After the first run " +
+		"spore asks this chat how to report later runs; record the answer with schedule_notify."
 }
 func (createTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
@@ -81,8 +79,7 @@ type listTool struct{ st *store.Store }
 
 func (listTool) Name() string { return "schedule_list" }
 func (listTool) Description() string {
-	return "List scheduled jobs. Each row shows: id, enabled/cancelled state, kind, schedule, next run time, " +
-		"last run time, how later runs are reported (notify), and prompt."
+	return "List scheduled jobs: id, state, kind, schedule, next and last run, notify mode and prompt."
 }
 func (listTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type": "object", "properties": {}}`)
@@ -145,8 +142,7 @@ type outputTool struct{ st *store.Store }
 
 func (outputTool) Name() string { return "job_output" }
 func (outputTool) Description() string {
-	return "Show a scheduled job's most recent run: when it ran, the session it ran in, and its " +
-		"final reply. Use it when the user asks what a job said or did last time; get ids from schedule_list."
+	return "Show a scheduled job's last run: when it ran, its session and its final reply."
 }
 func (outputTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
@@ -196,9 +192,8 @@ type notifyTool struct{ st *store.Store }
 
 func (notifyTool) Name() string { return "schedule_notify" }
 func (notifyTool) Description() string {
-	return "Set how the chat that created a job hears about its later runs: each (a short note " +
-		"after every run), failures (a note only when a run fails) or none. Use it when the user " +
-		"answers the first-run check-in, or asks to change it. Runs always land in the Jobs folder."
+	return "Set how this chat hears about a job's later runs: each, failures or none. Use it for " +
+		"the user's answer to the first-run check-in, or a later change. Runs always land in the Jobs folder."
 }
 func (notifyTool) Schema() json.RawMessage {
 	return json.RawMessage(`{

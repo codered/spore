@@ -32,6 +32,7 @@ var Helpers = []Helper{
 	{"func Shell(command string) (string, error)", "Run a bash command in the workspace.", "shell_exec"},
 	{"func Recall(query string) (string, error)", "Search past conversations.", "recall_search"},
 	{"func Call(tool string, args map[string]any) (string, error)", "Call any tool below by name with its JSON arguments.", ""},
+	{"func Help(tool string) (string, error)", "A tool's full description and JSON schema, with what each argument means.", ""},
 }
 
 // Reference renders the system-prompt section that teaches the model to act
@@ -70,13 +71,15 @@ func Reference(specs []provider.ToolSpec) string {
 	}
 
 	b.WriteString("\n### Other tools (via spore.Call)\n\n")
+	b.WriteString("Each line gives a tool's arguments; ? marks an optional one and a|b the allowed values. " +
+		"When a line is not enough, print spore.Help(name) for the full schema.\n\n")
 	n := 0
 	for _, s := range specs {
 		if covered[s.Name] {
 			continue
 		}
 		n++
-		fmt.Fprintf(&b, "- `%s` — %s Arguments: `%s`\n", s.Name, oneLine(s.Description), compact(s.Schema))
+		fmt.Fprintf(&b, "- `%s` — %s\n", signature(s.Name, s.Schema), oneLine(s.Description))
 	}
 	if n == 0 {
 		b.WriteString("(none)\n")
@@ -94,4 +97,90 @@ func compact(schema json.RawMessage) string {
 		return string(schema)
 	}
 	return buf.String()
+}
+
+// Docs is what spore.Help returns, by tool name: the description and the full
+// schema the prompt leaves out. The kernel sends it with each program, so a
+// lookup is answered in the child and is not a tool call.
+func Docs(specs []provider.ToolSpec) map[string]string {
+	d := make(map[string]string, len(specs))
+	for _, s := range specs {
+		d[s.Name] = oneLine(s.Description) + "\n\nArguments (JSON schema): " + compact(s.Schema)
+	}
+	return d
+}
+
+// signature renders a schema as name(arg: type, opt?: type), in the schema's
+// own property order. Enums show their values; anything else shows its type.
+func signature(name string, schema json.RawMessage) string {
+	var s struct {
+		Properties json.RawMessage `json:"properties"`
+		Required   []string        `json:"required"`
+	}
+	if err := json.Unmarshal(schema, &s); err != nil || len(s.Properties) == 0 {
+		return name + "()"
+	}
+	required := map[string]bool{}
+	for _, r := range s.Required {
+		required[r] = true
+	}
+	var args []string
+	for _, p := range orderedProperties(s.Properties) {
+		var v struct {
+			Type any   `json:"type"`
+			Enum []any `json:"enum"`
+		}
+		_ = json.Unmarshal(p.raw, &v)
+		typ := "any"
+		switch t := v.Type.(type) {
+		case string:
+			typ = t
+		case []any:
+			parts := make([]string, len(t))
+			for i, x := range t {
+				parts[i] = fmt.Sprint(x)
+			}
+			typ = strings.Join(parts, "|")
+		}
+		if len(v.Enum) > 0 {
+			vals := make([]string, len(v.Enum))
+			for i, x := range v.Enum {
+				vals[i] = fmt.Sprint(x)
+			}
+			typ = strings.Join(vals, "|")
+		}
+		opt := "?"
+		if required[p.name] {
+			opt = ""
+		}
+		args = append(args, p.name+opt+": "+typ)
+	}
+	return name + "(" + strings.Join(args, ", ") + ")"
+}
+
+type property struct {
+	name string
+	raw  json.RawMessage
+}
+
+// orderedProperties reads a JSON object's members in the order they are
+// written, which a map would lose.
+func orderedProperties(obj json.RawMessage) []property {
+	dec := json.NewDecoder(bytes.NewReader(obj))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return nil
+	}
+	var out []property
+	for dec.More() {
+		k, err := dec.Token()
+		if err != nil {
+			return out
+		}
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return out
+		}
+		out = append(out, property{name: fmt.Sprint(k), raw: raw})
+	}
+	return out
 }

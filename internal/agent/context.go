@@ -194,7 +194,9 @@ func selfSection(cfg *config.Config, workspace string) string {
 	b.WriteString("\n\n## Where spore keeps its files on this machine\n\n")
 	fmt.Fprintf(&b, "- Skills: %s -- one directory per skill, each holding a SKILL.md with a name and description in its frontmatter. Write one with skill_install, or the user can add the files by hand.\n", skills)
 	fmt.Fprintf(&b, "- Memory facts: %s -- one markdown file per fact, written with the memory tool.\n", cfg.MemoryDir())
-	fmt.Fprintf(&b, "- Your personality: %s -- how you speak and what you value. This one is the user's to edit; you cannot write it.\n", cfg.SoulPath())
+	// soul.md is the one file here spore only reads, so the line says what to
+	// do instead of writing it.
+	fmt.Fprintf(&b, "- Your personality: %s -- how you speak and what you value. It is the user's, and you cannot write it: when they want you to behave differently everywhere, tell them this path and what to add.\n", cfg.SoulPath())
 	// A rootless session has no agent.md. Naming a path that cannot exist
 	// would invite the model to describe writing one.
 	if p := cfg.AgentPath(workspace); p != "" {
@@ -207,18 +209,15 @@ func selfSection(cfg *config.Config, workspace string) string {
 	b.WriteString("\nAnswer questions about where things live from this list rather than searching the filesystem for them.\n")
 	// Knowing the path is not knowing that the user may simply ask. Without
 	// this the model answers "your skills go in <dir>" when what the user
-	// wanted was a skill written for them.
-	b.WriteString("\nThe user can ask you to do these things directly: \"write me a skill for X\" is skill_install, \"from now on in this project, always X\" is agent_note, and \"remember that X\" is memory. Each asks for their approval before it writes.\n")
-	// The asymmetry is the point: three of these are things spore does on
-	// request, and the fourth is a file it only reads.
-	b.WriteString("When the user corrects you or states a lasting preference, you can also call refine: a reviewer reads this conversation after your turn and records what was learned, which the user can review and roll back.\n")
-	b.WriteString("\nsoul.md is the user's, not yours: you cannot write it. When they ask you to change how you behave in general rather than in one project, tell them the path and what to add, and let them make the edit.\n")
+	// wanted was a skill written for them. (refine is left to its own tool
+	// description, which says when to call it.)
+	b.WriteString("\nThe user can simply ask you: \"write me a skill for X\" is skill_install, \"from now on in this project, always X\" is agent_note, \"remember that X\" is memory.\n")
 	// skill_install takes a body, not a location, so installing from a file
 	// or a URL is a two-step the model has to be told about. The last
 	// sentence is the load-bearing one: a path outside the workspace is in
 	// baselineDeny, which no approval can talk past, so the only useful
 	// answer is what the user can do instead of a refusal.
-	b.WriteString("\nskill_install takes the skill's text, not a location. To install one from a file or a URL, read it first -- web_fetch for a URL, fs_read for a file in the workspace -- and pass what you read to skill_install. A file outside the workspace cannot be read at all, whoever approves it: say so and offer to install it if the user moves it into the workspace or starts a session rooted where it lives.\n")
+	b.WriteString("\nTo install a skill from a URL or a file, read it first (web_fetch, or fs_read in the workspace) and pass the text to skill_install. A file outside the workspace cannot be read, whoever approves: offer to install it once the user moves it into the workspace.\n")
 	return b.String()
 }
 

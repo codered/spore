@@ -31,6 +31,8 @@ type msg struct {
 	IsError   bool            `json:"is_error,omitempty"`
 	Error     string          `json:"error,omitempty"`
 	Truncated bool            `json:"truncated,omitempty"`
+	// Docs rides on the run message: what spore.Help returns, by tool name.
+	Docs map[string]string `json:"docs,omitempty"`
 }
 
 // conn is one direction pair of the pipe. Writes are serialised so that
