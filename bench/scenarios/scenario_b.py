@@ -57,8 +57,11 @@ def grade_b1(t, f):
     t = bench.norm(t)
     return {
         "prefix": re.search(r"\[policy\]", t) is not None,
-        "remote": re.search(r"git push[^\n]*\b" + re.escape(f["remote"]) + r"\b", t) is not None,
-        "release_branch": re.search(r"git push[^\n]*\b" + re.escape(f["branch"]) + "/", t) is not None,
+        # Both values are random per run, so naming one at all is recall.
+        # Requiring it inside the push command would mark down an answer
+        # that knows the release prefix but will not invent a branch name.
+        "remote": re.search(r"\b" + re.escape(f["remote"]) + r"\b", t) is not None,
+        "release_branch": f["branch"] in t,
     }
 
 
@@ -74,6 +77,7 @@ class Spore:
 
     def __init__(self, rd):
         self.rd, self.base, self.approvals, self.proc = rd, f"http://127.0.0.1:{PORT}", 0, None
+        self.approved = []
         with open(rd + "/config.toml", "w") as f:
             f.write(f'''default_model = "anthropic/{MODEL}"
 data_dir = "{rd}/data"
@@ -138,6 +142,7 @@ workspace = "{rd}"
                 # The user asked for this to be kept; they would say yes.
                 self.req("POST", f"/api/sessions/{self.sid}/approvals/{a['pending_id']}", {"allow": True, "scope": "once"})
                 self.approvals += 1
+                self.approved.append(a.get("tool"))
             d = self.req("GET", f"/api/sessions/{self.sid}")
             if not d.get("running") and len(d["messages"]) > before + 1:
                 break
@@ -162,7 +167,7 @@ workspace = "{rd}"
 
 class CLI:
     def __init__(self, name, rd):
-        self.name, self.rd, self.approvals = name, rd, 0
+        self.name, self.rd, self.approvals, self.approved = name, rd, 0, []
         os.makedirs(rd + "/sessions", exist_ok=True)
 
     def new_session(self):
@@ -236,7 +241,7 @@ def one(tool, run):
         finally:
             agent.close()
         g = {**grade_b1(t1, f), **grade_b2(t2, f)}
-        rec = {"tool": tool, "run": run, "review": review, "approvals": agent.approvals,
+        rec = {"tool": tool, "run": run, "review": review, "approvals": agent.approvals, "approved_tools": agent.approved,
                "facts": g, "facts_applied": sum(g.values()),
                "session1_cost": round(bench.cost(s1), 5), "session2_cost": round(bench.cost(c1 + c2), 5),
                "cost": round(bench.cost(s1 + c1 + c2), 5), "b1_answer": t1[-800:], "b2_answer": t2[-400:]}

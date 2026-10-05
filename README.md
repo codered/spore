@@ -446,6 +446,66 @@ The raw results are in [`bench/agents/`](bench/agents/).
 
 </details>
 
+## 🎯 Scenarios: the jobs spore is built for
+
+The benchmark above measures what every agent does: answer questions about a
+repository. These scenarios measure the jobs spore was designed for:
+remembering across sessions, working while you are away, keeping background
+work on a cheap model, and delegating. Same rules as the benchmark:
+- Claude Sonnet 5.5, each tool's default configuration.
+- Cost at list prices for every tool.
+- Scored by script.
+- A tool that cannot do the job out of the box is marked **NA**, and nothing
+  is added to make it work.
+
+The design, including a prompt-injection scenario that was not run, is in
+[`docs/superpowers/specs/2026-10-05-advantage-scenarios-design.md`](docs/superpowers/specs/2026-10-05-advantage-scenarios-design.md).
+
+### Memory across sessions
+
+**Session 1** is a short working session. Along the way the user mentions
+four things the repository cannot tell anyone:
+- the release-branch prefix;
+- the commit-message convention (`[package] …`);
+- the name of their fork's git remote;
+- the staging host and port.
+
+The values are random for every run, so no file holds the answer. At the end
+of session 1, each tool's own review runs where it has one (`/refine` in
+spore and in Prime Agent).
+
+**Session 2** is a new session, later, in the same workspace. The user asks:
+- for a commit message and the exact `git push` command for a change, which
+  should apply three of the four facts;
+- for the staging server, which is the fourth.
+
+| | Facts applied | Cost, both sessions | Session 2 alone |
+| --- | :-: | --: | --: |
+| **spore** | **12 / 12** | $0.083 | **$0.023** |
+| **Prime Agent** | 0 / 12 | $0.084 | $0.049 |
+| **pi** | 0 / 12 | **$0.046** | $0.029 |
+| **opencode** | 0 / 12 | $0.125 | $0.076 |
+
+<sub>3 runs per tool, 4 facts per run. Each run used a fresh container with a copy of this repository and nothing else.</sub>
+
+- **Only spore remembered.** It applied all four facts in all three runs.
+  Prime Agent's `/refine` ran, but it saves to the current session by
+  default, so a new session started without the facts, as its documentation
+  says. pi and opencode have no memory between sessions. All three said
+  plainly that they did not know, rather than guessing.
+- **spore's second session was the cheapest of the four,** because it
+  answered from memory. The others searched the repository for answers that
+  were not there.
+- **Over both sessions, pi cost less,** $0.046 against $0.083, and remembered
+  nothing. spore's extra cost is in session 1, where it saved the facts.
+- **What it asked of the user.** In spore's default configuration, saving a
+  memory needs approval: it asked once per fact (12 approvals across the
+  three runs), and asked 7 times to run a shell command in session 2. The
+  harness approved these as the user would; the others asked for nothing.
+  To stop being asked, move `memory` from the `ask` list to the `allow` list
+  in `[policy]`. Writing any of those lists replaces the defaults, so start
+  from the full lists in the policy section.
+
 ## 🔁 Refinement: an agent that learns, with an undo button
 
 Most agents forget a correction as soon as the session ends, unless you
