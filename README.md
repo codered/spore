@@ -15,7 +15,7 @@ Your models, your tools, your machine. Every action passes a policy engine you c
 
 [Quick start](#-quick-start) ·
 [Why spore](#-why-spore) ·
-[Comparison](#-spore-vs-pi-prime-agent-and-other-agents) ·
+[Comparison](#-spore-vs-opencode-pi-prime-agent-and-other-agents) ·
 [Features](#-feature-tour) ·
 [Configuration](#%EF%B8%8F-configuration) ·
 [Architecture](#-architecture)
@@ -142,50 +142,55 @@ open http://127.0.0.1:7777         # the same sessions in your browser
 > as a fallback for `${VAR}`, so the daemon has your keys even when it was not
 > started from an interactive shell.
 
-## 🥊 spore vs pi, Prime Agent and other agents
+## 🥊 spore vs opencode, pi, Prime Agent and other agents
 
-[pi](https://github.com/badlogic/pi-mono) and
+[opencode](https://opencode.ai), [pi](https://github.com/badlogic/pi-mono) and
 [Prime Agent](https://primeintellect.ai) are excellent **terminal coding
-harnesses**. pi is deliberately minimal: it has no MCP, no sub-agents and no
-permission prompts, and you add those with extensions. Prime Agent is a hard
-fork of pi built around a persistent Python REPL kernel. spore has a different
-goal: a **personal agent that runs continuously, can be reached from
-anywhere, and is safe to leave running**.
+harnesses**. opencode is the most complete of them: it has a permission
+system, MCP, sub-agents, LSP, and a client/server design with a web UI. pi is
+deliberately minimal: it has no MCP, no sub-agents and no permission prompts,
+and you add those with extensions. Prime Agent is a hard fork of pi built
+around a persistent Python REPL kernel. spore has a different goal: a
+**personal agent that runs continuously, can be reached from anywhere, and is
+safe to leave running**.
 
-| | **spore** | **pi** | **Prime Agent** |
-| --- | :---: | :---: | :---: |
-| Distribution | Single Go binary | Node.js package | Node.js app + Python kernel |
-| Built-in permission engine | ✅ allow / ask / deny + baseline deny | ❌ by design (extensions) | ❌ (extensions) |
-| Per-action policy inside code execution | ✅ every `spore.*` call is judged | — | ❌ the kernel has the user's OS permissions |
-| Code-as-action ("CodeAct") | ✅ Go, interpreter in a child process | ❌ | ✅ Python (IPython) |
-| MCP servers | ✅ stdio + HTTP, tools offered directly | ❌ by design (extensions) | ⚠️ HTTP only, through Python skill packages |
-| MCP path arguments held inside the workspace | ✅ | — | ❌ |
-| Sub-agents | ✅ depth, cost and concurrency limits | ❌ by design | ✅ |
-| Always-on daemon + scheduled jobs | ✅ | ❌ | ✅ |
-| Chat-app bridge | ✅ Discord, with approval buttons | ❌ | ❌ |
-| Web UI | ✅ in the binary | ❌ (HTML export) | ❌ |
-| Separate trust profile for remote input | ✅ `local` / `remote` | ❌ | ❌ |
-| Self-refinement of memory, with rollback | ✅ ledger + `/refine rollback` | ❌ | ✅ |
-| Semantic recall over your history | ✅ FTS5 always, Weaviate optional | ❌ | ❌ |
-| Per-call-site model routing | ✅ `[[route]]` | ❌ | ❌ |
-| OpenTelemetry tracing | ✅ Phoenix in one command | ❌ | ❌ |
-| Breadth of providers and subscription logins | Anthropic + any OpenAI-compatible | ✅✅ many | ✅✅ many |
-| Extension ecosystem | Skills + MCP | ✅✅ TypeScript extensions, packages | ✅✅ extensions, packages, Python skills |
+| | **spore** | **opencode** | **pi** | **Prime Agent** |
+| --- | :---: | :---: | :---: | :---: |
+| Distribution | Single Go binary | Single binary (Bun) | Node.js package | Node.js app + Python kernel |
+| Built-in permission engine | ✅ allow / ask / deny | ✅ allow / ask / deny (most tools allowed by default) | ❌ by design (extensions) | ❌ (extensions) |
+| Baseline deny that no rule or agent can override | ✅ | ❌ | ❌ | ❌ |
+| Per-action policy inside code execution | ✅ every `spore.*` call is judged | — | — | ❌ the kernel has the user's OS permissions |
+| Code-as-action ("CodeAct") | ✅ Go, interpreter in a child process | ❌ | ❌ | ✅ Python (IPython) |
+| MCP servers | ✅ stdio + HTTP, tools offered directly | ✅ local + remote, tools offered directly | ❌ by design (extensions) | ⚠️ HTTP only, through Python skill packages |
+| MCP path arguments held inside the workspace | ✅ | ❌ | — | ❌ |
+| Sub-agents | ✅ depth, cost and concurrency limits | ✅ step limit per agent | ❌ by design | ✅ |
+| Always-on daemon + scheduled jobs | ✅ | ⚠️ headless server, no scheduler | ❌ | ✅ |
+| Chat-app bridge | ✅ Discord, with approval buttons | ⚠️ GitHub issues and PRs only | ❌ | ❌ |
+| Web UI | ✅ in the binary | ✅ `opencode web` | ❌ (HTML export) | ❌ |
+| Separate trust profile for remote input | ✅ `local` / `remote` | ❌ | ❌ | ❌ |
+| Self-refinement of memory, with rollback | ✅ ledger + `/refine rollback` | ❌ | ❌ | ✅ |
+| Semantic recall over your history | ✅ FTS5 always, Weaviate optional | ❌ | ❌ | ❌ |
+| Per-call-site model routing | ✅ `[[route]]` | ⚠️ `small_model` for titles | ❌ | ❌ |
+| OpenTelemetry tracing | ✅ Phoenix in one command | ❌ | ❌ | ❌ |
+| LSP code intelligence | ❌ | ✅ | ❌ | ❌ |
+| Breadth of providers and subscription logins | Anthropic + any OpenAI-compatible | ✅✅ 75+ | ✅✅ many | ✅✅ many |
+| Extension ecosystem | Skills + MCP | ✅✅ plugins, agents, skills | ✅✅ TypeScript extensions, packages | ✅✅ extensions, packages, Python skills |
 
-<sub>Comparison made against pi-mono's README and Prime Agent 0.9.6's docs as of October 2026. ❌ means "not built in". Either project may add the feature through an extension. Corrections are welcome.</sub>
+<sub>Comparison made against opencode 1.18's docs, pi-mono's README and Prime Agent 0.9.6's docs as of October 2026. ❌ means "not built in". Each project may add the feature through a plugin or extension. Corrections are welcome.</sub>
 
 **Use spore when you want:**
 
 - an agent you can **leave running** that does work on a schedule and waits for your approval, rather than one that exists only while a terminal is open;
 - to let a model **write and run code** while every file read, shell command, fetch and MCP call is still checked against your rules;
+- **guardrails that hold even when you misconfigure something**: the baseline deny list is not a default you can switch off;
 - to reach your agent **from your phone** without exposing your machine. Discord input runs under its own stricter policy profile, and the daemon binds to loopback only;
 - **local models** for the inexpensive work and a frontier model only for the conversation;
 - one auditable, self-contained binary with **no package manager in the trust chain**.
 
-**Pick pi or Prime Agent when** you live in a terminal coding session and want
-the biggest provider list, subscription logins (Claude Pro/Max, ChatGPT,
-Copilot), session branching, or a large extension ecosystem that you can
-change freely.
+**Pick opencode, pi or Prime Agent when** you live in a terminal coding
+session and want the biggest provider list, subscription logins, LSP-aware
+editing (opencode), session branching, or a large plugin ecosystem that you
+can change freely.
 
 **Compared with IDE and cloud coding agents** (Claude Code, Codex, Cursor and
 others): those are tuned for the edit-test loop inside one repository. spore
