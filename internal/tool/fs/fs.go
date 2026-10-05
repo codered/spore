@@ -91,6 +91,10 @@ func schema(s string) json.RawMessage { return json.RawMessage(s) }
 
 type readTool struct{ base }
 
+// readNoteReserve keeps room under the output budget for the note that ends
+// a partial read, so the registry never cuts the note itself off.
+const readNoteReserve = 160
+
 func (readTool) Name() string { return "fs_read" }
 func (readTool) Description() string {
 	return "Read a text file. Returns numbered lines. Use offset and limit to page through a large file."
@@ -121,9 +125,6 @@ func (t readTool) Call(ctx context.Context, args json.RawMessage) (string, error
 	if err != nil {
 		return "", err
 	}
-	if len(raw) > t.maxBytes {
-		raw = raw[:t.maxBytes]
-	}
 	// A genuinely empty file (no content at all).
 	if len(raw) == 0 {
 		return "(empty file)", nil
@@ -140,9 +141,27 @@ func (t readTool) Call(ctx context.Context, args json.RawMessage) (string, error
 	if a.Limit > 0 && start+a.Limit < end {
 		end = start + a.Limit
 	}
+	// The budget is applied to whole rendered lines, after the offset, so a
+	// large file can be paged to its end and a partial read always says so.
+	// The kernel raises the limit for go_run programs (tool.WithOutputLimit).
+	budget := tool.OutputLimit(ctx, t.maxBytes) - readNoteReserve
 	var b strings.Builder
+	shown := start
 	for i := start; i < end; i++ {
-		fmt.Fprintf(&b, "%6d\t%s\n", i+1, lines[i])
+		line := fmt.Sprintf("%6d\t%s\n", i+1, lines[i])
+		if b.Len()+len(line) > budget {
+			if i == start {
+				b.WriteString(line[:max(budget, 0)])
+				fmt.Fprintf(&b, "\n[truncated: line %d alone exceeds the output budget and is cut; continue with offset=%d]", i+1, i+2)
+				return b.String(), nil
+			}
+			break
+		}
+		b.WriteString(line)
+		shown = i + 1
+	}
+	if b.Len() > 0 && shown < end {
+		fmt.Fprintf(&b, "[truncated: showing lines %d-%d of %d; call again with offset=%d to read on]", start+1, shown, len(lines), shown+1)
 	}
 	if b.Len() == 0 {
 		// An offset past the end must not look like an empty file: the model
