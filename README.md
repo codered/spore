@@ -256,25 +256,79 @@ directory outside its workspace instead of answering.
   second at −$0.139 (−34%).
 - **spore beat opencode**: opencode cost +$0.132 (+33%), took 13% longer in
   total, and answered one fewer question correctly.
-- **spore costs more than pi for two measured reasons.** Its prompt is
-  larger: an average of 6.2k input tokens per LLM call, against 3.2k for pi
-  (5.8k for Prime Agent, 14.3k for opencode). Even with no facts or skills,
-  as here, the prompt carries the environment, the tool guidance and the
-  `spore` package reference that code mode needs. And code mode writes programs: 966 output tokens per task
-  against pi's 326, and output tokens cost five times as much as input.
-- **Code mode's saving did not carry over to these tools.** pi and Prime
-  Agent answered the many-file questions (T1, T2) in two calls each with a
-  single `wc` or `grep` shell command. That is the same "one program instead
-  of many reads" effect, and a shell one-liner is cheaper to write than a Go
-  program. The 43% input-token saving measured earlier is against spore's own
-  tools mode, not against agents with a shell.
-- **What the difference buys.** Inside a spore program, every file read,
-  shell command and fetch is still checked by the policy engine one call at a
-  time, and the program cannot import `os` or `net`. A shell one-liner in the
-  other tools runs with your full permissions. In this benchmark, that control
-  is what the extra cost pays for.
 - spore's wall time includes starting its daemon on every run. In normal use
   the daemon is already running.
+
+#### Why spore cost more here
+
+Every run was a brand-new session asking one question. That makes the
+**cache write** (storing the prompt for reuse, at $2.50 per million tokens)
+the biggest cost for every tool. The prompt is written once and then read
+back only two to five times at $0.20 before the session ends.
+
+| | Cache write | Output | Cache read | Uncached input | Total |
+| --- | --: | --: | --: | --: | --: |
+| spore | $0.246 (61%) | $0.116 (29%) | $0.032 (8%) | $0.012 (3%) | $0.405 |
+| pi | $0.096 (64%) | $0.039 (26%) | $0.014 (9%) | $0.000 (0%) | $0.149 |
+| **Difference** | **+$0.150** | **+$0.077** | **+$0.018** | **+$0.011** | **+$0.256** |
+
+So the gap has two causes:
+
+1. **A larger prompt: +$0.150, 59% of the gap.** spore averaged 6.2k input
+   tokens per LLM call against pi's 3.2k (Prime Agent 5.8k, opencode 14.3k).
+   Even with no facts or skills, spore's prompt carries the environment, where
+   its files live, the tool guidance, and the `spore` package reference that
+   code mode needs.
+2. **Go programs instead of shell one-liners: +$0.077, 30% of the gap.** pi
+   and Prime Agent answered the many-file questions (T1, T2) in two calls with
+   a single `wc` or `grep`. spore did the same work in one `go_run` program,
+   but writing a Go program takes 966 output tokens per task against pi's 326,
+   and output costs five times as much as input. The 43% saving in the
+   code-mode section is against spore's own one-tool-per-call mode, not
+   against agents with a shell.
+
+What that difference buys: inside a spore program, every file read, shell
+command and fetch is still checked by the policy engine one call at a time,
+and the program cannot import `os` or `net`. A shell one-liner in the other
+tools runs with your full permissions.
+
+#### Why prompt caching and recall did not help
+
+- **Prompt caching is on.** spore marks the stable part of its prompt and the
+  end of the conversation for caching, and keeps the per-turn environment
+  after the breakpoint so it does not invalidate the cache. But caching pays
+  off when a prompt is *reused*. Here each run was a new session in a new
+  directory with a new data directory, and spore's prompt names those paths,
+  so every run paid to write its whole prompt and read it back only a few
+  times. The other tools were in the same position.
+- **Recall is not search over your code.** It indexes spore's own
+  conversations, summaries and memory facts (SQLite FTS5, optionally
+  Weaviate), not the files in your repository. Each run started with an empty
+  data directory and asked a first-time question about the code, so there was
+  nothing to recall.
+
+#### When spore should come out ahead (estimated, not measured here)
+
+- **Long sessions in one workspace.** The prompt is written to the cache once
+  and read on every later call. spore's extra ~3k tokens per call then cost
+  about $0.0006 per call to read, against about $0.0075 to write in each of
+  these one-question runs. Over a working session the prompt-size gap becomes
+  a small share of the bill. (Anthropic's cache lasts 5 minutes by default, so
+  a long pause means one more write.)
+- **Questions it has seen before.** Memory facts are in every prompt, and
+  `recall_search` finds earlier answers and summaries, so spore can answer
+  from what it already knows instead of reading the files again.
+- **Cheap work on a cheap model.** Compaction, titles, refinement and
+  sub-agent turns can each be routed to a small or local model with
+  `[[route]]`. In this benchmark everything ran on Sonnet 5.5.
+- **Long investigations.** A sub-agent does the reading in its own context
+  and returns only its conclusion, so the parent's prompt, which every later
+  turn pays for, stays small.
+- **Compared with opencode,** spore was already cheaper here, measured.
+
+The difference that does not depend on cost: pi and Prime Agent have no
+built-in permission system, and pi's own advice is to run it in a container.
+spore enforces the policy itself, including inside the programs it runs.
 
 <details>
 <summary>How it was run, and what to keep in mind</summary>
