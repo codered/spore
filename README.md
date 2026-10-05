@@ -217,14 +217,16 @@ Prime Agent on the same model (Claude Sonnet 5.5, each tool's default
 thinking), three runs each: 48 runs, on 2026-10-05. Token counts come from
 each tool's own per-call usage report. Cost is computed from those tokens at
 Sonnet 5.5's list prices ($2 input, $10 output, $2.50 cache write, $0.20 cache
-read per million tokens), so no tool's own price table is involved.
+read per million tokens), so no tool's own price table is involved. spore
+was measured with the prompt trimmed in #59, a change this benchmark led to
+([before and after](#before-and-after-59)).
 
 | | Total cost (12 runs) | Cost vs spore | Total wall time | Median per task | LLM calls | Correct |
 | --- | --: | --: | --: | --: | --: | :-: |
-| **pi** | **$0.149** | **−$0.256 (−63%)** | **66 s** | **5.3 s** | **34** | 12/12 |
-| **Prime Agent** | $0.266 | −$0.139 (−34%) | 73 s | 5.8 s | 34 | 12/12 |
-| **spore** | $0.405 | baseline | 117 s | 8.6 s | 42 | 12/12 |
-| **opencode** | $0.537 | +$0.132 (+33%) | 132 s | 11.2 s | 47 | 11/12 |
+| **pi** | **$0.149** | **−$0.203 (−58%)** | **66 s** | **5.3 s** | **34** | 12/12 |
+| **Prime Agent** | $0.266 | −$0.086 (−24%) | 73 s | 5.8 s | 34 | 12/12 |
+| **spore** | $0.352 | baseline | 126 s | 9.7 s | 39 | 12/12 |
+| **opencode** | $0.537 | +$0.185 (+53%) | 132 s | 11.2 s | 47 | 11/12 |
 
 <details>
 <summary>Per task</summary>
@@ -233,14 +235,14 @@ read per million tokens), so no tool's own price table is involved.
 
 | Task | | spore | opencode | pi | Prime Agent |
 | --- | --- | --: | --: | --: | --: |
-| **T1** three largest Go files (many reads) | cost | $0.023 | $0.031 (+33%) | **$0.009 (−63%)** | $0.016 (−29%) |
-| | wall (median) | 6.6 s | 8.6 s | 4.3 s | **4.2 s** |
-| **T2** packages with the most tests (many reads) | cost | $0.039 | $0.029 (−27%) | **$0.007 (−83%)** | $0.018 (−54%) |
-| | wall (median) | 13.4 s | 11.4 s | **4.6 s** | 5.9 s |
-| **T3** `[subagents]` keys and defaults (a few reads) | cost | $0.047 | $0.077 (+63%) | **$0.019 (−60%)** | $0.029 (−37%) |
-| | wall (median) | 13.2 s | 11.7 s | **7.2 s** | 8.5 s |
-| **T4** default daemon address (one lookup) | cost | $0.025 | $0.043 (+69%) | **$0.015 (−39%)** | $0.025 (−3%) |
-| | wall (median) | **5.1 s** | 10.9 s | 5.6 s | 5.6 s |
+| **T1** three largest Go files (many reads) | cost | $0.022 | $0.031 (+39%) | **$0.009 (−61%)** | $0.016 (−26%) |
+| | wall (median) | 6.9 s | 8.6 s | 4.3 s | **4.2 s** |
+| **T2** packages with the most tests (many reads) | cost | $0.036 | $0.029 (−19%) | **$0.007 (−81%)** | $0.018 (−49%) |
+| | wall (median) | 13.6 s | 11.4 s | **4.6 s** | 5.9 s |
+| **T3** `[subagents]` keys and defaults (a few reads) | cost | $0.038 | $0.077 (+102%) | **$0.019 (−50%)** | $0.029 (−22%) |
+| | wall (median) | 11.1 s | 11.7 s | **7.2 s** | 8.5 s |
+| **T4** default daemon address (one lookup) | cost | $0.022 | $0.043 (+99%) | **$0.015 (−28%)** | $0.025 (+14%) |
+| | wall (median) | **4.2 s** | 10.9 s | 5.6 s | 5.6 s |
 
 Costs are means of three runs; the percentage is against spore's cost for
 the same task (− cheaper, + more expensive). Every tool answered every task correctly in all
@@ -251,11 +253,12 @@ directory outside its workspace instead of answering.
 
 **What the numbers say:**
 
-- **pi was the cheapest and fastest** on these tasks: −$0.256 (−63%) against
+- **pi was the cheapest and fastest** on these tasks: −$0.203 (−58%) against
   spore over the 12 runs, in about half the wall time. Prime Agent came
-  second at −$0.139 (−34%).
-- **spore beat opencode**: opencode cost +$0.132 (+33%), took 13% longer in
-  total, and answered one fewer question correctly.
+  second at −$0.086 (−24%).
+- **spore beat opencode**: opencode cost +$0.185 (+53%), took 5% longer in
+  total, and answered one fewer question correctly. spore was also the
+  fastest on the single lookup (T4).
 - spore's wall time includes starting its daemon on every run. In normal use
   the daemon is already running.
 
@@ -268,21 +271,21 @@ back only two to five times at $0.20 before the session ends.
 
 | | Cache write | Output | Cache read | Uncached input | Total |
 | --- | --: | --: | --: | --: | --: |
-| spore | $0.246 (61%) | $0.116 (29%) | $0.032 (8%) | $0.012 (3%) | $0.405 |
+| spore | $0.209 (59%) | $0.109 (31%) | $0.022 (6%) | $0.011 (3%) | $0.352 |
 | pi | $0.096 (64%) | $0.039 (26%) | $0.014 (9%) | $0.000 (0%) | $0.149 |
-| **Difference** | **+$0.150** | **+$0.077** | **+$0.018** | **+$0.011** | **+$0.256** |
+| **Difference** | **+$0.113** | **+$0.070** | **+$0.008** | **+$0.011** | **+$0.203** |
 
 So the gap has two causes:
 
-1. **A larger prompt: +$0.150, 59% of the gap.** spore averaged 6.2k input
+1. **A larger prompt: +$0.113, 56% of the gap.** spore averaged 5.1k input
    tokens per LLM call against pi's 3.2k (Prime Agent 5.8k, opencode 14.3k).
    Even with no facts or skills, spore's prompt carries the environment, where
    its files live, the tool guidance, and the `spore` package reference that
    code mode needs.
-2. **Go programs instead of shell one-liners: +$0.077, 30% of the gap.** pi
+2. **Go programs instead of shell one-liners: +$0.070, 35% of the gap.** pi
    and Prime Agent answered the many-file questions (T1, T2) in two calls with
    a single `wc` or `grep`. spore did the same work in one `go_run` program,
-   but writing a Go program takes 966 output tokens per task against pi's 326,
+   but writing a Go program takes 911 output tokens per task against pi's 326,
    and output costs five times as much as input. The 43% saving in the
    code-mode section is against spore's own one-tool-per-call mode, not
    against agents with a shell.
@@ -319,34 +322,52 @@ tool, 80 turns in total.
 
 | | Cost per session | Cost vs spore | Turn 1 | Turns 2–10 | Wall time | Correct |
 | --- | --: | --: | --: | --: | --: | :-: |
-| **pi** | **$0.069** | **−$0.062 (−47%)** | $0.010 | $0.059 | **42 s** | 20/20 |
-| **Prime Agent** | $0.106 | −$0.025 (−19%) | $0.027 | $0.079 | 48 s | 20/20 |
-| **spore** | $0.131 | baseline | $0.023 | $0.108 | 56 s | 20/20 |
-| **opencode** | $0.142 | +$0.010 (+8%) | $0.020 | $0.122 | 61 s | 20/20 |
+| **pi** | **$0.069** | **−$0.040 (−36%)** | $0.010 | $0.059 | **42 s** | 20/20 |
+| **Prime Agent** | $0.106 | −$0.003 (−2%) | $0.027 | $0.079 | 48 s | 20/20 |
+| **spore** | $0.109 | baseline | $0.018 | $0.091 | 53 s | 20/20 |
+| **opencode** | $0.142 | +$0.033 (+30%) | $0.020 | $0.122 | 61 s | 20/20 |
 
-**The gap narrows, but does not close:**
+**In a session, spore draws level with Prime Agent; pi stays cheaper:**
 
 | Against spore | One-question runs | 10-turn session |
 | --- | --: | --: |
-| pi | −63% | −47% |
-| Prime Agent | −34% | −19% |
-| opencode | +33% | +8% |
+| pi | −58% | −36% |
+| Prime Agent | −24% | −2% |
+| opencode | +53% | +30% |
 
-- **Caching did its job.** 91% of spore's input tokens in a session were read
+- **Caching did its job.** 90% of spore's input tokens in a session were read
   from the cache (pi 93%, Prime Agent 93%, opencode 96%), and cache writes fell
-  from 61% to 35% of spore's bill.
-- **spore still cost more than pi and Prime Agent.** spore and pi made the
-  same number of LLM calls (20 per session), but spore's calls averaged 11.9k
-  input tokens against pi's 6.8k, and it wrote 78% more output (3,708 tokens
-  per session against 2,084). The +$0.062 gap per session is 36% cache writes,
-  29% cache reads, 26% output and 9% uncached input. A larger prompt costs
-  less once it is cached, but it is still read on every call.
-- **The 9% uncached input is a design choice.** spore puts the per-turn
+  from 59% to 33% of spore's bill.
+- **spore and Prime Agent are within 2%;** pi is still 36% cheaper. spore and
+  pi made the same number of LLM calls (20 per session), but spore's calls
+  averaged 8.9k input tokens against pi's 6.8k, and it wrote 69% more output
+  (3,514 tokens per session against 2,084). The +$0.040 gap per session is
+  36% output, 33% cache writes, 17% cache reads and 13% uncached input.
+- **The uncached input is a design choice.** spore puts the per-turn
   environment after the cache breakpoint, so it never invalidates the cache,
-  and pays full price for those tokens (about 140 per call) on every call:
+  and pays full price for those tokens (about 135 per call) on every call:
   about $0.005 per session here.
-- **spore stayed ahead of opencode,** narrowly: −$0.010 per session and 5 s
+- **spore stayed ahead of opencode:** −$0.033 (−23%) per session and 8 s
   faster.
+
+<a id="before-and-after-59"></a>
+**Before and after #59.** The first round of these benchmarks showed spore's
+prompt as its largest cost: in code mode, 72% of a fresh request was the
+`go_run` section, mostly a catalogue of every tool's full JSON schema. #59
+lists each tool in one line, moves the full schema behind `spore.Help(name)`,
+and tightens the tool descriptions. Re-measured with the same tasks and
+graders (the other tools' runs are unchanged):
+
+| spore | Before #59 | After #59 |
+| --- | --: | --: |
+| One-question runs (12): total cost | $0.405 | **$0.352 (−13%)** |
+| Input tokens per LLM call | 6.2k | 5.1k (−18%) |
+| 10-turn session: cost per session | $0.131 | **$0.109 (−17%)** |
+| Input tokens per LLM call | 11.9k | 8.9k (−25%) |
+| Correct | 12/12 and 20/20 | 12/12 and 20/20 |
+
+The runs from before #59 are kept in
+[`bench/agents/`](bench/agents/) as `*-spore-before-59.jsonl`.
 
 #### Where spore should still come out ahead (not measured)
 
@@ -403,7 +424,8 @@ an answer checked against `wc` or `grep`):
 - Running this benchmark found two spore bugs, which were fixed before the
   spore runs counted here: `fs_read` cut large files at 30 KB with no notice
   (#57), and `spore once` without a terminal left approvals unanswered for 5
-  minutes (#58).
+  minutes (#58). It also led to the prompt trim in #59. spore's runs were
+  made after #59, later the same day as the other tools' runs.
 
 **Limits.** Three runs of four read-only questions, and two ten-turn
 sessions, about one repository, on one model. This is not a general coding benchmark: editing tasks, long
