@@ -17,7 +17,8 @@ import (
 const usage = `spore — a personal agent
 
 usage:
-  spore once <prompt>          run one turn in a fresh session and print the reply
+  spore once <prompt>          run one turn in a fresh session and print the reply;
+                               exits 1 if the turn fails or is stopped
   spore chat [session-id]      interactive session (resumes when given an id)
   spore serve                  run the daemon (HTTP API + web UI + scheduler)
   spore serve --status         report whether a daemon is running
@@ -51,7 +52,9 @@ func main() {
 		os.Exit(kernel.ChildMain())
 	}
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "spore:", err)
+		if !alreadyReported(err) {
+			fmt.Fprintln(os.Stderr, "spore:", err)
+		}
 		os.Exit(1)
 	}
 }

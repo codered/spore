@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -40,6 +41,25 @@ func printEvent(ev daemon.WireEvent, showCost bool) {
 // errTurnFinished ends a stream cleanly once the turn it was watching is
 // over. stream returns it, and callers treat it as success.
 var errTurnFinished = fmt.Errorf("turn finished")
+
+// errTurnFailed and errTurnStopped end a stream whose turn did not finish,
+// so spore once exits non-zero and a script can tell. printEvent has already
+// told the user why, which is what reportedError marks.
+var (
+	errTurnFailed  error = reportedError{"turn failed"}
+	errTurnStopped error = reportedError{"turn stopped"}
+)
+
+// reportedError is an error whose message the user has already seen.
+type reportedError struct{ msg string }
+
+func (e reportedError) Error() string { return e.msg }
+
+// alreadyReported reports whether main should exit without printing err.
+func alreadyReported(err error) bool {
+	var r reportedError
+	return errors.As(err, &r)
+}
 
 // approve renders an approval on the terminal and posts the answer back.
 // Errors are reported and swallowed: the guard denies on its own timeout, so
@@ -88,8 +108,12 @@ func cmdOnce(ctx context.Context, cfg *config.Config, prompt, workspaceFlag stri
 			switch ev.Type {
 			case daemon.WireApproval:
 				approve(streamCtx, c, ap, sessionID, ev)
-			case daemon.WireTurnDone, daemon.WireError, daemon.WireStopped:
+			case daemon.WireTurnDone:
 				return errTurnFinished
+			case daemon.WireError:
+				return errTurnFailed
+			case daemon.WireStopped:
+				return errTurnStopped
 			}
 			return nil
 		})
