@@ -3,6 +3,7 @@ package fs
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,6 +73,105 @@ func TestReadOffsetAndLimit(t *testing.T) {
 	if strings.Contains(got, "1") || !strings.Contains(got, "2") || !strings.Contains(got, "3") || strings.Contains(got, "4") {
 		t.Errorf("offset/limit window wrong: %q", got)
 	}
+}
+
+// bigFile writes n lines of "line NNNN" plus padding, so the file is several
+// times larger than the small budget the truncation tests use.
+func bigFile(t *testing.T, ws, name string, n int) {
+	t.Helper()
+	var b strings.Builder
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&b, "line %04d %s\n", i, strings.Repeat("x", 40))
+	}
+	if err := os.WriteFile(filepath.Join(ws, name), []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func newRead(maxBytes int) tool.Tool {
+	for _, tl := range New(maxBytes) {
+		if tl.Name() == "fs_read" {
+			return tl
+		}
+	}
+	panic("no fs_read")
+}
+
+func readIn(t *testing.T, ctx context.Context, tl tool.Tool, args any) string {
+	t.Helper()
+	raw, _ := json.Marshal(args)
+	out, err := tl.Call(ctx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// A file over the budget used to be cut at the byte limit with no sign of
+// it, so a reader could not tell a partial file from a whole one. It must end
+// on a whole line and say where to continue.
+func TestReadOverBudgetSaysWhereToContinue(t *testing.T) {
+	ws := t.TempDir()
+	bigFile(t, ws, "big.txt", 400) // about 20 KB
+	got := readIn(t, ctxFor(ws), newRead(4096), map[string]any{"path": "big.txt"})
+
+	if len(got) > 4096 {
+		t.Errorf("result is %d bytes, over the 4096-byte budget", len(got))
+	}
+	if strings.Contains(got, "line 0400") {
+		t.Fatal("the whole file came back; the budget was not applied")
+	}
+	last := lastNumberedLine(t, got)
+	wantNote := fmt.Sprintf("offset=%d", last+1)
+	if !strings.Contains(got, "of 400") || !strings.Contains(got, wantNote) {
+		t.Errorf("no note naming the line count and the next offset (%s):\n%s", wantNote, got[len(got)-200:])
+	}
+	for _, ln := range strings.Split(got, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(ln), fmt.Sprint(last)) && !strings.HasSuffix(ln, strings.Repeat("x", 40)) {
+			t.Errorf("the last line shown is cut part way: %q", ln)
+		}
+	}
+}
+
+// Paging is how a model reads a large file, but bytes past the budget were
+// dropped before the offset was applied, so the end of the file could not be
+// read at any offset.
+func TestReadOffsetReachesPastTheBudget(t *testing.T) {
+	ws := t.TempDir()
+	bigFile(t, ws, "big.txt", 400)
+	got := readIn(t, ctxFor(ws), newRead(4096), map[string]any{"path": "big.txt", "offset": 399})
+	if !strings.Contains(got, "line 0399") || !strings.Contains(got, "line 0400") {
+		t.Errorf("offset 399 of a 400-line file = %q", got)
+	}
+}
+
+// A go_run program reads through the kernel, which raises the limit with
+// tool.WithOutputLimit so the program gets the whole file. fs_read ignored it.
+func TestReadHonoursTheContextOutputLimit(t *testing.T) {
+	ws := t.TempDir()
+	bigFile(t, ws, "big.txt", 400)
+	ctx := tool.WithOutputLimit(ctxFor(ws), 1<<20)
+	got := readIn(t, ctx, newRead(4096), map[string]any{"path": "big.txt"})
+	if lastNumberedLine(t, got) != 400 || strings.Contains(got, "truncated") {
+		t.Errorf("with a 1 MB limit the whole file must come back; last line %d", lastNumberedLine(t, got))
+	}
+}
+
+// lastNumberedLine returns the number of the last "%6d\t" line in an fs_read result.
+func lastNumberedLine(t *testing.T, out string) int {
+	t.Helper()
+	last := 0
+	for _, ln := range strings.Split(out, "\n") {
+		num, _, ok := strings.Cut(ln, "\t")
+		if !ok {
+			continue
+		}
+		var n int
+		if _, err := fmt.Sscanf(strings.TrimSpace(num), "%d", &n); err == nil {
+			last = n
+		}
+	}
+	return last
 }
 
 func TestReadMissingFileIsAnError(t *testing.T) {
