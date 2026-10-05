@@ -154,9 +154,17 @@ func (s *Server) StartJob(ctx context.Context, job store.Job) (string, error) {
 	if len(title) > 60 {
 		title = title[:60]
 	}
-	// A job has no directory of its own, so it gets a session directory --
-	// the same treatment as the web UI and the bridge.
-	sessionID, err := s.CreateSession(ctx, title, "", store.SourceJob, policy.ProfileLocal)
+	// A job created in a conversation runs where that conversation is
+	// rooted: "list the largest files in this project" means that project.
+	// A job with no origin (made over the API, or whose origin was deleted)
+	// has no directory of its own and gets a session directory, the same
+	// treatment as the web UI and the bridge. So does one whose origin's
+	// root is no longer usable, so the run still happens.
+	sessionID, err := s.CreateSession(ctx, title, s.originWorkspace(ctx, job), store.SourceJob, policy.ProfileLocal)
+	if err != nil && job.OriginSessionID != "" {
+		slog.Warn("the job's origin workspace could not be used; running in a session directory", "job", job.ID, "err", err)
+		sessionID, err = s.CreateSession(ctx, title, "", store.SourceJob, policy.ProfileLocal)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -173,4 +181,17 @@ func (s *Server) StartJob(ctx context.Context, job store.Job) (string, error) {
 		return sessionID, err
 	}
 	return sessionID, nil
+}
+
+// originWorkspace is the root of the session a job was created in, or "" when
+// it has none, so CreateSession allocates a session directory.
+func (s *Server) originWorkspace(ctx context.Context, job store.Job) string {
+	if job.OriginSessionID == "" {
+		return ""
+	}
+	sess, ok, err := s.store.Session(ctx, job.OriginSessionID)
+	if err != nil || !ok {
+		return ""
+	}
+	return sess.Workspace
 }

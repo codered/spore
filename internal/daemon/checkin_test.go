@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -393,5 +395,84 @@ func TestProfileForFollowsTheSessionsSource(t *testing.T) {
 		if got := profileFor(store.Session{Source: src}); got != want {
 			t.Errorf("profileFor(%q) = %s, want %s", src, got, want)
 		}
+	}
+}
+
+// A job created from a conversation about a project runs in that project.
+// It used to get an empty session directory, so a job asked to "list the
+// largest files in this project" found no project at all.
+func TestJobRunsInItsOriginSessionsWorkspace(t *testing.T) {
+	s, _ := newTestServer(t, provider.ScriptTurn{Text: "done"})
+	ceiling := t.TempDir()
+	s.cfg.Policy.Workspace = ceiling
+	project := filepath.Join(ceiling, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	origin, err := s.CreateSession(ctx, "chat", project, store.SourceChat, policy.ProfileLocal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := scheduler.CreateJob(ctx, s.store, "*/5 * * * *", "list the largest files", origin, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid := runJob(t, s, job)
+	sess, ok, err := s.store.Session(ctx, sid)
+	if err != nil || !ok {
+		t.Fatalf("job session: ok=%v err=%v", ok, err)
+	}
+	if sess.Workspace != project {
+		t.Errorf("job ran in %q, want the origin's workspace %q", sess.Workspace, project)
+	}
+}
+
+// A job with no origin, such as one created over the API by a script, has
+// no project to run in, and keeps its own session directory.
+func TestJobWithoutOriginGetsASessionDirectory(t *testing.T) {
+	s, _ := newTestServer(t, provider.ScriptTurn{Text: "done"})
+	ctx := context.Background()
+	job, err := scheduler.CreateJob(ctx, s.store, "*/5 * * * *", "report", "", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid := runJob(t, s, job)
+	sess, _, err := s.store.Session(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join("sessions", sid); !strings.HasSuffix(sess.Workspace, want) {
+		t.Errorf("job ran in %q, want its own session directory (.../%s)", sess.Workspace, want)
+	}
+}
+
+// If the origin's root can no longer be used (here the ceiling moved after
+// the job was made), the run still happens, in a session directory.
+func TestJobFallsBackWhenTheOriginWorkspaceIsRefused(t *testing.T) {
+	s, _ := newTestServer(t, provider.ScriptTurn{Text: "done"})
+	ceiling := t.TempDir()
+	s.cfg.Policy.Workspace = ceiling
+	project := filepath.Join(ceiling, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	origin, err := s.CreateSession(ctx, "chat", project, store.SourceChat, policy.ProfileLocal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := scheduler.CreateJob(ctx, s.store, "*/5 * * * *", "report", origin, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Policy.Workspace = t.TempDir() // the project is now outside the ceiling
+	sid := runJob(t, s, job)
+	sess, _, err := s.store.Session(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(sess.Workspace, filepath.Join("sessions", sid)) {
+		t.Errorf("job ran in %q, want a session directory once the origin's root is refused", sess.Workspace)
 	}
 }
