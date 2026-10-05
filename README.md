@@ -681,6 +681,12 @@ make lint       # pinned golangci-lint, the same as CI
 CI also runs `govulncheck` and `go mod tidy` checks. Issues and pull requests
 are welcome.
 
+After a UI change, `make demo` re-records `assets/tui-demo.gif` from
+[`assets/demo/tui.tape`](assets/demo/tui.tape). It needs
+[vhs](https://github.com/charmbracelet/vhs) and `ANTHROPIC_API_KEY`, and runs
+against a separate demo daemon that it removes afterwards. If Chromium reports
+"No usable sandbox", run `VHS_NO_SANDBOX=true make demo`.
+
 ## 📄 License
 
 [MPL-2.0](LICENSE)

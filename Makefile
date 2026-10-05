@@ -59,4 +59,10 @@ vulncheck:
 tidycheck:
 	go mod tidy && git diff --exit-code go.mod go.sum
 
-.PHONY: build install test test-weaviate test-phoenix vet fmt fmtcheck lint lint-install vulncheck vulncheck-install tidycheck
+# demo re-records the README's TUI GIF (assets/tui-demo.gif) against a demo
+# daemon that shares nothing with yours. Needs vhs and ANTHROPIC_API_KEY; see
+# assets/demo/record.sh.
+demo: build
+	./assets/demo/record.sh
+
+.PHONY: build install demo test test-weaviate test-phoenix vet fmt fmtcheck lint lint-install vulncheck vulncheck-install tidycheck
