@@ -16,6 +16,7 @@ Your models, your tools, your machine. Every action passes a policy engine you c
 [Quick start](#-quick-start) ·
 [Why spore](#-why-spore) ·
 [Comparison](#-spore-vs-opencode-pi-prime-agent-and-other-agents) ·
+[Benchmark](#-benchmark-cost-and-speed-against-opencode-pi-and-prime-agent) ·
 [Features](#-feature-tour) ·
 [Configuration](#%EF%B8%8F-configuration) ·
 [Architecture](#-architecture)
@@ -60,9 +61,10 @@ rule or profile can remove it.
 <td width="50%" valign="top">
 
 ### 🧠 Code mode, without giving up control
-The model writes **one Go program per step** instead of a dozen round trips.
-In our measurements this used **43% fewer input tokens**. Each `spore.*` call
-inside the program is still judged by the policy engine as a separate call.
+The model writes **one Go program per step** instead of a dozen round trips:
+**43% fewer input tokens** than spore's own one-tool-per-call mode. Each
+`spore.*` call inside the program is still judged by the policy engine as a
+separate call. ([How it compares with other agents](#-benchmark-cost-and-speed-against-opencode-pi-and-prime-agent).)
 
 </td>
 </tr>
@@ -198,13 +200,133 @@ safe to leave running**.
 **Pick opencode, pi or Prime Agent when** you live in a terminal coding
 session and want the biggest provider list, subscription logins, LSP-aware
 editing (opencode), session branching, or a large plugin ecosystem that you
-can change freely.
+can change freely. If the lowest cost per task matters most and you are
+happy to run without a permission system, pi was the cheapest and fastest in
+[our benchmark](#-benchmark-cost-and-speed-against-opencode-pi-and-prime-agent).
 
 **Compared with IDE and cloud coding agents** (Claude Code, Codex, Cursor and
 others): those are tuned for the edit-test loop inside one repository. spore
 is the agent around that work: it summarises yesterday's commits at 9 a.m.,
 answers from Discord, remembers your preferences across projects, and keeps
 the whole history searchable on your own disk.
+
+## 📊 Benchmark: cost and speed against opencode, pi and Prime Agent
+
+The same four questions about this repository, put to spore, opencode, pi and
+Prime Agent on the same model (Claude Sonnet 5.5, each tool's default
+thinking), three runs each: 48 runs, on 2026-10-05. Token counts come from
+each tool's own per-call usage report. Cost is computed from those tokens at
+Sonnet 5.5's list prices ($2 input, $10 output, $2.50 cache write, $0.20 cache
+read per million tokens), so no tool's own price table is involved.
+
+| | Total cost (12 runs) | vs spore | Total wall time | Median per task | LLM calls | Correct |
+| --- | --: | --: | --: | --: | --: | :-: |
+| **pi** | **$0.149** | **0.37×** | **66 s** | **5.3 s** | **34** | 12/12 |
+| **Prime Agent** | $0.266 | 0.66× | 73 s | 5.8 s | 34 | 12/12 |
+| **spore** | $0.405 | 1.00× | 117 s | 8.6 s | 42 | 12/12 |
+| **opencode** | $0.537 | 1.33× | 132 s | 11.2 s | 47 | 11/12 |
+
+<details>
+<summary>Per task</summary>
+
+<br>
+
+| Task | | spore | opencode | pi | Prime Agent |
+| --- | --- | --: | --: | --: | --: |
+| **T1** three largest Go files (many reads) | cost | $0.023 | $0.031 | **$0.009** | $0.016 |
+| | wall (median) | 6.6 s | 8.6 s | 4.3 s | **4.2 s** |
+| **T2** packages with the most tests (many reads) | cost | $0.039 | $0.029 | **$0.007** | $0.018 |
+| | wall (median) | 13.4 s | 11.4 s | **4.6 s** | 5.9 s |
+| **T3** `[subagents]` keys and defaults (a few reads) | cost | $0.047 | $0.077 | **$0.019** | $0.029 |
+| | wall (median) | 13.2 s | 11.7 s | **7.2 s** | 8.5 s |
+| **T4** default daemon address (one lookup) | cost | $0.025 | $0.043 | **$0.016** | $0.025 |
+| | wall (median) | **5.1 s** | 10.9 s | 5.6 s | 5.6 s |
+
+Costs are means of three runs. Every tool answered every task correctly in all
+three runs, except one opencode T3 run, which stopped to ask for access to a
+directory outside its workspace instead of answering.
+
+</details>
+
+**What the numbers say:**
+
+- **pi was the cheapest and fastest** on these tasks, at 0.37× spore's cost
+  and about half its wall time. Prime Agent came second.
+- **spore beat opencode**: 25% cheaper, 11% less total wall time, and one
+  more correct answer.
+- **spore costs more than pi for two measured reasons.** Its prompt is
+  larger: an average of 6.2k input tokens per LLM call, against 3.2k for pi
+  (5.8k for Prime Agent, 14.3k for opencode). Even with no facts or skills,
+  as here, the prompt carries the environment, the tool guidance and the
+  `spore` package reference that code mode needs. And code mode writes programs: 966 output tokens per task
+  against pi's 326, and output tokens cost five times as much as input.
+- **Code mode's saving did not carry over to these tools.** pi and Prime
+  Agent answered the many-file questions (T1, T2) in two calls each with a
+  single `wc` or `grep` shell command. That is the same "one program instead
+  of many reads" effect, and a shell one-liner is cheaper to write than a Go
+  program. The 43% input-token saving measured earlier is against spore's own
+  tools mode, not against agents with a shell.
+- **What the difference buys.** Inside a spore program, every file read,
+  shell command and fetch is still checked by the policy engine one call at a
+  time, and the program cannot import `os` or `net`. A shell one-liner in the
+  other tools runs with your full permissions. In this benchmark, that control
+  is what the extra cost pays for.
+- spore's wall time includes starting its daemon on every run. In normal use
+  the daemon is already running.
+
+<details>
+<summary>How it was run, and what to keep in mind</summary>
+
+<br>
+
+**Tasks** (read-only questions about this repo at commit `ee67c8d`, each with
+an answer checked against `wc` or `grep`):
+
+1. Which three Go files under `internal/` have the most lines?
+2. Which three directories under `internal/` contain the most Go test functions?
+3. What settings does the `[subagents]` section accept, and what are the defaults?
+4. What address does the daemon listen on by default?
+
+**Making it even:**
+
+- Each run used a fresh copy of the repo at a neutral `/tmp` path, with stdin closed.
+- Personal configuration was off: pi and Prime Agent ran with
+  `--no-extensions --no-skills --no-prompt-templates --no-context-files`, and
+  opencode with `--pure` and an empty config directory.
+- spore used a fresh data directory, with a policy that allows every tool
+  without asking, as the other three do. Its baseline deny list stays on
+  because it cannot be turned off.
+- opencode's `external_directory` permission was set to `deny`. In
+  `opencode run`, an `ask` is answered "reject", which ends the run.
+- Answers were graded by matching the expected values in each tool's final
+  answer.
+- The order of the tools rotated between tasks.
+
+**Disclosures:**
+
+- One opencode run exited at startup with no output and no API calls. It was
+  re-run, and both records are kept.
+- Running this benchmark found two spore bugs, which were fixed before the
+  spore runs counted here: `fs_read` cut large files at 30 KB with no notice
+  (#57), and `spore once` without a terminal left approvals unanswered for 5
+  minutes (#58).
+
+**Limits.** Three runs of four read-only questions about one repository, on
+one model. This is not a general coding benchmark: editing tasks, long
+sessions, and other models may come out differently.
+
+**Reproduce it** (needs `ANTHROPIC_API_KEY`, and `opencode`, `pi` and
+`prime-agent` on your PATH):
+
+```bash
+make build
+python3 bench/agents/bench.py 1 3        # 48 runs, about $1.40 at list prices
+python3 bench/agents/analyze.py
+```
+
+The raw results are in [`bench/agents/`](bench/agents/).
+
+</details>
 
 ## 🔁 Refinement: an agent that learns, with an undo button
 
