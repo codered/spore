@@ -15,6 +15,7 @@ import (
 
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/kernel"
+	"github.com/codered/spore/internal/provider"
 )
 
 type Tool struct {
@@ -75,6 +76,7 @@ func (t *Tool) Call(ctx context.Context, args json.RawMessage) (string, error) {
 		Ceiling:   time.Duration(t.cfg.CeilingSeconds) * time.Second,
 		MaxOutput: t.maxOutput,
 		HelperMax: t.cfg.HelperMaxBytes,
+		Docs:      docs(*r),
 	})
 	out := res.Output
 	if res.Truncated {
@@ -98,4 +100,13 @@ func footer(calls []kernel.Call) string {
 		parts[i] = c.Tool + " " + c.Outcome
 	}
 	return "\n--- calls: " + strings.Join(parts, " · ") + " ---"
+}
+
+// docs is spore.Help's catalogue: every tool the runner can reach, with the
+// full schema the prompt's one-line listing leaves out.
+func docs(r kernel.Runner) map[string]string {
+	if s, ok := r.(interface{ Specs() []provider.ToolSpec }); ok {
+		return kernel.Docs(s.Specs())
+	}
+	return nil
 }

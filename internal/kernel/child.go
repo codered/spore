@@ -52,7 +52,7 @@ func ChildMain() int {
 		return 2
 	}
 
-	ch := &child{conn: c, pending: map[int64]chan msg{}}
+	ch := &child{conn: c, pending: map[int64]chan msg{}, docs: run.Docs}
 	go ch.readLoop()
 
 	w := &outWriter{conn: c, limit: run.MaxOutput}
@@ -131,6 +131,12 @@ func surface(ch *child) interp.Exports {
 		"Call": reflect.ValueOf(func(tool string, args map[string]any) (string, error) {
 			return ch.call(tool, args)
 		}),
+		"Help": reflect.ValueOf(func(tool string) (string, error) {
+			if d, ok := ch.docs[tool]; ok {
+				return d, nil
+			}
+			return "", fmt.Errorf("no tool named %q", tool)
+		}),
 	}
 	return ex
 }
@@ -160,6 +166,7 @@ type child struct {
 	next    atomic.Int64
 	mu      sync.Mutex
 	pending map[int64]chan msg
+	docs    map[string]string // spore.Help's answers, from the run message
 }
 
 // readLoop routes results to the helper waiting on them. The parent never

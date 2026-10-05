@@ -47,9 +47,8 @@ type loadTool struct {
 func (loadTool) Name() string { return "skill_load" }
 
 func (loadTool) Description() string {
-	return "Read one skill in full: a markdown document of instructions the user wrote for a " +
-		"particular kind of work. The skills index in your context lists what is available by " +
-		"name and description; load one before you act on the work it covers."
+	return "Read one skill in full. The skills index in your context lists them; load one before " +
+		"doing the work it covers."
 }
 
 func (loadTool) Schema() json.RawMessage {
@@ -109,9 +108,8 @@ func (t installTool) Description() string {
 			where = dir
 		}
 	}
-	return "Install a skill: write a markdown document of instructions into " + where +
-		", as <name>/SKILL.md, where it is listed in every future conversation and can be " +
-		"loaded with skill_load. Install one only when the user asks for it."
+	return "Install a skill: write <name>/SKILL.md into " + where +
+		", listed in every future conversation and loaded with skill_load. Only when the user asks for it."
 }
 
 func (installTool) Schema() json.RawMessage {

@@ -53,6 +53,8 @@ type Options struct {
 	MaxOutput int
 	// HelperMax caps one helper result handed to the program.
 	HelperMax int
+	// Docs is what spore.Help answers with, by tool name (see Docs).
+	Docs map[string]string
 }
 
 // Call records one spore.* call for the footer the model sees.
@@ -100,7 +102,7 @@ func Run(ctx context.Context, src string, r Runner, opt Options) (Result, error)
 		return Result{}, err
 	}
 	defer p.stop()
-	if err := p.conn.write(msg{Type: msgRun, Code: src, MaxOutput: opt.MaxOutput}); err != nil {
+	if err := p.conn.write(msg{Type: msgRun, Code: src, MaxOutput: opt.MaxOutput, Docs: opt.Docs}); err != nil {
 		return Result{}, fmt.Errorf("kernel: send program: %w", err)
 	}
 
