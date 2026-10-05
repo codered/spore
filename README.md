@@ -300,31 +300,69 @@ tools runs with your full permissions.
   off when a prompt is *reused*. Here each run was a new session in a new
   directory with a new data directory, and spore's prompt names those paths,
   so every run paid to write its whole prompt and read it back only a few
-  times. The other tools were in the same position.
+  times. The other tools were in the same position. The session benchmark
+  below measures what caching does when a session continues.
 - **Recall is not search over your code.** It indexes spore's own
   conversations, summaries and memory facts (SQLite FTS5, optionally
   Weaviate), not the files in your repository. Each run started with an empty
   data directory and asked a first-time question about the code, so there was
   nothing to recall.
 
-#### When spore should come out ahead (estimated, not measured here)
+#### In a working session (measured)
 
-- **Long sessions in one workspace.** The prompt is written to the cache once
-  and read on every later call. spore's extra ~3k tokens per call then cost
-  about $0.0006 per call to read, against about $0.0075 to write in each of
-  these one-question runs. Over a working session the prompt-size gap becomes
-  a small share of the bill. (Anthropic's cache lasts 5 minutes by default, so
-  a long pause means one more write.)
-- **Questions it has seen before.** Memory facts are in every prompt, and
-  `recall_search` finds earlier answers and summaries, so spore can answer
-  from what it already knows instead of reading the files again.
+The one-question runs are the worst case for a large prompt, so a second
+benchmark ran **ten questions in one session**, in one workspace, with each
+tool continuing its own session (spore through its HTTP API, the others with
+`--continue` or `--session`). The questions build on each other, one asks
+about something said earlier, and the last asks for a recap. Two sessions per
+tool, 80 turns in total.
+
+| | Cost per session | Cost vs spore | Turn 1 | Turns 2–10 | Wall time | Correct |
+| --- | --: | --: | --: | --: | --: | :-: |
+| **pi** | **$0.069** | **−$0.062 (−47%)** | $0.010 | $0.059 | **42 s** | 20/20 |
+| **Prime Agent** | $0.106 | −$0.025 (−19%) | $0.027 | $0.079 | 48 s | 20/20 |
+| **spore** | $0.131 | baseline | $0.023 | $0.108 | 56 s | 20/20 |
+| **opencode** | $0.142 | +$0.010 (+8%) | $0.020 | $0.122 | 61 s | 20/20 |
+
+**The gap narrows, but does not close:**
+
+| Against spore | One-question runs | 10-turn session |
+| --- | --: | --: |
+| pi | −63% | −47% |
+| Prime Agent | −34% | −19% |
+| opencode | +33% | +8% |
+
+- **Caching did its job.** 91% of spore's input tokens in a session were read
+  from the cache (pi 93%, Prime Agent 93%, opencode 96%), and cache writes fell
+  from 61% to 35% of spore's bill.
+- **spore still cost more than pi and Prime Agent.** spore and pi made the
+  same number of LLM calls (20 per session), but spore's calls averaged 11.9k
+  input tokens against pi's 6.8k, and it wrote 78% more output (3,708 tokens
+  per session against 2,084). The +$0.062 gap per session is 36% cache writes,
+  29% cache reads, 26% output and 9% uncached input. A larger prompt costs
+  less once it is cached, but it is still read on every call.
+- **The 9% uncached input is a design choice.** spore puts the per-turn
+  environment after the cache breakpoint, so it never invalidates the cache,
+  and pays full price for those tokens (about 140 per call) on every call:
+  about $0.005 per session here.
+- **spore stayed ahead of opencode,** narrowly: −$0.010 per session and 5 s
+  faster.
+
+#### Where spore should still come out ahead (not measured)
+
+These benchmarks cover a single session on one model. They do not exercise
+these features, which are where spore is designed to save:
+
+- **Questions it has seen before, across sessions.** Memory facts are in
+  every prompt, and `recall_search` finds earlier answers and summaries, so
+  spore can answer from what it already knows instead of reading the files
+  again. Recall indexes spore's own history, not your code.
 - **Cheap work on a cheap model.** Compaction, titles, refinement and
   sub-agent turns can each be routed to a small or local model with
-  `[[route]]`. In this benchmark everything ran on Sonnet 5.5.
+  `[[route]]`. Here everything ran on Sonnet 5.5.
 - **Long investigations.** A sub-agent does the reading in its own context
   and returns only its conclusion, so the parent's prompt, which every later
-  turn pays for, stays small.
-- **Compared with opencode,** spore was already cheaper here, measured.
+  call pays for, stays small.
 
 The difference that does not depend on cost: pi and Prime Agent have no
 built-in permission system, and pi's own advice is to run it in a container.
@@ -367,8 +405,8 @@ an answer checked against `wc` or `grep`):
   (#57), and `spore once` without a terminal left approvals unanswered for 5
   minutes (#58).
 
-**Limits.** Three runs of four read-only questions about one repository, on
-one model. This is not a general coding benchmark: editing tasks, long
+**Limits.** Three runs of four read-only questions, and two ten-turn
+sessions, about one repository, on one model. This is not a general coding benchmark: editing tasks, long
 sessions, and other models may come out differently.
 
 **Reproduce it** (needs `ANTHROPIC_API_KEY`, and `opencode`, `pi` and
@@ -376,8 +414,10 @@ sessions, and other models may come out differently.
 
 ```bash
 make build
-python3 bench/agents/bench.py 1 3        # 48 runs, about $1.40 at list prices
+python3 bench/agents/bench.py 1 3        # one-question runs: 48 runs, about $1.40
 python3 bench/agents/analyze.py
+python3 bench/agents/session.py 1 2      # sessions: 8 sessions of 10 turns, about $0.90
+python3 bench/agents/analyze_sessions.py
 ```
 
 The raw results are in [`bench/agents/`](bench/agents/).
