@@ -22,7 +22,7 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 WORKSPACE_REF = "ee67c8d"  # the commit the expected answers below were taken from
 WS = None  # set by main: a checkout of WORKSPACE_REF
 OUT = os.path.join(HERE, "results.jsonl")
-SPORE = os.path.join(REPO, "spore")
+SPORE = os.environ.get("SPORE_BIN") or os.path.join(REPO, "spore")
 PRIME = os.environ.get("PRIME_AGENT") or shutil.which("prime-agent") or os.path.expanduser("~/.local/share/prime-agent/bin/prime-agent")
 MODEL = "claude-sonnet-5-5"
 TIMEOUT = 600
@@ -226,8 +226,13 @@ def one(tool, task, run):
 
 
 def checkout():
-    """Extract WORKSPACE_REF into a temp dir; every run copies it."""
+    """Extract WORKSPACE_REF into a temp dir; every run copies it. Inside a
+    container with no git history, BENCH_SNAPSHOT names a directory that
+    already holds that tree."""
     d = tempfile.mkdtemp(prefix="sbench-ws.", dir="/tmp")
+    if os.environ.get("BENCH_SNAPSHOT"):
+        shutil.copytree(os.environ["BENCH_SNAPSHOT"], d, dirs_exist_ok=True)
+        return d
     archive = subprocess.run(["git", "-C", REPO, "archive", WORKSPACE_REF], check=True, capture_output=True).stdout
     subprocess.run(["tar", "-x", "-C", d], input=archive, check=True)
     return d
