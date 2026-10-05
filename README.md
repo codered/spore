@@ -206,6 +206,101 @@ is the agent around that work: it summarises yesterday's commits at 9 a.m.,
 answers from Discord, remembers your preferences across projects, and keeps
 the whole history searchable on your own disk.
 
+## 🔁 Refinement: an agent that learns, with an undo button
+
+Most agents forget a correction as soon as the session ends, unless you
+remember to say "remember that". spore reviews its own conversations and
+keeps what it learned.
+
+```text
+ session ──▶ trigger ──▶ reviewer (separate LLM call) ──▶ JSON edits ──▶ validate ──▶ apply or propose ──▶ ledger
+            idle 10m      sees what you and spore said,     create /       closed        by where the        before/after
+            compaction    never tool output                 update /       vocabulary    session came        for rollback
+            model asks                                      delete                       from
+            /refine
+```
+
+**What it edits.** Memory facts (`~/.spore/memory/*.md`) and the project's
+`.spore/agent.md`, nothing else. Skills, `soul.md`, config and policy are out
+of its reach. Each edit is small and cites the part of the conversation that
+justifies it: a preference you stated, a correction you made, a fact that has
+gone stale and should be merged or deleted.
+
+**When it runs.**
+
+| Trigger | When |
+| --- | --- |
+| Idle | A session has been quiet for `[refine] idle_minutes` (default 10). |
+| Compaction | Old messages are being folded into a summary, so their lessons are reviewed before the detail goes. |
+| The model | The `refine` tool, when the model notices something worth keeping. |
+| You | `/refine [focus]`, for example `/refine how I like commit messages`. |
+
+**Why it is safe to leave on.** A self-editing memory is exactly what a
+prompt injection would like to reach, so three rules hold it:
+
+1. **Trust follows where the text came from, not who pressed the button.**
+   Edits from your own chat sessions apply at once. Edits from Discord or
+   scheduled-job sessions are stored as *proposals* that change nothing until
+   you press `a` in the TUI's `R` view, even when you start the review yourself.
+2. **The reviewer never sees tool output.** A web page or file the session
+   read cannot speak to it. A lesson has to appear in what you or spore said.
+3. **The edit vocabulary is closed.** A reply that names any other kind of
+   edit, or any other target, is dropped rather than interpreted.
+
+**Every edit can be undone.** Each round goes into a ledger with the before
+and after content. `/refine rollback` undoes the last round in the session,
+and `x` on a row in the `R` view undoes that round. Sub-agent sessions are
+never reviewed, because the parent's review covers their work.
+
+**What it costs.** One extra LLM call per round, on a call site of its own:
+`[[route]] when = "refinement"` sends it to a small or local model. An applied
+edit changes the system prompt, which costs one prompt-cache miss on the next
+turn.
+
+## 🌳 Sub-agents: delegate without giving up control
+
+A session can hand a self-contained task to a sub-agent. The child works in a
+session of its own and returns only its conclusion, so a long investigation
+costs the parent a paragraph of context instead of fifty tool results.
+
+| Tool | What the model gets |
+| --- | --- |
+| `agent_run` | Run a sub-agent and wait for its answer. |
+| `agent_spawn` | Start one in the background, keep working, and collect it later. Needs the daemon. |
+| `agent_result` | A spawned child's state (`running`, `done`, `failed`, `interrupted`), cost, and its answer once done. |
+
+**What they are for:**
+
+- **Keeping the parent's context small.** Reading a whole subsystem, triaging
+  a log, comparing three libraries: the parent sees only the answer.
+- **Parallel work.** Several independent probes run at once, up to
+  `max_concurrent`.
+- **Cheaper models.** Sub-agent turns are their own call site, so
+  `[[route]] when = "subagent"` can send them to a small or local model while
+  the conversation stays on a frontier model.
+- **Work that outlives the turn.** `agent_spawn` keeps going after the parent's
+  turn ends. If the daemon restarts, children that were running are marked
+  `interrupted` instead of silently disappearing.
+
+**The limits are part of the design:**
+
+```toml
+[subagents]
+max_depth      = 2      # a top-level session spawns; its children cannot
+max_cost_usd   = 1.00   # ceiling for the whole tree, every agent summed
+max_concurrent = 4      # children running at once under one root
+```
+
+`max_cost_usd` covers the whole tree, because depth alone does not stop a wide
+fan-out. When a limit refuses a launch, the model gets an ordinary tool error
+and does the work itself.
+
+**A child can never reach further than its parent.** It inherits the parent's
+trust profile and workspace. Its approvals go to the human at the top of the
+tree, and no agent can answer its own approval or a sibling's. Only a human
+can stop a sub-agent: press `x` on it in the TUI, or call
+`DELETE /api/sessions/{id}/agents/{child}`. No tool can do it.
+
 ## 🧭 Feature tour
 
 <details open>
@@ -383,30 +478,6 @@ local_paths = false   # its "paths" are repository paths, not files on this mach
 </details>
 
 <details>
-<summary><b>Sub-agents</b>: delegate work with depth, cost and concurrency limits</summary>
-
-<br>
-
-| Tool | Use |
-| --- | --- |
-| `agent_run` | Run a sub-agent and wait for its answer. |
-| `agent_spawn` | Start one in the background and continue. |
-| `agent_result` | Read its state, and its answer when it has finished. |
-
-A sub-agent inherits the trust profile and workspace of its parent, **never
-more**. Its approvals go to the human at the top of the tree, and a sub-agent
-cannot approve its own request or a sibling's. Only a human can stop one.
-
-```toml
-[subagents]
-max_depth      = 2      # a top-level session can spawn, its children cannot
-max_cost_usd   = 1.00   # limit for the whole tree
-max_concurrent = 4
-```
-
-</details>
-
-<details>
 <summary><b>Discord bridge</b>: your agent on your phone</summary>
 
 <br>
@@ -498,24 +569,6 @@ search falls back to keywords and the turn continues.
 </details>
 
 <details>
-<summary><b>Refinement</b>: spore reviews its own conversations</summary>
-
-<br>
-
-A review runs when a session goes idle (`[refine] idle_minutes`, default 10),
-when compaction folds old messages, when the model asks for one, or when you
-type `/refine [focus]`. It produces small create, update and delete edits to
-facts and project notes, each based on evidence from the conversation.
-
-- Chat sessions apply edits immediately. **Discord and scheduled-job sessions
-  only propose them**: accept (`a`) or reject (`r`) them in the `R` view.
-- Every edit is in a ledger. `/refine rollback` undoes the last round.
-- The reviewer never sees tool output, only what you and spore said.
-- Route it to an inexpensive model with `[[route]] when = "refinement"`.
-
-</details>
-
-<details>
 <summary><b>Skills</b>: on-demand procedures that only you can install</summary>
 
 <br>
@@ -576,7 +629,7 @@ price_out = 25.0
 kind     = "openai"             # any OpenAI-compatible endpoint
 base_url = "http://localhost:11434/v1"
 
-# Call sites: chat, compaction, title, classify, refinement
+# Call sites: chat, compaction, title, classify, refinement, subagent
 [[route]]
 when  = "compaction|title|classify|refinement"
 model = "ollama/qwen3:8b"
