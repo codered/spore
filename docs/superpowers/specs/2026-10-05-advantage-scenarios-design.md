@@ -20,16 +20,24 @@ Each scenario has to be:
 
 - **Measurable.** A pass/fail outcome or a number, checked by a script, never
   by reading transcripts and deciding.
+- **Costed.** Every scenario reports each tool's cost at the same list prices
+  next to the outcome. The headline is the cost of getting the job done
+  correctly.
 - **Fair.** Every tool runs in its default configuration on the same model.
-  Where another tool needs an extension or setup to do the same thing, the
-  results say so; they do not score it as unable.
+  A tool that cannot perform the operation out of the box is scored **NA**:
+  no extensions, plugins, cron jobs or wrapper scripts are added to make it
+  work.
 - **Falsifiable.** Each scenario states what result would show spore does
   *not* have the advantage, and the README reports that result if it happens.
 
 ## 2. Ground rules
 
 - **Model.** Claude Sonnet 5.5 for every tool, each tool's default thinking.
-  Scenario D also uses a local model.
+  Scenario D also uses a local model, OpenAI `gpt-oss-20b`, served by the
+  user's local OpenAI-compatible endpoint; its tokens cost $0.
+- **NA versus a miss.** NA is for an operation a tool cannot do at all
+  (scheduling in pi). A tool that can answer but has no memory still runs
+  scenario B; it simply does not recall, and that is scored as such.
 - **Default configuration.** Each tool keeps its shipped permission behaviour.
   - spore: `ask` for writes, shell, MCP and memory; the baseline deny always.
   - opencode: most tools allowed; `external_directory` is `ask`; `.env` is
@@ -157,8 +165,7 @@ on the daemon, and its result is waiting when you come back.
 user had to take to set it up.
 
 **Expected.** spore and Prime Agent (which has `schedule add` and a daemon)
-pass. pi and opencode have no scheduler, which is reported as "needs cron
-plus a script" with that setup written out, not as a fail.
+pass. pi and opencode have no scheduler out of the box: **NA**.
 
 **What would falsify it.** The job not running, or needing the client open.
 
@@ -173,9 +180,11 @@ conversation.
   benchmark's kind, run twice:
   1. spore with everything on Sonnet 5.5;
   2. spore with `[[route]] when = "compaction|title|refinement"` on the local
-     `studio` model.
-- The same session on the other tools, which have no such routing (opencode
-  can route titles with `small_model`, and that is configured for it).
+     `gpt-oss-20b`.
+- The same session on the other tools in their default configuration, all on
+  Sonnet 5.5. Per-call-site routing itself is NA for them; their session
+  cost is still measured, and that is what spore's routed cost is compared
+  with.
 - **Measured:**
   - total dollar cost at list prices (local tokens at $0);
   - correctness on the session's graded questions;
@@ -203,7 +212,8 @@ small, and the tree's cost has a ceiling.
   `max_depth` means "not set" and becomes 2, so a deny rule is the way to
   turn them off.
 - Run on opencode and Prime Agent, which also have sub-agents, with their
-  defaults.
+  defaults. pi has no sub-agents: **NA** for the delegated run. Its
+  single-context cost is still measured.
 - **Measured:** parent context size after the task, cost of the five
   follow-ups, total cost, correctness, and whether `max_cost_usd` stopped a
   run that went past it (a separate run with a low ceiling).
@@ -222,6 +232,10 @@ the README says so.
 
 ## 4. Gaps known before running, and what to do about them
 
+Decision (2026-10-05): both are fixed in their own PR before scenario A runs,
+so its results describe what ships.
+
+
 - **Secrets through the shell.** The baseline deny covers the `fs_*` tools,
   not `shell_exec`: `cat .env` is stopped only by `ask`. In spore's default
   configuration that holds (unattended runs deny it, and a person sees the
@@ -239,10 +253,11 @@ the README says so.
 
 | Order | Scenario | Needs | Estimated API cost |
 | --- | --- | --- | --: |
+| 0 | Baseline gaps (section 4) | policy change and tests, own PR | – |
 | 1 | A, injection | Docker image with the four agents, a canary harness, a sink | $2–4 |
 | 2 | B, memory | session runner (exists), a refine trigger per tool | $2–3 |
 | 3 | C, unattended | spore and Prime Agent schedulers | < $1 |
-| 4 | D, routing | the local `studio` model running | $2–3 |
+| 4 | D, routing | `gpt-oss-20b` on the local endpoint | $2–3 |
 | 5 | E, delegation | session runner | $2–4 |
 
 Each scenario lands as its own PR: harness, raw results, and a README section
