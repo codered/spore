@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -48,9 +47,11 @@ func (t terminalApprover) Ask(ctx context.Context, a policy.Ask) (policy.Answer,
 		}
 		line, ok := t.lines.ReadLine()
 		if !ok {
-			// No terminal to ask: deny rather than assume consent.
+			// No terminal to ask: deny rather than assume consent. The deny is
+			// an answer, not an error, so the caller sends it and the turn goes
+			// on; an error left it blocked until approval_timeout.
 			_, _ = fmt.Fprintln(t.out, "no input available; denying")
-			return policy.Answer{}, errors.New("no input available to answer the approval request")
+			return policy.Answer{Allow: false, Scope: policy.ScopeOnce}, nil
 		}
 		switch strings.ToLower(strings.TrimSpace(line)) {
 		case "y", "yes":
