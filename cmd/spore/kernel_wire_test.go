@@ -147,3 +147,28 @@ func main() {
 		t.Errorf("the program did not get the whole 100 KB file:\n%s", out)
 	}
 }
+
+// spore.Help answers from the docs go_run collects from the guard's tool
+// specs. If the guard stopped exposing them, Help would say "no tool named"
+// for every tool, and the one-line catalogue in the prompt would have no
+// fallback.
+func TestGoRunHelpDescribesARealTool(t *testing.T) {
+	dir := t.TempDir()
+	guard, ctx := kernelGuard(t, dir)
+	out := runProgram(t, guard, ctx, `package main
+
+import (
+	"fmt"
+	"spore"
+)
+
+func main() {
+	d, err := spore.Help("schedule_create")
+	fmt.Println(d, err)
+}`)
+	for _, want := range []string{"RFC3339", `"spec"`, "cron expression or RFC3339 instant"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("spore.Help(\"schedule_create\") lacks %q:\n%s", want, out)
+		}
+	}
+}

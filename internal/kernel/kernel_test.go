@@ -482,3 +482,29 @@ func TestLocalSporeIdentifierIsLeftAlone(t *testing.T) {
 		t.Errorf("Output = %q", res.Output)
 	}
 }
+
+// spore.Help answers from the documentation the parent sends with the
+// program, so the prompt can list a tool in one line and the full schema
+// costs nothing until a program asks for it. It is not a tool call.
+func TestHelpReturnsAToolsFullDocumentation(t *testing.T) {
+	o := opts()
+	o.Docs = Docs(referenceSpecs())
+	r := &fakeRunner{}
+	res, err := Run(context.Background(), prog(`func main() {
+	d, err := spore.Help("mcp__gh__list_prs")
+	fmt.Println(d, err)
+	_, err = spore.Help("no_such_tool")
+	fmt.Println("unknown:", err)
+}`, "fmt", "spore"), r, o)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, want := range []string{"List pull requests.", `"repo"`, "unknown: no tool named \"no_such_tool\""} {
+		if !strings.Contains(res.Output, strings.ReplaceAll(want, `\"`, `"`)) {
+			t.Errorf("output lacks %q:\n%s", want, res.Output)
+		}
+	}
+	if n := len(r.seen()); n != 0 {
+		t.Errorf("Help made %d tool calls; it must answer locally", n)
+	}
+}

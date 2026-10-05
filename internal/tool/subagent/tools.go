@@ -25,10 +25,8 @@ type runTool struct{ sup *subagent.Supervisor }
 func (t *runTool) Name() string { return "agent_run" }
 
 func (t *runTool) Description() string {
-	return "Run a sub-agent on a self-contained task and wait for its answer. " +
-		"Use this to keep a long, noisy investigation out of your own context: " +
-		"the sub-agent reads what it needs and you get only its conclusion. " +
-		"Give it one complete instruction -- it cannot see this conversation."
+	return "Run a sub-agent on a self-contained task and wait for its answer, keeping a long " +
+		"investigation out of your context. It cannot see this conversation: give it one complete instruction."
 }
 
 func (t *runTool) Schema() json.RawMessage {
@@ -75,10 +73,8 @@ type spawnTool struct{ sup *subagent.Supervisor }
 func (t *spawnTool) Name() string { return "agent_spawn" }
 
 func (t *spawnTool) Description() string {
-	return "Start a sub-agent on a self-contained task and return immediately " +
-		"with its id, without waiting. Use this for work that should continue " +
-		"while you carry on -- collect the answer later with agent_result. " +
-		"Give it one complete instruction: it cannot see this conversation."
+	return "Start a sub-agent on a self-contained task without waiting; collect its answer with " +
+		"agent_result. It cannot see this conversation: give it one complete instruction."
 }
 
 func (t *spawnTool) Schema() json.RawMessage {
@@ -122,9 +118,7 @@ type resultTool struct{ sup *subagent.Supervisor }
 func (t *resultTool) Name() string { return "agent_result" }
 
 func (t *resultTool) Description() string {
-	return "Read a sub-agent's state and, once it has finished, its answer. " +
-		"Call it with the id agent_spawn returned. A sub-agent that is still " +
-		"running reports running and has no answer yet."
+	return "Read a spawned sub-agent's state, and its answer once it has finished."
 }
 
 func (t *resultTool) Schema() json.RawMessage {

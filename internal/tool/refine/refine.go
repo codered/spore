@@ -24,10 +24,9 @@ func New(r Requester) tool.Tool { return refineTool{r: r} }
 func (refineTool) Name() string { return "refine" }
 
 func (refineTool) Description() string {
-	return "Ask for a review of this conversation once the current turn ends. The review may record " +
-		"a correction or lasting preference the user gave as a memory fact or a project note, or fix " +
-		"one that is now wrong. Call it when the user corrects you or states how they want you to work. " +
-		"Returns immediately; keep working."
+	return "Ask for a review of this conversation after this turn; it may record or fix a memory " +
+		"fact or project note. Call it when the user corrects you or states how they want you " +
+		"to work. Returns at once."
 }
 
 func (refineTool) Schema() json.RawMessage {

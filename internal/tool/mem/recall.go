@@ -21,9 +21,8 @@ func NewRecallSearch(r recall.Recall) tool.Tool { return recallSearch{r: r} }
 func (recallSearch) Name() string { return "recall_search" }
 
 func (recallSearch) Description() string {
-	return "Search earlier conversations, compaction summaries and memory facts by keyword. " +
-		"Use it to recover something discussed in another session, or to read a memory fact " +
-		"whose body did not fit in context."
+	return "Search earlier conversations, summaries and memory facts by keyword: something from " +
+		"another session, or a fact whose body did not fit in context."
 }
 
 func (recallSearch) Schema() json.RawMessage {

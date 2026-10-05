@@ -51,13 +51,17 @@ func TestReferenceCatalogue(t *testing.T) {
 		"## Acting through go_run",
 		"func Fetch(url string) (string, error)",
 		"encoding/json",
-		`mcp__gh__list_prs`,
-		`{"type":"object","properties":{"repo":{"type":"string"}}}`,
-		"schedule_list",
+		"`mcp__gh__list_prs(repo?: string)` — List pull requests.",
+		"`schedule_list()` — List scheduled jobs.",
+		"func Help(tool string) (string, error)",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("reference lacks %q", want)
 		}
+	}
+	// The full schema is what Help is for; the prompt carries a signature.
+	if strings.Contains(got, `"properties"`) {
+		t.Error("the reference still inlines JSON schemas")
 	}
 	_, catalogue, ok := strings.Cut(got, "### Other tools")
 	if !ok {
@@ -86,5 +90,24 @@ func TestReferenceWarnsAboutMissingLanguageFeatures(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("reference does not mention %q", want)
 		}
+	}
+}
+
+func TestDocsCarryTheFullSchema(t *testing.T) {
+	d := Docs(referenceSpecs())
+	got, ok := d["mcp__gh__list_prs"]
+	if !ok || !strings.Contains(got, "List pull requests.") || !strings.Contains(got, `{"type":"object","properties":{"repo":{"type":"string"}}}`) {
+		t.Errorf("Docs[mcp__gh__list_prs] = %q", got)
+	}
+}
+
+func TestSignatureRendersTypesEnumsAndOptionals(t *testing.T) {
+	got := signature("memory", json.RawMessage(`{"type":"object","properties":{
+		"op":{"type":"string","enum":["write","delete"]},
+		"name":{"type":"string"},
+		"tags":{"type":"array","items":{"type":"string"}}},
+		"required":["op","name"]}`))
+	if want := "memory(op: write|delete, name: string, tags?: array)"; got != want {
+		t.Errorf("signature = %q, want %q", got, want)
 	}
 }

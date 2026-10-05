@@ -29,11 +29,9 @@ func newAgentNote(cfg *config.Config) agentNote { return agentNote{cfg: cfg} }
 func (agentNote) Name() string { return "agent_note" }
 
 func (a agentNote) Description() string {
-	return "Record a standing instruction for this workspace: something the user has said to " +
-		"always do, or never do, while working here. It is appended to the workspace's " +
-		"agent.md and is in front of you in every future turn in this workspace. Use it for " +
-		"orders (\"always run make lint before pushing\"); use memory for observations " +
-		"(\"this repo uses Turborepo\"). Record one only when the user asks for it."
+	return "Record a standing order for this workspace (\"always run make lint before pushing\"). " +
+		"It goes into the workspace's agent.md and is in front of you in every future turn here. " +
+		"Use memory for observations instead. Only when the user asks for it."
 }
 
 func (agentNote) Schema() json.RawMessage {

@@ -32,9 +32,9 @@ func NewMemory(cache *memory.Cache, idx FactIndexer) tool.Tool {
 func (memoryTool) Name() string { return "memory" }
 
 func (memoryTool) Description() string {
-	return "Write or delete a memory fact: a short markdown file about the user, the project, " +
-		"or how they want you to work, loaded into every future conversation. " +
-		"Write a fact when the user tells you something worth remembering beyond this session."
+	return "Write or delete a memory fact: a short markdown note about the user, the project or " +
+		"how they want you to work, loaded into every future conversation. Write one when the " +
+		"user says something worth remembering beyond this session."
 }
 
 func (memoryTool) Schema() json.RawMessage {
