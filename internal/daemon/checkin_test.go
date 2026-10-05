@@ -423,8 +423,13 @@ func TestJobRunsInItsOriginSessionsWorkspace(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("job session: ok=%v err=%v", ok, err)
 	}
-	if sess.Workspace != project {
-		t.Errorf("job ran in %q, want the origin's workspace %q", sess.Workspace, project)
+	// Sessions store resolved roots; on macOS the temp dir is behind a symlink.
+	want, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Workspace != want {
+		t.Errorf("job ran in %q, want the origin's workspace %q", sess.Workspace, want)
 	}
 }
 
