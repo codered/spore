@@ -1095,6 +1095,15 @@ func (m *Model) keyView(k tea.KeyMsg) tea.Cmd {
 		*t.detail, cmd = t.detail.Update(k)
 		return cmd
 	}
+	// A message about the selected row -- why an action did not apply, or
+	// what one failed to do -- belongs to that row; moving off it clears it.
+	if before, ok := t.selected(); ok {
+		defer func() {
+			if after, ok := t.selected(); !ok || after.ID != before.ID {
+				m.viewErr = ""
+			}
+		}()
+	}
 	switch s {
 	case "esc":
 		if t.filter != "" {

@@ -1204,8 +1204,17 @@ const VIEW_DEFS = {
             confirm: (r) => String(r.kind).startsWith("policy.")
               ? "roll back: remove " + r.target + " from your policy?"
               : "roll back every edit in round " + r.round_id + "?",
-            run: (r) => api("POST", "/api/sessions/{id}/refine/rollback", { id: r.session_id }, { round_id: r.round_id }),
-            done: (r) => "rolled back round " + r.round_id,
+            // The daemon answers 200 even when an edit could not be undone, and a
+            // policy rule that failed to come out is still in force.
+            run: async (r) => {
+              const res = (await api("POST", "/api/sessions/{id}/refine/rollback", { id: r.session_id }, { round_id: r.round_id })) || {};
+              const names = (rows) => (rows || []).map((x) => x.target).join(", ");
+              if ((res.failed || []).length) throw new Error("could not roll back " + names(res.failed));
+              if (!(res.rolled_back || []).length && (res.stale || []).length) {
+                throw new Error("nothing to roll back: " + names(res.stale) + " already changed or revoked");
+              }
+            },
+            done: (r) => String(r.kind).startsWith("policy.") ? "removed " + r.target : "rolled back round " + r.round_id,
           },
         ],
         detail: (r) => String(r.kind).startsWith("policy.")

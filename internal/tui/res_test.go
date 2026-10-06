@@ -304,7 +304,11 @@ func TestAnActionKeyOnTheWrongRowSaysWhy(t *testing.T) {
 	if !strings.Contains(m.viewErr, "learned") || !strings.Contains(m.View(), "learned") {
 		t.Errorf("no explanation shown: viewErr=%q", m.viewErr)
 	}
-	press(m, "j", "x")
+	press(m, "j")
+	if m.viewErr != "" {
+		t.Errorf("explanation still shown after moving to another row: %q", m.viewErr)
+	}
+	press(m, "x")
 	if m.mode != modeConfirm {
 		t.Fatalf("x on the learned rule: mode %v, want confirm", m.mode)
 	}

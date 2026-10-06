@@ -223,8 +223,29 @@ func (b tuiBackend) RejectRefinement(ctx context.Context, id int64) error {
 	return viewErr(b.c.do(ctx, "POST", "/api/refinements/"+strconv.FormatInt(id, 10)+"/reject", nil, nil))
 }
 
+// RollbackRound reports what a rollback could not undo. The daemon answers
+// 200 with those edits listed, and a policy rule that failed to come out is
+// still in force, so it must not read as rolled back.
 func (b tuiBackend) RollbackRound(ctx context.Context, sessionID, roundID string) error {
-	return viewErr(b.c.do(ctx, "POST", "/api/sessions/"+sessionID+"/refine/rollback", map[string]string{"round_id": roundID}, nil))
+	var out daemon.RollbackJSON
+	if err := b.c.do(ctx, "POST", "/api/sessions/"+sessionID+"/refine/rollback", map[string]string{"round_id": roundID}, &out); err != nil {
+		return viewErr(err)
+	}
+	if len(out.Failed) > 0 {
+		return fmt.Errorf("could not roll back %s", refineTargets(out.Failed))
+	}
+	if len(out.RolledBack) == 0 && len(out.Stale) > 0 {
+		return fmt.Errorf("nothing to roll back: %s already changed or revoked", refineTargets(out.Stale))
+	}
+	return nil
+}
+
+func refineTargets(rows []daemon.RefinementJSON) string {
+	names := make([]string, 0, len(rows))
+	for _, x := range rows {
+		names = append(names, x.Target)
+	}
+	return strings.Join(names, ", ")
 }
 
 func (b tuiBackend) MCP(ctx context.Context) ([]daemon.MCPServerJSON, error) {
