@@ -97,7 +97,7 @@ ask = ["fs_write"]
 
 func attachStream(t *testing.T, ts *httptest.Server, sessionID string) *bufio.Reader {
 	t.Helper()
-	req, _ := http.NewRequest("GET", ts.URL+"/api/sessions/"+sessionID+"/events")
+	req, _ := http.NewRequest("GET", ts.URL+"/api/sessions/"+sessionID+"/events", nil)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("attach: %v", err)

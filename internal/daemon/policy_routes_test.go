@@ -80,7 +80,7 @@ func TestPolicyListsSourcesAndRevokeTakesEffect(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, body := send(t, "GET", ts.URL+"/api/policy")
+	code, body := send(t, "GET", ts.URL+"/api/policy", nil)
 	if code != 200 {
 		t.Fatalf("GET = %d %s", code, body)
 	}
@@ -114,7 +114,7 @@ func TestPolicyListsSourcesAndRevokeTakesEffect(t *testing.T) {
 	if code != 400 {
 		t.Errorf("bad decision = %d, want 400", code)
 	}
-	code, _ = send(t, "DELETE", ts.URL+"/api/policy/learned")
+	code, _ = send(t, "DELETE", ts.URL+"/api/policy/learned", nil)
 	if code != 400 {
 		t.Errorf("no body = %d, want 400", code)
 	}
@@ -126,7 +126,7 @@ func TestRevokeWithoutAReloaderIs503(t *testing.T) {
 	if code != http.StatusServiceUnavailable {
 		t.Errorf("code = %d, want 503", code)
 	}
-	code, _ = send(t, "GET", ts.URL+"/api/policy")
+	code, _ = send(t, "GET", ts.URL+"/api/policy", nil)
 	if code != http.StatusServiceUnavailable {
 		t.Errorf("GET without a guard = %d, want 503", code)
 	}
@@ -137,7 +137,7 @@ func TestRevokeRefusesBaselineAndConfigRules(t *testing.T) {
 	attachPolicy(t, s)
 
 	// Get the policy list to find baseline and config rules
-	code, body := send(t, "GET", ts.URL+"/api/policy")
+	code, body := send(t, "GET", ts.URL+"/api/policy", nil)
 	if code != 200 {
 		t.Fatalf("GET = %d %s", code, body)
 	}
@@ -168,7 +168,7 @@ func TestRevokeRefusesBaselineAndConfigRules(t *testing.T) {
 		}
 
 		// Verify the rule is still there
-		code, body = send(t, "GET", ts.URL+"/api/policy")
+		code, body = send(t, "GET", ts.URL+"/api/policy", nil)
 		if code != 200 {
 			t.Fatalf("GET after revoke = %d %s", code, body)
 		}
