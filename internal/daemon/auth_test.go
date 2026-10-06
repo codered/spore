@@ -177,3 +177,63 @@ func TestAnEmptyServerTokenRefusesEverything(t *testing.T) {
 		t.Errorf("status %d, want 401", rec.Code)
 	}
 }
+
+func TestOriginCheckBlocksCrossOriginRequests(t *testing.T) {
+	s := bareServer(t)
+	h := s.Handler()
+
+	// POST with valid cookie and wrong Origin (different port) → 403
+	req := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/refinements/1/accept", nil)
+	req.Host = "127.0.0.1:7777"
+	req.Header.Set("Origin", "http://127.0.0.1:3000")
+	req.AddCookie(&http.Cookie{Name: "spore_token", Value: testToken})
+	rec := httptest.NewRecorder()
+	func() {
+		defer func() { _ = recover() }()
+		h.ServeHTTP(rec, req)
+	}()
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("cross-origin POST: status %d, want 403", rec.Code)
+	}
+
+	// POST with valid cookie and matching Origin → not 403, not 401
+	req = httptest.NewRequest("POST", "http://127.0.0.1:7777/api/refinements/1/accept", nil)
+	req.Host = "127.0.0.1:7777"
+	req.Header.Set("Origin", "http://127.0.0.1:7777")
+	req.AddCookie(&http.Cookie{Name: "spore_token", Value: testToken})
+	rec = httptest.NewRecorder()
+	func() {
+		defer func() { _ = recover() }()
+		h.ServeHTTP(rec, req)
+	}()
+	if rec.Code == http.StatusForbidden || rec.Code == http.StatusUnauthorized {
+		t.Errorf("same-origin POST: status %d, should not be 403 or 401", rec.Code)
+	}
+
+	// No Origin with bearer header → not 401/403
+	req = httptest.NewRequest("GET", "http://127.0.0.1:7777/api/sessions", nil)
+	req.Host = "127.0.0.1:7777"
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	rec = httptest.NewRecorder()
+	func() {
+		defer func() { _ = recover() }()
+		h.ServeHTTP(rec, req)
+	}()
+	if rec.Code == http.StatusForbidden || rec.Code == http.StatusUnauthorized {
+		t.Errorf("no Origin with bearer: status %d, should not be 403 or 401", rec.Code)
+	}
+
+	// Origin: null → 403
+	req = httptest.NewRequest("POST", "http://127.0.0.1:7777/api/refinements/1/accept", nil)
+	req.Host = "127.0.0.1:7777"
+	req.Header.Set("Origin", "null")
+	req.AddCookie(&http.Cookie{Name: "spore_token", Value: testToken})
+	rec = httptest.NewRecorder()
+	func() {
+		defer func() { _ = recover() }()
+		h.ServeHTTP(rec, req)
+	}()
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("null Origin: status %d, want 403", rec.Code)
+	}
+}

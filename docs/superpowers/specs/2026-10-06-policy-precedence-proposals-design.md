@@ -201,8 +201,16 @@ A request whose `Host` names any host other than `localhost`, `127.0.0.1`,
 `::1` or the configured daemon address's host is refused with 403, on every
 route. The port is not compared: rebinding works through a hostname the
 attacker controls, so the hostname is what must be checked.
-This stops DNS rebinding; the `SameSite=Strict` cookie covers cross-site
-requests.
+
+`SameSite=Strict` does not cover a page on another port of the same host:
+SameSite is per site, and `127.0.0.1:3000` and `127.0.0.1:7777` are one site,
+so a page there gets the cookie and can send a simple POST without a
+preflight. A model with `shell_exec` could start such a page and open it in
+the operator's browser. So every `/api` request whose `Origin` header is
+present and is not the daemon's own origin (`http://` + `Host`) is refused
+with 403. Browsers always send `Origin` on cross-origin requests; the CLI
+sends none.
+This stops DNS rebinding.
 
 ### 6.4 Clients
 

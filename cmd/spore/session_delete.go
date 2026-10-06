@@ -27,10 +27,14 @@ func runSessionDelete(ctx context.Context, cfg *config.Config, st *store.Store, 
 	if err != nil {
 		c = nil
 	} else {
-		// Daemon is running; read its token.
-		if tok, err := daemon.ReadToken(cfg.DataDir); err == nil {
-			c.token = tok
+		// Daemon is running; read its token. Token-read errors after confirming
+		// the daemon is running must be returned so the user sees the "malformed;
+		// delete it and restart spore" message instead of a bare 401.
+		tok, err := daemon.ReadToken(cfg.DataDir)
+		if err != nil {
+			return fmt.Errorf("read the daemon token: %w", err)
 		}
+		c.token = tok
 	}
 	return sessionDelete(ctx, st, c, args, in, out)
 }

@@ -86,9 +86,40 @@ func (s *Server) authorized(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) == 1
 }
 
+// checkOrigin refuses requests with an Origin header that doesn't match the
+// request's Host. SameSite=Strict is per-site, not per-origin: localhost:3000
+// and localhost:7777 are the same site, so a page on one port can get the
+// cookie from another and send state-changing requests. Origin check adds
+// per-origin CSRF defense. A missing Origin (CLI, curl, same-origin GETs) is
+// allowed.
+func checkOrigin(w http.ResponseWriter, r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" || origin == "null" {
+		// No Origin header: allowed (CLI, curl, browser same-origin GETs).
+		// "null" Origin is used by browsers in sandboxed contexts and
+		// cross-origin requests; reject it as it's not a legitimate origin.
+		if origin == "null" {
+			writeError(w, http.StatusForbidden, "cross-origin request forbidden")
+			return false
+		}
+		return true
+	}
+	// Origin is present and non-empty; it must match the request host.
+	// r.Host is "host:port"; we need to construct the expected origin.
+	expectedOrigin := "http://" + r.Host
+	if origin != expectedOrigin {
+		writeError(w, http.StatusForbidden, "cross-origin request forbidden")
+		return false
+	}
+	return true
+}
+
 // requireToken wraps an /api handler.
 func (s *Server) requireToken(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !checkOrigin(w, r) {
+			return
+		}
 		if !s.authorized(r) {
 			writeError(w, http.StatusUnauthorized, "missing or wrong daemon token: run `spore web` to sign in a browser")
 			return

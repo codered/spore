@@ -63,9 +63,15 @@ func TestOnceExitStatusFollowsHowTheTurnEnded(t *testing.T) {
 			cfg := &config.Config{DataDir: t.TempDir()}
 			cfg.Daemon.Addr = strings.TrimPrefix(ts.URL, "http://")
 
+			// Create the daemon token file so cmdOnce doesn't fail trying to read it.
+			_, err := daemon.LoadOrCreateToken(cfg.DataDir)
+			if err != nil {
+				t.Fatalf("LoadOrCreateToken: %v", err)
+			}
+
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			err := cmdOnce(ctx, cfg, "hi", t.TempDir())
+			err = cmdOnce(ctx, cfg, "hi", t.TempDir())
 			if !errors.Is(err, tc.want) || (tc.want == nil) != (err == nil) {
 				t.Fatalf("cmdOnce = %v, want %v", err, tc.want)
 			}

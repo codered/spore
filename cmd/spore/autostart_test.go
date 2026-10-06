@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/codered/spore/internal/config"
+	"github.com/codered/spore/internal/daemon"
 )
 
 func TestEnsureDaemonUsesAnAlreadyRunningOne(t *testing.T) {
@@ -27,6 +28,12 @@ func TestEnsureDaemonUsesAnAlreadyRunningOne(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
 	cfg.Daemon.Addr = strings.TrimPrefix(ts.URL, "http://")
+
+	// Create the daemon token file so ensureDaemon doesn't fail trying to read it.
+	_, err := daemon.LoadOrCreateToken(cfg.DataDir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateToken: %v", err)
+	}
 
 	c, err := ensureDaemon(context.Background(), cfg)
 	if err != nil {
