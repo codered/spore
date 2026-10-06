@@ -368,7 +368,13 @@ prompt), `/usage`, `/agents`, `/skills`, `/refine [focus]`, `/refine rollback`.
 
 <br>
 
-Run `spore web` while the daemon runs; it opens the UI signed in. Every `/api` route needs the token in `~/.spore/daemon.token`, so a plain browser tab or `curl` without it gets 401. The UI has the session list, transcripts with collapsible tool calls, the model and cost of each step, scheduled jobs, and approvals with a countdown to the automatic deny.
+Run `spore web` while the daemon runs; it opens the UI signed in. Every `/api`
+route needs the token in `~/.spore/daemon.token`, so a plain browser tab or
+`curl` without it gets 401. The daemon answers only requests addressed to
+localhost, 127.0.0.1, ::1 or the host in `daemon.addr`; browse by one of those
+names. The UI has the session list, transcripts with collapsible tool calls, the
+model and cost of each step, scheduled jobs, and approvals with a countdown to
+the automatic deny.
 
 <table>
 <tr>
@@ -413,7 +419,8 @@ allow   = ["fs_read", "fs_list", "fs_glob", "fs_grep"]
 - `[policy] workspace` is a **ceiling**. Each session is rooted at the
   directory you started it in, and a root outside the ceiling is refused.
 
-**Upgrading:** learned rules that a bare ask used to shadow become live on upgrade. An allow and an ask in the same tier now resolve to ask (stricter). Both are documented in the release notes.
+**Upgrading:** learned rules that a bare ask used to shadow become live on upgrade.
+An allow and an ask in the same tier now resolve to ask (stricter).
 
 Test a rule without running anything:
 

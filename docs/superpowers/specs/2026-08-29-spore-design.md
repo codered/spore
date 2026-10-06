@@ -470,7 +470,7 @@ skill tools ship in Plan 7; the rest ship in Plan 2 (section 11).
 allowed under the `remote` profile: a skill body is the operator's own prose in
 the operator's own directory, and loading it is a read with no persistent
 effect. `skill_install` is ask-gated, denied under `remote`, and listed in
-`policy.nonLearnable`, so the "always allow this pattern" scope degrades to
+`policy.nonLearnable`, so the pattern proposal scope degrades to
 `ScopeOnce` — the grant covers one write and cannot become a standing rule.
 The reasoning is the one that already denies `memory` to a bridge: a skill
 written once shapes every later turn in every session.
@@ -801,7 +801,7 @@ provider keys, MCP servers, Docker, and sidecar health in one pass.
 
 One TOML file at `~/.spore/config.toml`, with `${ENV_VAR}` interpolation so
 secrets live in the environment or the systemd unit and never in the file.
-Policy rules written back by "always allow this pattern" land in a marked
+Rules proposed when a pattern answer is accepted in review land in a marked
 section of the same file.
 
 `[policy] workspace` is the ceiling every session's workspace must lie within,

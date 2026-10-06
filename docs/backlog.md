@@ -324,8 +324,8 @@ The open questions are answered as follows:
    approved `shell_exec` could bypass via `python -c`.
 2. Every `/api` route requires the token in `~/.spore/daemon.token` (bearer
    header or the `spore web` cookie). A Host check refuses foreign hostnames,
-   and an Origin check refuses cross-origin requests, so only spore's own
-   clients can call operator routes.
+   and an Origin check refuses cross-origin requests, so only holders of the
+   daemon token can call operator routes.
 
 Remaining gap: an interpreter run through an approved `shell_exec` can still
 read the token, because spore runs as the operator. Closing that needs a

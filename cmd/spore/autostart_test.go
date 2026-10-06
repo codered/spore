@@ -75,3 +75,32 @@ func TestWaitForHealthReturnsAsSoonAsItIsUp(t *testing.T) {
 		t.Fatalf("waitForHealth: %v", err)
 	}
 }
+
+func TestEnsureDaemonUpgradesWhenTokenIsMissing(t *testing.T) {
+	// A healthy daemon with no daemon.token file should suggest upgrading.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir() // Empty data dir, no daemon.token
+	cfg.Daemon.Addr = strings.TrimPrefix(ts.URL, "http://")
+
+	_, err := ensureDaemon(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("ensureDaemon should fail when daemon.token is missing")
+	}
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "predates the daemon token") {
+		t.Errorf("error should mention 'predates the daemon token', got: %v", err)
+	}
+	if !strings.Contains(errMsg, "spore serve --stop") {
+		t.Errorf("error should mention 'spore serve --stop', got: %v", err)
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -32,6 +34,9 @@ func runSessionDelete(ctx context.Context, cfg *config.Config, st *store.Store, 
 		// delete it and restart spore" message instead of a bare 401.
 		tok, err := daemon.ReadToken(cfg.DataDir)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("the running spore daemon predates the daemon token (%s is missing): stop it with `spore serve --stop` and run spore again", filepath.Join(cfg.DataDir, daemon.TokenFile))
+			}
 			return fmt.Errorf("read the daemon token: %w", err)
 		}
 		c.token = tok

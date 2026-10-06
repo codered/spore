@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -104,9 +105,12 @@ func TestClientStreamFromReturnsErrorOnNonOKStatus(t *testing.T) {
 }
 
 func TestClientSendsTheTokenOnRequestsAndStreams(t *testing.T) {
+	var mu sync.Mutex
 	var seen []string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		seen = append(seen, r.URL.Path+" "+r.Header.Get("Authorization"))
+		mu.Unlock()
 		if strings.HasSuffix(r.URL.Path, "/events") {
 			w.Header().Set("Content-Type", "text/event-stream")
 			return
@@ -117,16 +121,32 @@ func TestClientSendsTheTokenOnRequestsAndStreams(t *testing.T) {
 	c := newClient(strings.TrimPrefix(ts.URL, "http://"))
 	c.token = "abc"
 	_ = c.do(context.Background(), "GET", "/api/sessions", nil, nil)
-	if len(seen) != 1 || seen[0] != "/api/sessions Bearer abc" {
+	mu.Lock()
+	seenLen := len(seen)
+	seenVal := ""
+	if seenLen > 0 {
+		seenVal = seen[0]
+	}
+	mu.Unlock()
+	if seenLen != 1 || seenVal != "/api/sessions Bearer abc" {
 		t.Errorf("seen = %v", seen)
 	}
 
 	// Test streaming request
+	mu.Lock()
 	seen = nil
+	mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	_ = c.streamPath(ctx, "/api/sessions/x/events", "test", nil, func(daemon.WireEvent) error { return nil })
-	if len(seen) != 1 || !strings.Contains(seen[0], "Bearer abc") {
+	mu.Lock()
+	seenLen = len(seen)
+	seenVal = ""
+	if seenLen > 0 {
+		seenVal = seen[0]
+	}
+	mu.Unlock()
+	if seenLen != 1 || !strings.Contains(seenVal, "Bearer abc") {
 		t.Errorf("streaming seen = %v", seen)
 	}
 }

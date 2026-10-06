@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -45,6 +46,9 @@ func ensureDaemon(ctx context.Context, cfg *config.Config) (*client, error) {
 		// the "malformed; delete it and restart spore" message instead of a bare 401.
 		tok, err := daemon.ReadToken(cfg.DataDir)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("the running spore daemon predates the daemon token (%s is missing): stop it with `spore serve --stop` and run spore again", filepath.Join(cfg.DataDir, daemon.TokenFile))
+			}
 			return nil, fmt.Errorf("read the daemon token: %w", err)
 		}
 		c.token = tok
@@ -86,6 +90,9 @@ func ensureDaemon(ctx context.Context, cfg *config.Config) (*client, error) {
 	// the "malformed; delete it and restart spore" message instead of a bare 401.
 	tok, err := daemon.ReadToken(cfg.DataDir)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("the running spore daemon predates the daemon token (%s is missing): stop it with `spore serve --stop` and run spore again", filepath.Join(cfg.DataDir, daemon.TokenFile))
+		}
 		return nil, fmt.Errorf("read the daemon token: %w", err)
 	}
 	c.token = tok

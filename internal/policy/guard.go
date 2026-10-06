@@ -520,7 +520,14 @@ func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, 
 	if ans.Scope == ScopePattern {
 		if pattern := claimed.Pattern; pattern != "" {
 			c := Call{Tool: claimed.Tool, Args: claimed.ArgsJSON}
-			if err := g.propose(ctx, claimed.SessionID, pendingID, decision, pattern, c); err != nil {
+			// Proposal writes use a context detached from the caller's. When the
+			// answer arrives out-of-band the caller's ctx may be from a different
+			// session or a background task, and must not interfere with writing the
+			// proposal. Values are preserved, cancellation is not.
+			proposeCtx, cancelProp := context.WithTimeout(context.WithoutCancel(ctx), bookkeepingTimeout)
+			err := g.propose(proposeCtx, claimed.SessionID, pendingID, decision, pattern, c)
+			cancelProp()
+			if err != nil {
 				// Same invariant as Run: failing to queue the proposal must
 				// not undo an answer already recorded.
 				sporetrace.RecordPolicy(ctx, string(decision), "rule proposal not recorded: "+err.Error())

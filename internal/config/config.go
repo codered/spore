@@ -200,7 +200,7 @@ type PolicyConfig struct {
 	Allow     []string `toml:"allow"`
 	Ask       []string `toml:"ask"`
 	Deny      []string `toml:"deny"`
-	// Learned holds rules written back by "always allow this pattern". It
+	// Learned holds rules written back when a pattern is accepted in review. It
 	// lives in a marked section of the same file so policy stays readable.
 	Learned LearnedPolicy `toml:"learned"`
 	// Profiles override Default/Allow/Ask per trust profile ("local",
