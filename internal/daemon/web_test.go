@@ -158,3 +158,13 @@ func TestAppJSRoutesAreRegistered(t *testing.T) {
 		t.Errorf("found only %d api(...) calls in app.js; is the pattern still right?", len(calls))
 	}
 }
+
+func TestAppJSExplainsA401(t *testing.T) {
+	body, err := web.FS.ReadFile("app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "res.status === 401") || !strings.Contains(string(body), "spore web") {
+		t.Error("app.js must tell the user to run spore web when the daemon answers 401")
+	}
+}

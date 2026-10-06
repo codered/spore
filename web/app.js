@@ -83,6 +83,13 @@ async function api(method, tpl, params, body) {
     try { payload = JSON.parse(text); } catch (e) { payload = null; }
   }
   if (!res.ok) {
+    if (res.status === 401) {
+      // The daemon wants its token: this tab was opened without spore web,
+      // or the token was rotated.
+      const err = new Error("Signed out: run `spore web` in a terminal to open the UI again.");
+      err.status = 401;
+      throw err;
+    }
     const err = new Error(payload && payload.error ? payload.error : res.status + " " + res.statusText);
     err.status = res.status;
     throw err;

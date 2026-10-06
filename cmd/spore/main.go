@@ -23,6 +23,7 @@ usage:
   spore serve                  run the daemon (HTTP API + web UI + scheduler)
   spore serve --status         report whether a daemon is running
   spore serve --stop           stop a running daemon
+  spore web                    open the web UI in your browser, signed in
   spore session list           list recent sessions
   spore session show <id>      print a session transcript
   spore session delete <id>... | --all [--discord] [--yes]
@@ -174,6 +175,8 @@ func dispatch(ctx context.Context, cfg *config.Config, args []string) error {
 		return cmdRecall(ctx, cfg, args[1:])
 	case "trace":
 		return cmdTrace(ctx, cfg, args[1:])
+	case "web":
+		return cmdWeb(ctx, cfg)
 	default:
 		fmt.Print(usage)
 		return fmt.Errorf("unknown command %q", args[0])

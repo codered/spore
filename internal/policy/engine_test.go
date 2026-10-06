@@ -470,6 +470,37 @@ func TestBaselineHoldsAnAllowedShellAwayFromSecretsAndHome(t *testing.T) {
 		}
 	}
 }
+
+func TestBaselineKeepsTheModelAwayFromTheDaemonToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spore.toml")
+	cfgText := "default_model = \"anthropic/claude-opus-5\"\n[policy]\ndefault = \"allow\"\nallow = [\"shell_exec\", \"fs_read\"]\nask = []\n"
+	if err := os.WriteFile(path, []byte(cfgText), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	e, err := NewEngine(cfg.Policy)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	// The workspace contains the token, so the outside-workspace rule is
+	// not what denies it.
+	sess := Session{Profile: ProfileLocal, Workspace: "/home/u"}
+	for _, tc := range []struct{ tool, args, ruleHas string }{
+		{"fs_read", `{"path":"/home/u/.spore/daemon.token"}`, "daemon.token"},
+		{"shell_exec", `{"command":"cat ~/.spore/daemon.token"}`, "daemon.token"},
+		{"shell_exec", `{"command":"spore web"}`, "spore web"},
+		{"shell_exec", `{"command":"/usr/local/bin/spore   web"}`, "spore web"},
+	} {
+		got := e.Evaluate(sess, Call{Tool: tc.tool, Args: json.RawMessage(tc.args)})
+		if got.Decision != DecisionDeny || !strings.Contains(got.Rule, tc.ruleHas) {
+			t.Errorf("%s %s = %s by %q, want deny by a rule naming %q", tc.tool, tc.args, got.Decision, got.Rule, tc.ruleHas)
+		}
+	}
+}
+
 func evalDecision(t *testing.T, e *Engine, p Profile, tool, args string) Decision {
 	t.Helper()
 	return e.Evaluate(Session{Profile: p}, Call{Tool: tool, Args: json.RawMessage(args)}).Decision

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/codered/spore/internal/daemon"
 	"github.com/codered/spore/internal/policy"
@@ -98,5 +100,33 @@ func TestClientStreamFromReturnsErrorOnNonOKStatus(t *testing.T) {
 	err := c.streamFrom(context.Background(), "s1", nil, func(daemon.WireEvent) error { return nil })
 	if err == nil {
 		t.Fatal("expected error for non-OK status")
+	}
+}
+
+func TestClientSendsTheTokenOnRequestsAndStreams(t *testing.T) {
+	var seen []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.URL.Path+" "+r.Header.Get("Authorization"))
+		if strings.HasSuffix(r.URL.Path, "/events") {
+			w.Header().Set("Content-Type", "text/event-stream")
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer ts.Close()
+	c := newClient(strings.TrimPrefix(ts.URL, "http://"))
+	c.token = "abc"
+	_ = c.do(context.Background(), "GET", "/api/sessions", nil, nil)
+	if len(seen) != 1 || seen[0] != "/api/sessions Bearer abc" {
+		t.Errorf("seen = %v", seen)
+	}
+
+	// Test streaming request
+	seen = nil
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_ = c.streamPath(ctx, "/api/sessions/x/events", "test", nil, func(daemon.WireEvent) error { return nil })
+	if len(seen) != 1 || !strings.Contains(seen[0], "Bearer abc") {
+		t.Errorf("streaming seen = %v", seen)
 	}
 }
