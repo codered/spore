@@ -172,6 +172,20 @@ func (c *client) listSkills(ctx context.Context, sessionID string) (skillListJSO
 	return out, nil
 }
 
+// usage fetches a session's totals and every session's per-day totals over
+// the daemon's 30-day window. An empty sessionID fetches the days alone.
+func (c *client) usage(ctx context.Context, sessionID string) (daemon.UsageJSON, error) {
+	var out daemon.UsageJSON
+	path := "/api/usage"
+	if sessionID != "" {
+		path += "?session=" + sessionID
+	}
+	if err := c.do(ctx, "GET", path, nil, &out); err != nil {
+		return daemon.UsageJSON{}, err
+	}
+	return out, nil
+}
+
 // agentListJSON is the /agents response, shared with the daemon so the two
 // cannot drift apart.
 type agentListJSON = daemon.AgentsJSON

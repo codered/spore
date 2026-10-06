@@ -160,6 +160,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .msg.user .marker { color: var(--visor); font-family: var(--mono); font-weight: 700; }
 .prose { white-space: pre-wrap; overflow-wrap: anywhere; }
 .note { color: var(--dim); font-size: 13px; }
+.note.usage { font-family: var(--mono); white-space: pre; overflow-x: auto; }
 .msg.error { color: var(--error); font-family: var(--mono); font-size: 13px; }
 .footer { color: var(--dim); font: 12px var(--mono); margin: 4px 0 16px; }
 

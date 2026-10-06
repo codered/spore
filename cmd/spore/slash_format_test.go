@@ -33,17 +33,6 @@ func TestFormatContextCountsOnlyMessagesAfterTheSummaryBoundary(t *testing.T) {
 	}
 }
 
-func TestFormatUsageReportsTheCacheShare(t *testing.T) {
-	got := formatUsage(map[string]any{"messages": []any{
-		map[string]any{"tokens_in": float64(100), "tokens_out": float64(10), "tokens_cache_read": float64(900), "cost_usd": 0.5},
-	}}, true)
-	for _, want := range []string{"turns: 1", "tokens in: 100", "cache: 900 read, 0 written (90% of input)", "cost: $0.5000"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("usage %q is missing %q", got, want)
-		}
-	}
-}
-
 func TestFormatSkillsShowsTheLoadedMarkerAndErrors(t *testing.T) {
 	got := formatSkills(skillListJSON{
 		Skills: []skillJSON{

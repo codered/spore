@@ -5,13 +5,11 @@ import (
 	"time"
 
 	"github.com/codered/spore/internal/store"
+	"github.com/codered/spore/internal/usage"
 )
 
-// usageWindow is how far back the per-day usage reaches.
-const usageWindow = 30 * 24 * time.Hour
-
 // UsageJSON is GET /api/usage: the named session's totals per model, and every
-// session's totals per UTC day and model over the last usageWindow.
+// session's totals per UTC day and model over the last usage.Window.
 type UsageJSON struct {
 	Session []store.UsageRow      `json:"session"`
 	Days    []store.DailyUsageRow `json:"days"`
@@ -32,7 +30,7 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 			out.Session = rows
 		}
 	}
-	days, err := s.store.DailyUsage(r.Context(), time.Now().Add(-usageWindow))
+	days, err := s.store.DailyUsage(r.Context(), time.Now().Add(-usage.Window))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "daily usage: %v", err)
 		return

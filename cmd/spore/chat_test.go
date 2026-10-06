@@ -24,7 +24,7 @@ func TestRunPlainSlashListsSkillsWithoutPostingAMessage(t *testing.T) {
 	c := &client{base: ts.URL, short: ts.Client(), streamClient: ts.Client()}
 
 	var out bytes.Buffer
-	handled, err := runPlainSlash(context.Background(), c, "s1", "/skills", &out)
+	handled, err := runPlainSlash(context.Background(), c, "s1", "/skills", false, &out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestClearPostsToDedicatedEndpoint(t *testing.T) {
 	}
 }
 func TestRunPlainSlashLeavesOrdinaryMessagesAlone(t *testing.T) {
-	handled, err := runPlainSlash(context.Background(), nil, "s1", "hello", &bytes.Buffer{})
+	handled, err := runPlainSlash(context.Background(), nil, "s1", "hello", false, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}

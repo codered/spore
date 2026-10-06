@@ -50,7 +50,7 @@ func TestRunPlainSlashListsAgentsWithoutPostingAMessage(t *testing.T) {
 	c := &client{base: ts.URL, short: ts.Client(), streamClient: ts.Client()}
 
 	var out bytes.Buffer
-	handled, err := runPlainSlash(context.Background(), c, "s1", "/agents", &out)
+	handled, err := runPlainSlash(context.Background(), c, "s1", "/agents", false, &out)
 	if err != nil {
 		t.Fatal(err)
 	}
