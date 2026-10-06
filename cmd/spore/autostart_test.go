@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/codered/spore/internal/config"
+	"github.com/codered/spore/internal/daemon"
 )
 
 func TestEnsureDaemonUsesAnAlreadyRunningOne(t *testing.T) {
@@ -27,6 +28,12 @@ func TestEnsureDaemonUsesAnAlreadyRunningOne(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
 	cfg.Daemon.Addr = strings.TrimPrefix(ts.URL, "http://")
+
+	// Create the daemon token file so ensureDaemon doesn't fail trying to read it.
+	_, err := daemon.LoadOrCreateToken(cfg.DataDir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateToken: %v", err)
+	}
 
 	c, err := ensureDaemon(context.Background(), cfg)
 	if err != nil {
@@ -66,5 +73,34 @@ func TestWaitForHealthReturnsAsSoonAsItIsUp(t *testing.T) {
 	c := newClient(strings.TrimPrefix(ts.URL, "http://"))
 	if err := waitForHealth(context.Background(), c, 5*time.Second); err != nil {
 		t.Fatalf("waitForHealth: %v", err)
+	}
+}
+
+func TestEnsureDaemonUpgradesWhenTokenIsMissing(t *testing.T) {
+	// A healthy daemon with no daemon.token file should suggest upgrading.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir() // Empty data dir, no daemon.token
+	cfg.Daemon.Addr = strings.TrimPrefix(ts.URL, "http://")
+
+	_, err := ensureDaemon(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("ensureDaemon should fail when daemon.token is missing")
+	}
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "predates the daemon token") {
+		t.Errorf("error should mention 'predates the daemon token', got: %v", err)
+	}
+	if !strings.Contains(errMsg, "spore serve --stop") {
+		t.Errorf("error should mention 'spore serve --stop', got: %v", err)
 	}
 }

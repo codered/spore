@@ -25,6 +25,7 @@ type Options struct {
 	Store *store.Store
 	Cfg   *config.Config
 	Guard *policy.Guard
+	Token string // Token is the daemon credential every /api route requires. Empty refuses every /api request.
 }
 
 type Server struct {
@@ -64,6 +65,10 @@ type Server struct {
 	// 2), so a handler must never hand its own context to agent.Run.
 	base   context.Context
 	cancel context.CancelFunc
+
+	token string
+	// apiPatterns records every route registered through api(), for the test that walks them.
+	apiPatterns []string
 }
 
 func New(o Options) *Server {
@@ -71,6 +76,7 @@ func New(o Options) *Server {
 	s := &Server{
 		agent: o.Agent, store: o.Store, cfg: o.Cfg, guard: o.Guard,
 		hub: NewHub(), base: ctx, cancel: cancel,
+		token: o.Token,
 	}
 	s.broker = NewBroker(s.hub)
 	return s
@@ -95,6 +101,9 @@ func (s *Server) Broker() *Broker      { return s.broker }
 // Approver is the policy.Approver the guard must be built with. The daemon
 // creates it because it owns the hub the approval events travel over.
 func (s *Server) Approver() policy.Approver { return s.broker }
+
+// Token is the credential in-process tests hand to a client.
+func (s *Server) Token() string { return s.token }
 
 // Attach supplies the agent and guard after construction. The daemon owns
 // the approver the guard is built with, so the two cannot both be passed to
@@ -140,47 +149,60 @@ func (s *Server) PublishNote(sessionID, text string) {
 // Close cancels every in-flight turn. Run calls it on shutdown.
 func (s *Server) Close() { s.cancel() }
 
-func (s *Server) Handler() http.Handler {
+// buildMux creates the HTTP routes for the daemon. It's a separate method so
+// tests can access the raw mux without the host check wrapper.
+func (s *Server) buildMux() *http.ServeMux {
 	mux := http.NewServeMux()
+	s.apiPatterns = nil
+	// api registers a route behind the token. Every /api route goes through
+	// it; a test fails if one is registered with mux.HandleFunc directly.
+	api := func(pattern string, h http.HandlerFunc) {
+		s.apiPatterns = append(s.apiPatterns, pattern)
+		mux.HandleFunc(pattern, s.requireToken(h))
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
-	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
-	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
-	mux.HandleFunc("PATCH /api/sessions/{id}", s.handlePatchSession)
-	mux.HandleFunc("POST /api/sessions/delete", s.handleDeleteSessions)
-	mux.HandleFunc("POST /api/sessions/{id}/seen", s.handleSeen)
-	mux.HandleFunc("GET /api/sessions/{id}", s.handleShowSession)
-	mux.HandleFunc("POST /api/sessions/{id}/messages", s.handlePostMessage)
-	mux.HandleFunc("POST /api/sessions/{id}/stop", s.handleStop)
-	mux.HandleFunc("GET /api/events", s.handleAllEvents)
-	mux.HandleFunc("GET /api/sessions/{id}/events", s.handleEvents)
-	mux.HandleFunc("POST /api/sessions/{id}/compact", s.handleCompact)
-	mux.HandleFunc("POST /api/sessions/{id}/clear", s.handleClear)
-	mux.HandleFunc("POST /api/sessions/{id}/refine", s.handleRefine)
-	mux.HandleFunc("POST /api/sessions/{id}/refine/rollback", s.handleRefineRollback)
-	mux.HandleFunc("GET /api/refinements", s.handleListRefinements)
-	mux.HandleFunc("POST /api/refinements/{id}/accept", s.handleAcceptRefinement)
-	mux.HandleFunc("POST /api/refinements/{id}/reject", s.handleRejectRefinement)
-	mux.HandleFunc("GET /api/sessions/{id}/skills", s.handleSkills)
-	mux.HandleFunc("GET /api/sessions/{id}/agents", s.handleAgents)
-	mux.HandleFunc("DELETE /api/sessions/{id}/agents/{child}", s.handleCancelAgent)
-	mux.HandleFunc("GET /api/sessions/{id}/approvals", s.handleListApprovals)
-	mux.HandleFunc("POST /api/sessions/{id}/approvals/{pending}", s.handleResolveApproval)
-	mux.HandleFunc("GET /api/jobs", s.handleListJobs)
-	mux.HandleFunc("POST /api/jobs", s.handleCreateJob)
-	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleCancelJob)
-	mux.HandleFunc("GET /api/jobs/{id}/runs", s.handleJobRuns)
-	mux.HandleFunc("GET /api/usage", s.handleUsage)
-	mux.HandleFunc("GET /api/policy", s.handlePolicy)
-	mux.HandleFunc("DELETE /api/policy/learned", s.handleRevoke)
-	mux.HandleFunc("GET /api/memory", s.handleMemory)
-	mux.HandleFunc("DELETE /api/memory/{name}", s.handleDeleteFact)
-	mux.HandleFunc("GET /api/mcp", s.handleMCP)
-	mux.HandleFunc("POST /api/mcp/{server}/reconnect", s.handleReconnect)
+	api("GET /api/sessions", s.handleListSessions)
+	api("POST /api/sessions", s.handleCreateSession)
+	api("PATCH /api/sessions/{id}", s.handlePatchSession)
+	api("POST /api/sessions/delete", s.handleDeleteSessions)
+	api("POST /api/sessions/{id}/seen", s.handleSeen)
+	api("GET /api/sessions/{id}", s.handleShowSession)
+	api("POST /api/sessions/{id}/messages", s.handlePostMessage)
+	api("POST /api/sessions/{id}/stop", s.handleStop)
+	api("GET /api/events", s.handleAllEvents)
+	api("GET /api/sessions/{id}/events", s.handleEvents)
+	api("POST /api/sessions/{id}/compact", s.handleCompact)
+	api("POST /api/sessions/{id}/clear", s.handleClear)
+	api("POST /api/sessions/{id}/refine", s.handleRefine)
+	api("POST /api/sessions/{id}/refine/rollback", s.handleRefineRollback)
+	api("GET /api/refinements", s.handleListRefinements)
+	api("POST /api/refinements/{id}/accept", s.handleAcceptRefinement)
+	api("POST /api/refinements/{id}/reject", s.handleRejectRefinement)
+	api("GET /api/sessions/{id}/skills", s.handleSkills)
+	api("GET /api/sessions/{id}/agents", s.handleAgents)
+	api("DELETE /api/sessions/{id}/agents/{child}", s.handleCancelAgent)
+	api("GET /api/sessions/{id}/approvals", s.handleListApprovals)
+	api("POST /api/sessions/{id}/approvals/{pending}", s.handleResolveApproval)
+	api("GET /api/jobs", s.handleListJobs)
+	api("POST /api/jobs", s.handleCreateJob)
+	api("DELETE /api/jobs/{id}", s.handleCancelJob)
+	api("GET /api/jobs/{id}/runs", s.handleJobRuns)
+	api("GET /api/usage", s.handleUsage)
+	api("GET /api/policy", s.handlePolicy)
+	api("DELETE /api/policy/learned", s.handleRevoke)
+	api("GET /api/memory", s.handleMemory)
+	api("DELETE /api/memory/{name}", s.handleDeleteFact)
+	api("GET /api/mcp", s.handleMCP)
+	api("POST /api/mcp/{server}/reconnect", s.handleReconnect)
 	mux.HandleFunc("GET /static/{file}", s.handleStatic)
 	mux.HandleFunc("GET /", s.handleIndex)
 	return mux
+}
+
+func (s *Server) Handler() http.Handler {
+	return s.checkHost(s.buildMux())
 }
 
 // Run serves until ctx is cancelled, then drains with a short grace period.

@@ -51,11 +51,12 @@ type Ask struct {
 	Rule string
 	// PendingID is the persisted suspension this request belongs to.
 	PendingID int64
-	// Pattern is the rule "always allow this pattern" would write. An empty
-	// string signals that no pattern could be derived and the client must not
-	// offer the option — the only pattern left would be the bare tool name,
-	// a blanket allow for every call to that tool. This is the wire convention
-	// every approver (terminal, daemon, bridge) uses to hide the option.
+	// Pattern is the rule a "propose this pattern" answer would queue for review.
+	// An empty string signals that no pattern could be derived and the client
+	// must not offer the option — the only pattern left would be the bare tool
+	// name, a blanket allow for every call to that tool. This is the wire
+	// convention every approver (terminal, daemon, bridge) uses to hide the
+	// option.
 	Pattern string
 	// RootID is the session a human is attached to. For a top-level session,
 	// it is the session's own id; for a child, it is the root of the parent
@@ -122,13 +123,10 @@ type Guard struct {
 	engine   atomic.Pointer[Engine]
 	approver Approver
 	store    *store.Store
-	// learn persists a rule accepted with ScopePattern. Nil disables the
-	// "always this pattern" answer.
-	learn func(d Decision, rule string) error
 }
 
-func NewGuard(inner Runner, e *Engine, ap Approver, st *store.Store, learn func(Decision, string) error) *Guard {
-	g := &Guard{inner: inner, approver: ap, store: st, learn: learn}
+func NewGuard(inner Runner, e *Engine, ap Approver, st *store.Store) *Guard {
+	g := &Guard{inner: inner, approver: ap, store: st}
 	g.engine.Store(e)
 	return g
 }
@@ -138,11 +136,6 @@ func (g *Guard) Engine() *Engine { return g.engine.Load() }
 
 // SetEngine replaces the engine for every call that starts after it returns.
 func (g *Guard) SetEngine(e *Engine) { g.engine.Store(e) }
-
-// SetLearn replaces how a pattern answer is persisted. It is not
-// synchronised: call it before any turn can run, as the daemon does while it
-// is being wired.
-func (g *Guard) SetLearn(f func(Decision, string) error) { g.learn = f }
 
 func (g *Guard) Specs() []provider.ToolSpec { return g.inner.Specs() }
 func (g *Guard) ReadOnly(name string) bool  { return g.inner.ReadOnly(name) }
@@ -216,9 +209,15 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 	}
 
 	// An empty pattern is the wire signal to every approver — terminal,
-	// browser and bridge — that the "always this pattern" option must not
+	// browser and bridge — that the "propose this pattern" option must not
 	// be offered for this call.
 	pattern, patternOK := PatternFor(c, sess.Workspace)
+	// A proposal that could not decide this call -- a narrower ask the
+	// operator wrote, or a profile learned rules never reach -- would only
+	// clutter review, so it is not offered.
+	if patternOK && !eng.WouldAllow(sess, c, pattern) {
+		pattern, patternOK = "", false
+	}
 	pendingID, err := g.store.AddPendingCall(ctx, store.PendingCall{
 		SessionID: sess.ID,
 		ToolUseID: call.ID,
@@ -318,11 +317,11 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 			}
 		}
 
-		if scope == ScopePattern && g.learn != nil {
-			if err := g.learn(decision, pattern); err != nil {
-				// Failing to persist the rule must not change this call's
-				// outcome; the user simply gets asked again next time.
-				sporetrace.RecordPolicy(ctx, string(decision), "learned rule not persisted: "+err.Error())
+		if scope == ScopePattern {
+			if err := g.propose(book, sess.ID, pendingID, decision, pattern, c); err != nil {
+				// Failing to queue the proposal must not change this call's
+				// outcome; the user is simply offered it again next time.
+				sporetrace.RecordPolicy(ctx, string(decision), "rule proposal not recorded: "+err.Error())
 			}
 		}
 	}
@@ -351,8 +350,8 @@ var nonLearnable = map[string]bool{
 	"agent_note": true,
 }
 
-// PatternFor proposes the rule an "always allow this pattern" answer would
-// write, and reports whether a real pattern exists. Deriving one needs a
+// PatternFor proposes the rule an "allow once and propose this pattern for review" answer would
+// queue, and reports whether a real pattern exists. Deriving one needs a
 // single path-shaped argument. Without one the only thing left is the bare
 // tool name, and a rule that broad is not a pattern — it is a blanket allow
 // for the tool, bounded only by the baseline deny list. Rather than return
@@ -397,6 +396,40 @@ func PatternFor(c Call, workspace string) (string, bool) {
 		return "", false
 	}
 	return fmt.Sprintf("%s(path matches %s/**)", c.Tool, dir), true
+}
+
+// propose queues a rule for the operator to review. It never edits the
+// config: a policy change made inside a session's ask window is the lever a
+// tired human or a prompt injection reaches for, so the change waits for
+// the refinements view. A rule already waiting is not queued twice.
+func (g *Guard) propose(ctx context.Context, sessionID string, pendingID int64, d Decision, rule string, c Call) error {
+	kind := store.KindPolicyAllow
+	if d == DecisionDeny {
+		kind = store.KindPolicyDeny
+	}
+	exists, err := g.store.ProposedPolicyExists(ctx, kind, rule)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	where := ""
+	if paths := argPaths(c); len(paths) > 0 {
+		where = " on " + paths[0]
+	}
+	after := rule
+	_, err = g.store.AddRefinement(ctx, store.Refinement{
+		RoundID:   fmt.Sprintf("approval-%d", pendingID),
+		SessionID: sessionID,
+		Trigger:   store.RefineTriggerApproval,
+		Kind:      kind,
+		Target:    rule,
+		After:     &after,
+		Rationale: fmt.Sprintf("%s %s%s, answered in session %s", d, c.Tool, where, sessionID),
+		Status:    store.RefineProposed,
+	})
+	return err
 }
 
 // Pending lists the session's unanswered approval requests. A client that
@@ -484,14 +517,20 @@ func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, 
 			_ = g.store.RecordApproval(ctx, root, claimed.Tool, claimed.ArgsJSON, string(decision), string(ans.Scope))
 		}
 	}
-	if ans.Scope == ScopePattern && g.learn != nil {
+	if ans.Scope == ScopePattern {
 		if pattern := claimed.Pattern; pattern != "" {
-			if err := g.learn(decision, pattern); err != nil {
-				// Same invariant as Run: failing to persist a learned rule must not
-				// undo an answer already recorded, or the caller retries and is
-				// told the call was "already answered". The user is asked again
-				// next time instead.
-				sporetrace.RecordPolicy(ctx, string(decision), "learned rule not persisted: "+err.Error())
+			c := Call{Tool: claimed.Tool, Args: claimed.ArgsJSON}
+			// Proposal writes use a context detached from the caller's. When the
+			// answer arrives out-of-band the caller's ctx may be from a different
+			// session or a background task, and must not interfere with writing the
+			// proposal. Values are preserved, cancellation is not.
+			proposeCtx, cancelProp := context.WithTimeout(context.WithoutCancel(ctx), bookkeepingTimeout)
+			err := g.propose(proposeCtx, claimed.SessionID, pendingID, decision, pattern, c)
+			cancelProp()
+			if err != nil {
+				// Same invariant as Run: failing to queue the proposal must
+				// not undo an answer already recorded.
+				sporetrace.RecordPolicy(ctx, string(decision), "rule proposal not recorded: "+err.Error())
 			}
 		}
 	}

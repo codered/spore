@@ -77,10 +77,7 @@ func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recall
 	if err != nil {
 		return nil, nil, err
 	}
-	learn := func(d policy.Decision, rule string) error {
-		return config.LearnRule(cfg.Path, string(d), rule)
-	}
-	guard := policy.NewGuard(reg, engine, approver, st, learn)
+	guard := policy.NewGuard(reg, engine, approver, st)
 	goRun.Bind(guard)
 	return guard, host, nil
 }
@@ -214,7 +211,13 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 // is constructed first with no agent, and the agent is attached once its
 // tools have been built around the server's broker.
 func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, *mcphost.Host, *mirror.Mirror, error) {
-	srv := daemon.New(daemon.Options{Store: st, Cfg: cfg})
+	// The token file is written before the listener opens, so a client that
+	// started this daemon can read it as soon as /healthz answers.
+	token, err := daemon.LoadOrCreateToken(cfg.DataDir)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("daemon token: %w", err)
+	}
+	srv := daemon.New(daemon.Options{Store: st, Cfg: cfg, Token: token})
 	a, parts, err := buildAgent(cfg, st, srv.Approver())
 	if err != nil {
 		return nil, nil, nil, err
@@ -223,18 +226,19 @@ func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, *mcphost.
 	if !ok {
 		return nil, nil, nil, fmt.Errorf("internal: agent tools are %T, want *policy.Guard", a.Tools)
 	}
-	// A learned rule is live the moment it is written: the reloader rewrites
-	// the managed block and swaps a rebuilt engine into this guard. Set
-	// before any turn can run.
+	// An accepted policy proposal is live the moment it is written: the
+	// reloader rewrites the managed block and swaps a rebuilt engine into
+	// this guard.
 	reloader := policy.NewReloader(cfg.Path, cfg.Policy, guard)
-	guard.SetLearn(reloader.Learn)
 	srv.Attach(a, guard)
 	srv.AttachSubagents(parts.sup)
 	ref, ok := a.Refine.(*refine.Refiner)
 	if !ok {
 		return nil, nil, nil, fmt.Errorf("internal: agent refine hook is %T, want *refine.Refiner", a.Refine)
 	}
-	ref.Notify = srv.PublishNote // set before any turn can run a round
+	ref.Notify = srv.PublishNote                                                                     // set before any turn can run a round
+	ref.ApplyPolicy = func(d, rule string) error { return reloader.Learn(policy.Decision(d), rule) } // set before any accept can run
+	ref.RevokePolicy = func(d, rule string) error { return reloader.Unlearn(policy.Decision(d), rule) }
 	srv.AttachRefiner(ref)
 	// Sessions are named on the router's title site, from the same registry
 	// and rules every other call uses.

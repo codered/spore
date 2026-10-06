@@ -70,7 +70,7 @@ func (m *Model) approvalCard(w, h int) string {
 			styKey.Render(mod+"n")+styMuted.Render(" deny   ")+
 			styKey.Render(mod+"s")+styMuted.Render(" allow "+ev.Tool+" this session"), inner))
 		if ev.Pattern != "" && level < 2 {
-			rows = append(rows, clip(styKey.Render(mod+"p")+styMuted.Render(" always allow ")+styAccent.Render(ev.Pattern), inner))
+			rows = append(rows, clip(styKey.Render(mod+"p")+styMuted.Render(" allow once + propose ")+styAccent.Render(ev.Pattern), inner))
 		}
 		rows = append(gap(rows), styMuted.Render(m.deadline(ev.ExpiresAt)))
 		sty := styApprovalCard

@@ -21,7 +21,7 @@ die() { echo "demo: $*" >&2; exit 1; }
 command -v vhs >/dev/null || die "vhs is not installed (go install github.com/charmbracelet/vhs@latest)"
 [ -x "$bin" ] || die "$bin is missing; run make build"
 [ -n "${ANTHROPIC_API_KEY:-}" ] || die "ANTHROPIC_API_KEY is not set"
-curl -s -m 1 "http://$addr/api/sessions" >/dev/null && die "something is already listening on $addr; set SPORE_DEMO_PORT"
+curl -s -m 1 "http://$addr/healthz" >/dev/null && die "something is already listening on $addr; set SPORE_DEMO_PORT"
 
 # The workspace path is shown in the recording, which is why it is short.
 if [ -n "${SPORE_DEMO_DIR:-}" ]; then
@@ -71,7 +71,7 @@ spore() { "$demo/bin/spore" "$@"; }
 
 (cd "$demo/spore" && spore serve >"$demo/serve.log" 2>&1 &)
 for _ in $(seq 40); do
-	curl -s -m 1 "http://$addr/api/sessions" >/dev/null && break
+	curl -s -m 1 "http://$addr/healthz" >/dev/null && break
 	sleep 0.25
 done
 spore serve --status | grep -q running || { cat "$demo/serve.log" >&2; die "the demo daemon did not start"; }

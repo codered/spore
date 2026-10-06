@@ -559,3 +559,182 @@ func TestRollbackHandlesUnreadableTargets(t *testing.T) {
 }
 
 func strp(s string) *string { return &s }
+
+func addPolicyRow(t *testing.T, f *fix, kind, rule string) int64 {
+	t.Helper()
+	after := rule
+	id, err := f.st.AddRefinement(context.Background(), store.Refinement{
+		RoundID: "approval-1", SessionID: f.sid, Trigger: store.RefineTriggerApproval,
+		Kind: kind, Target: rule, After: &after, Rationale: "fs_write on /ws/a/x", Status: store.RefineProposed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func TestAcceptingAPolicyRowAppliesTheRuleOnce(t *testing.T) {
+	f := newFix(t, store.SourceChat)
+	var applied []string
+	f.r.ApplyPolicy = func(d, rule string) error {
+		applied = append(applied, d+" "+rule)
+		return nil
+	}
+	id := addPolicyRow(t, f, store.KindPolicyAllow, "fs_write(path matches /ws/a/**)")
+	row, err := f.r.Accept(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != store.RefineApplied {
+		t.Errorf("status = %s, want applied", row.Status)
+	}
+	if len(applied) != 1 || applied[0] != "allow fs_write(path matches /ws/a/**)" {
+		t.Fatalf("applied = %v", applied)
+	}
+	if _, err := f.r.Accept(context.Background(), id); err == nil {
+		t.Error("a second accept succeeded; want an error")
+	}
+	if len(applied) != 1 {
+		t.Errorf("the rule was applied %d times, want once", len(applied))
+	}
+}
+
+func TestAcceptingAPolicyDenyPassesDeny(t *testing.T) {
+	f := newFix(t, store.SourceChat)
+	var got string
+	f.r.ApplyPolicy = func(d, rule string) error { got = d; return nil }
+	id := addPolicyRow(t, f, store.KindPolicyDeny, "fs_write(path matches /ws/a/**)")
+	if _, err := f.r.Accept(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if got != "deny" {
+		t.Errorf("decision = %q, want deny", got)
+	}
+}
+
+func TestAcceptingAPolicyRowWithoutApplyPolicyFails(t *testing.T) {
+	f := newFix(t, store.SourceChat)
+	id := addPolicyRow(t, f, store.KindPolicyAllow, "fs_write(path matches /ws/a/**)")
+	if _, err := f.r.Accept(context.Background(), id); err == nil {
+		t.Fatal("accept with no ApplyPolicy succeeded")
+	}
+	row, _, _ := f.st.Refinement(context.Background(), id)
+	if row.Status != store.RefineFailed {
+		t.Errorf("status = %s, want failed", row.Status)
+	}
+}
+
+func TestAFailedPolicyWriteMarksTheRowFailed(t *testing.T) {
+	f := newFix(t, store.SourceChat)
+	f.r.ApplyPolicy = func(string, string) error { return errors.New("disk full") }
+	id := addPolicyRow(t, f, store.KindPolicyAllow, "fs_write(path matches /ws/a/**)")
+	if _, err := f.r.Accept(context.Background(), id); err == nil {
+		t.Fatal("want the write error")
+	}
+	row, _, _ := f.st.Refinement(context.Background(), id)
+	if row.Status != store.RefineFailed {
+		t.Errorf("status = %s, want failed", row.Status)
+	}
+}
+
+func acceptPolicyRow(t *testing.T, f *fix, rule string) int64 {
+	t.Helper()
+	f.r.ApplyPolicy = func(string, string) error { return nil }
+	id := addPolicyRow(t, f, store.KindPolicyAllow, rule)
+	if _, err := f.r.Accept(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// Rolling back the approval round undoes the accept: the rule leaves the
+// managed block, the same as revoking it in the policy view.
+func TestRollingBackAnAcceptedPolicyRowRemovesTheRule(t *testing.T) {
+	f := newFix(t, store.SourceChat)
+	rule := "fs_write(path matches /ws/a/**)"
+	id := acceptPolicyRow(t, f, rule)
+	var revoked []string
+	f.r.RevokePolicy = func(d, r string) error {
+		revoked = append(revoked, d+" "+r)
+		return nil
+	}
+	res, err := f.r.Rollback(context.Background(), f.sid, "approval-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.RolledBack) != 1 || len(revoked) != 1 || revoked[0] != "allow "+rule {
+		t.Fatalf("rolled back %+v, revoked %v", res, revoked)
+	}
+	row, _, _ := f.st.Refinement(context.Background(), id)
+	if row.Status != store.RefineRolledBack {
+		t.Errorf("status = %s, want rolled_back", row.Status)
+	}
+}
+
+// A rule already revoked in the policy view has nothing left to undo.
+func TestRollingBackARevokedPolicyRuleIsStale(t *testing.T) {
+	f := newFix(t, store.SourceChat)
+	id := acceptPolicyRow(t, f, "fs_write(path matches /ws/a/**)")
+	f.r.RevokePolicy = func(string, string) error { return config.ErrNotLearned }
+	res, err := f.r.Rollback(context.Background(), f.sid, "approval-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Stale) != 1 {
+		t.Fatalf("result = %+v, want one stale row", res)
+	}
+	row, _, _ := f.st.Refinement(context.Background(), id)
+	if row.Status != store.RefineStale {
+		t.Errorf("status = %s, want stale", row.Status)
+	}
+}
+
+func TestRollingBackAPolicyRowWithoutRevokePolicyFails(t *testing.T) {
+	f := newFix(t, store.SourceChat)
+	id := acceptPolicyRow(t, f, "fs_write(path matches /ws/a/**)")
+	res, err := f.r.Rollback(context.Background(), f.sid, "approval-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Failed) != 1 {
+		t.Fatalf("result = %+v, want one failed row", res)
+	}
+	row, _, _ := f.st.Refinement(context.Background(), id)
+	if row.Status != store.RefineApplied {
+		t.Errorf("status = %s, want applied (nothing was undone)", row.Status)
+	}
+}
+
+// "/refine rollback" with no round undoes the latest refinement round; an
+// approval is not a round, so it is never picked implicitly.
+func TestLatestAppliedRoundSkipsPolicyRows(t *testing.T) {
+	f := newFix(t, store.SourceChat)
+	acceptPolicyRow(t, f, "fs_write(path matches /ws/a/**)")
+	if _, ok, err := f.st.LatestAppliedRound(context.Background(), f.sid); err != nil || ok {
+		t.Fatalf("LatestAppliedRound found a round (ok=%v err=%v); policy rows must not count", ok, err)
+	}
+}
+
+// A refinement round is driven by the model. It must not be able to mint
+// a policy proposal: only the guard writes those.
+func TestARoundCannotProposeAPolicyEdit(t *testing.T) {
+	f := newFix(t, store.SourceChat,
+		`{"edits":[{"kind":"policy.allow","name":"x","body":"fs_write","rationale":"r"}]}`)
+	f.say(t, "user", text("hello"))
+	res, err := f.r.Round(context.Background(), f.sid, TriggerManual, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Dropped) != 1 || !strings.Contains(res.Dropped[0], "unknown edit kind") {
+		t.Fatalf("dropped = %q, want one 'unknown edit kind' error", res.Dropped)
+	}
+	rows, err := f.st.Refinements(context.Background(), "", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if strings.HasPrefix(r.Kind, "policy.") {
+			t.Fatalf("a round wrote a policy row: %+v", r)
+		}
+	}
+}

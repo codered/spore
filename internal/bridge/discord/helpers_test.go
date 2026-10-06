@@ -74,13 +74,7 @@ ask = ["shell_exec"]
 
 // buildTestGuard mirrors cmd/spore/wire.go's buildTools. It exists because
 // that function lives in package main and cannot be imported.
-// Passes nil for the learn callback (disables rule learning).
 func buildTestGuard(cfg *config.Config, st *store.Store, approver policy.Approver) (*policy.Guard, error) {
-	return buildTestGuardWithLearnCallback(cfg, st, approver, nil)
-}
-
-// buildTestGuardWithLearnCallback is like buildTestGuard but accepts a learn callback.
-func buildTestGuardWithLearnCallback(cfg *config.Config, st *store.Store, approver policy.Approver, learn func(policy.Decision, string) error) (*policy.Guard, error) {
 	reg := tool.NewRegistry(cfg.Policy.MaxOutput)
 	tools := fs.New(cfg.Policy.MaxOutput)
 	tools = append(tools, shell.New(
@@ -94,7 +88,7 @@ func buildTestGuardWithLearnCallback(cfg *config.Config, st *store.Store, approv
 	if err != nil {
 		return nil, err
 	}
-	return policy.NewGuard(reg, engine, approver, st, learn), nil
+	return policy.NewGuard(reg, engine, approver, st), nil
 }
 
 // newDaemonWithScriptedProvider boots a real daemon over a real store, a real
@@ -104,13 +98,6 @@ func buildTestGuardWithLearnCallback(cfg *config.Config, st *store.Store, approv
 // server needs the guard, so the server is built first with no agent and the
 // agent is attached once its tools exist.
 func newDaemonWithScriptedProvider(t *testing.T, cfg *config.Config, turns []provider.ScriptTurn) (*daemon.Server, *store.Store) {
-	t.Helper()
-	return newDaemonWithScriptedProviderAndLearn(t, cfg, turns, nil)
-}
-
-// newDaemonWithScriptedProviderAndLearn is like newDaemonWithScriptedProvider but
-// accepts a learn callback for recording rule learning attempts.
-func newDaemonWithScriptedProviderAndLearn(t *testing.T, cfg *config.Config, turns []provider.ScriptTurn, learn func(policy.Decision, string) error) (*daemon.Server, *store.Store) {
 	t.Helper()
 	st := openTestStore(t)
 
@@ -122,7 +109,7 @@ func newDaemonWithScriptedProviderAndLearn(t *testing.T, cfg *config.Config, tur
 	if err != nil {
 		t.Fatal(err)
 	}
-	guard, err := buildTestGuardWithLearnCallback(cfg, st, srv.Approver(), learn)
+	guard, err := buildTestGuard(cfg, st, srv.Approver())
 	if err != nil {
 		t.Fatal(err)
 	}

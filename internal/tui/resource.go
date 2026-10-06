@@ -37,7 +37,10 @@ type Row struct {
 type Action struct {
 	Key     string
 	Label   string
-	Applies func(Row) bool   // nil: every row
+	Applies func(Row) bool // nil: every row
+	// Why says why the action does not apply to a row, shown when its key is
+	// pressed there. Nil shows a generic line naming the action.
+	Why     func(Row) string
 	Confirm func(Row) string // nil: runs without asking
 	Run     func(ctx context.Context, v Views, r Row) error
 }

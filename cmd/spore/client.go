@@ -25,6 +25,7 @@ type client struct {
 	// with no timeout, because an SSE connection is meant to stay open.
 	short        *http.Client
 	streamClient *http.Client
+	token        string // token is the daemon credential, sent as a bearer header. Empty sends nothing; the daemon then answers 401.
 }
 
 // httpError is a daemon error response. Error() is the text do has always
@@ -43,6 +44,13 @@ func newClient(addr string) *client {
 		base:         "http://" + addr,
 		short:        &http.Client{Timeout: 30 * time.Second},
 		streamClient: &http.Client{},
+	}
+}
+
+// authorize adds the daemon token to one request.
+func (c *client) authorize(req *http.Request) {
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 }
 
@@ -66,6 +74,7 @@ func (c *client) do(ctx context.Context, method, path string, body, out any) err
 	if c.name != "" {
 		req.Header.Set("X-Spore-Client", c.name)
 	}
+	c.authorize(req)
 	//nolint:gosec // G704: c.base is the local daemon URL
 	res, err := c.short.Do(req) //nolint:gosec // G704: c.base is the local daemon URL
 	if err != nil {
@@ -209,6 +218,7 @@ func (c *client) streamPath(ctx context.Context, path, label string, connected c
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	c.authorize(req)
 	//nolint:gosec // G704: c.base is the local daemon URL, path is from the API
 	res, err := c.streamClient.Do(req) //nolint:gosec // G704: c.base is the local daemon URL
 	if err != nil {

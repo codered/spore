@@ -9,6 +9,7 @@ import (
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/provider"
+	"github.com/codered/spore/internal/store"
 )
 
 // TestEndToEndDiscordTurnWithApproval boots a real daemon, a real store, a
@@ -47,8 +48,8 @@ user_ids    = ["U"]
 	}
 
 	// The provider script: two shell_exec calls to test forging pattern answers.
-	// Use a recording learn callback to ensure no blanket rules are written.
-	learned := make([]string, 0)
+	// shell_exec has no path-shaped argument, so pattern-scoped approvals are
+	// never offered or proposed.
 	script := []provider.ScriptTurn{
 		{ToolCalls: []provider.Block{{
 			Type: provider.BlockToolUse, ID: "tu1", Name: "shell_exec",
@@ -60,10 +61,7 @@ user_ids    = ["U"]
 		}}},
 		{Text: "done"},
 	}
-	srv, st := newDaemonWithScriptedProviderAndLearn(t, cfg, script, func(d policy.Decision, rule string) error {
-		learned = append(learned, rule)
-		return nil
-	})
+	srv, st := newDaemonWithScriptedProvider(t, cfg, script)
 
 	f := newFakeClient()
 	b, err := New(Options{
@@ -182,12 +180,16 @@ user_ids    = ["U"]
 		t.Fatalf("%d suspensions left open after the button presses", len(pending))
 	}
 
-	// The key security property: the guard must refuse a pattern scope for
-	// a degraded call (one with no path-shaped argument). Presentation is not
+	// The key security property: the guard must refuse to propose a pattern scope
+	// for a degraded call (one with no path-shaped argument). Presentation is not
 	// enforcement: even when someone forges a pattern-scoped press on a live
-	// approval, the guard downgrades it to once and refuses to learn.
-	if len(learned) != 0 {
-		t.Fatalf("the guard attempted to learn %d rules for a degraded approval: %v", len(learned), learned)
+	// approval, the guard downgrades it to once and refuses to propose.
+	proposals, err := st.Refinements(context.Background(), store.RefineProposed, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(proposals) != 0 {
+		t.Fatalf("the guard attempted to propose %d rules for a degraded approval: %v", len(proposals), proposals)
 	}
 }
 

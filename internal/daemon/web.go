@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"crypto/subtle"
 	"html/template"
+	"io"
 	"net/http"
 	"strings"
 
@@ -14,11 +16,31 @@ import (
 // remembering to.
 var indexTemplate = template.Must(template.ParseFS(web.FS, "index.html"))
 
+// signInPage is what a browser without the cookie sees: the UI would only
+// fail on every request.
+const signInPage = `<!doctype html><meta charset="utf-8"><title>spore</title>` +
+	`<body style="font-family:system-ui;padding:2rem"><p>Run <code>spore web</code> in a terminal to open the UI signed in.</p></body>`
+
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// ServeMux's "/" pattern matches everything unmatched; only the root is
 	// the UI, so anything else is a genuine 404 rather than a silent index.
 	if r.URL.Path != "/" {
 		writeError(w, http.StatusNotFound, "no such path %s", r.URL.Path)
+		return
+	}
+	if tok := r.URL.Query().Get("token"); tok != "" {
+		if s.token != "" && subtle.ConstantTimeCompare([]byte(tok), []byte(s.token)) == 1 {
+			//nolint:gosec // G124: loopback does not require Secure; HttpOnly and SameSite are set
+			http.SetCookie(w, &http.Cookie{Name: tokenCookie, Value: s.token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
+		}
+		// Redirect either way, so the token never stays in the address bar
+		// or the history.
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	if !s.authorized(r) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, signInPage)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

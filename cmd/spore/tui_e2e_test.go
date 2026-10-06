@@ -43,11 +43,14 @@ func e2eDaemon(t *testing.T, workspace string, turns ...provider.ScriptTurn) *cl
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := daemon.New(daemon.Options{Agent: agent.New(st, preg, rt, cfg, nil), Store: st, Cfg: cfg})
+	const testDaemonToken = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	srv := daemon.New(daemon.Options{Agent: agent.New(st, preg, rt, cfg, nil), Store: st, Cfg: cfg, Token: testDaemonToken})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	t.Cleanup(srv.Close)
-	return newClient(strings.TrimPrefix(ts.URL, "http://"))
+	c := newClient(strings.TrimPrefix(ts.URL, "http://"))
+	c.token = testDaemonToken
+	return c
 }
 
 // driver runs the model the way the Bubble Tea runtime would: Update is

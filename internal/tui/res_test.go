@@ -255,6 +255,72 @@ func TestPolicyRowsRevokeOnlyLearned(t *testing.T) {
 	}
 }
 
+func TestRefinementDetailShowsAPolicyRuleNotADiff(t *testing.T) {
+	after := "fs_write(path matches /ws/a/**)"
+	row := Row{Data: daemon.RefinementJSON{ID: 7, Kind: "policy.allow", Target: after, After: &after, Status: "proposed", Rationale: "allow fs_write on /ws/a/x"}}
+	got := refinementsRes{}.Detail(row)
+	if !strings.Contains(got, "rule: "+after) || strings.Contains(got, "--- before") {
+		t.Errorf("detail:\n%s", got)
+	}
+}
+
+// Rolling back an accepted proposal removes its rule, so the action is
+// offered on applied policy rows as on any other applied row.
+func TestRollbackActionAppliesToAppliedRows(t *testing.T) {
+	var rollback Action
+	for _, a := range (refinementsRes{}).Actions() {
+		if a.Key == "x" {
+			rollback = a
+		}
+	}
+	if rollback.Key == "" {
+		t.Fatal("rollback action not found")
+	}
+	for _, kind := range []string{"policy.allow", "notes.append"} {
+		applied := Row{Data: daemon.RefinementJSON{ID: 1, Kind: kind, Status: "applied", RoundID: "r1"}}
+		if !rollback.Applies(applied) {
+			t.Errorf("%s applied: rollback should apply", kind)
+		}
+		proposed := Row{Data: daemon.RefinementJSON{ID: 2, Kind: kind, Status: "proposed", RoundID: "r1"}}
+		if rollback.Applies(proposed) {
+			t.Errorf("%s proposed: rollback should not apply", kind)
+		}
+	}
+}
+
+// An action key on a row the action does not apply to must say so: the P
+// view opens on a baseline rule, and x there used to do nothing at all.
+func TestAnActionKeyOnTheWrongRowSaysWhy(t *testing.T) {
+	fb := &fakeBackend{}
+	fb.policy = daemon.PolicyJSON{Rules: []daemon.PolicyRuleJSON{
+		{Profile: "local", Decision: "deny", Source: "baseline", Rule: "fs_*(path outside workspace)"},
+		{Profile: "local", Decision: "allow", Source: "learned", Rule: "fs_write(path matches /ws/notes/**)"},
+	}}
+	m := newTestModel(t, fb, "s1")
+	press(m, "esc", "P", "x")
+	if m.mode == modeConfirm || len(fb.revoked) != 0 {
+		t.Fatalf("x on a baseline rule started a revoke (mode %v, revoked %v)", m.mode, fb.revoked)
+	}
+	if !strings.Contains(m.viewErr, "learned") || !strings.Contains(m.View(), "learned") {
+		t.Errorf("no explanation shown: viewErr=%q", m.viewErr)
+	}
+	press(m, "j")
+	if m.viewErr != "" {
+		t.Errorf("explanation still shown after moving to another row: %q", m.viewErr)
+	}
+	press(m, "x")
+	if m.mode != modeConfirm {
+		t.Fatalf("x on the learned rule: mode %v, want confirm", m.mode)
+	}
+	if m.viewErr != "" {
+		t.Errorf("stale explanation left on screen: %q", m.viewErr)
+	}
+	press(m, "y")
+	if len(fb.revoked) != 1 {
+		t.Errorf("revoked = %v", fb.revoked)
+	}
+}
+
 func TestMemoryRowsAndSearch(t *testing.T) {
 	fb := &fakeBackend{memory: daemon.MemoryJSON{Facts: []daemon.FactJSON{
 		{Name: "prefers-tabs", Type: "feedback", Description: "indentation", Body: "Use tabs."},

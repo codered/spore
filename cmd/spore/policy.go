@@ -37,9 +37,9 @@ func cmdPolicyCheck(cfg *config.Config, profile, workspace, toolName, argsJSON s
 	if res.Decision == policy.DecisionAsk {
 		pattern, ok := policy.PatternFor(policy.Call{Tool: toolName, Args: json.RawMessage(argsJSON)}, workspace)
 		if ok {
-			fmt.Printf("  \"always this pattern\" would write: %s\n", pattern)
+			fmt.Printf("  \"propose this pattern\" would queue: %s\n", pattern)
 		} else {
-			fmt.Printf("  \"always this pattern\" is not offered (no pattern to generalise from)\n")
+			fmt.Printf("  \"propose this pattern\" is not offered (no pattern to generalise from)\n")
 		}
 	}
 	return nil

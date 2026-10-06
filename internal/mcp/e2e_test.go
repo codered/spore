@@ -122,7 +122,7 @@ command = %q
 		t.Fatalf("store.CreateSession: %v", err)
 	}
 
-	guard = policy.NewGuard(reg, engine, approver, st, func(policy.Decision, string) error { return nil })
+	guard = policy.NewGuard(reg, engine, approver, st)
 	return guard, host, workspace, sessionID
 }
 

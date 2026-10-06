@@ -73,6 +73,10 @@ func (refinementsRes) Detail(r Row) string {
 	if !ok {
 		return ""
 	}
+	if strings.HasPrefix(x.Kind, "policy.") {
+		return fmt.Sprintf("refinement %d — %s (%s)\nrule: %s\nsession: %s  trigger: %s\nwhy: %s\n\naccepting writes this rule to the managed block of config.toml and applies it at once; rolling back removes it\n",
+			x.ID, x.Kind, x.Status, x.Target, x.SessionID, x.Trigger, x.Rationale)
+	}
 	return fmt.Sprintf("refinement %d — %s %s (%s)\nsession: %s  round: %s  trigger: %s\nwhy: %s\n\n--- before\n%s\n\n+++ after\n%s\n",
 		x.ID, x.Kind, x.Target, x.Status, x.SessionID, x.RoundID, x.Trigger, x.Rationale,
 		refineContent(x.Before), refineContent(x.After))
@@ -106,7 +110,11 @@ func (refinementsRes) Actions() []Action {
 			Key: "x", Label: "roll back round",
 			Applies: refineStatus("applied"),
 			Confirm: func(r Row) string {
-				return "roll back every edit in round " + r.Data.(daemon.RefinementJSON).RoundID + "?"
+				x := r.Data.(daemon.RefinementJSON)
+				if strings.HasPrefix(x.Kind, "policy.") {
+					return fmt.Sprintf("roll back: remove %q from your policy?", x.Target)
+				}
+				return "roll back every edit in round " + x.RoundID + "?"
 			},
 			Run: func(ctx context.Context, v Views, r Row) error {
 				x := r.Data.(daemon.RefinementJSON)

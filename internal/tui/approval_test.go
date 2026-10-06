@@ -62,7 +62,7 @@ func TestApprovalCardNamesTheSubAgentAndPattern(t *testing.T) {
 	approvalOn(m, daemon.WireEvent{Tool: "shell_exec", Rule: "shell_exec", Origin: "7f3e99", Profile: "remote",
 		Pattern: "shell_exec(command matches go test*)"})
 	got := card(m)
-	for _, want := range []string{"from sub-agent 7f3e · profile remote", "p always allow shell_exec(command matches go test*)"} {
+	for _, want := range []string{"from sub-agent 7f3e · profile remote", "p allow once + propose shell_exec(command matches go test*)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in:\n%s", want, got)
 		}
@@ -348,7 +348,7 @@ func TestInsertShowsTheAltKeys(t *testing.T) {
 	m, _, _ := clockModel(t)
 	approvalOn(m, daemon.WireEvent{Tool: "shell_exec", Pattern: "shell_exec(go test*)"})
 	v := ansi.Strip(m.View())
-	for _, want := range []string{"alt+y allow once", "alt+n deny", "alt+s allow shell_exec", "alt+p always allow",
+	for _, want := range []string{"alt+y allow once", "alt+n deny", "alt+s allow shell_exec", "alt+p allow once + propose",
 		"answer with alt+y/n/s/p, or esc then y/n/s/p", "alt+y/n/s/p answer"} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("missing %q in INSERT:\n%s", want, v)

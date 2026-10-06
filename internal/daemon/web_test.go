@@ -125,10 +125,7 @@ func TestAppJSRoutesAreRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mux, ok := (&Server{}).Handler().(*http.ServeMux)
-	if !ok {
-		t.Fatal("Handler is not a *http.ServeMux")
-	}
+	mux := (&Server{}).buildMux()
 	matches := func(method, tpl string) bool {
 		path, _, _ := strings.Cut(tpl, "?")
 		path = placeholder.ReplaceAllString(path, "1")
@@ -159,5 +156,15 @@ func TestAppJSRoutesAreRegistered(t *testing.T) {
 	// A regex that silently matched nothing would pass everything.
 	if len(calls) < 10 {
 		t.Errorf("found only %d api(...) calls in app.js; is the pattern still right?", len(calls))
+	}
+}
+
+func TestAppJSExplainsA401(t *testing.T) {
+	body, err := web.FS.ReadFile("app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "res.status === 401") || !strings.Contains(string(body), "spore web") {
+		t.Error("app.js must tell the user to run spore web when the daemon answers 401")
 	}
 }

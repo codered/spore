@@ -1095,6 +1095,15 @@ func (m *Model) keyView(k tea.KeyMsg) tea.Cmd {
 		*t.detail, cmd = t.detail.Update(k)
 		return cmd
 	}
+	// A message about the selected row -- why an action did not apply, or
+	// what one failed to do -- belongs to that row; moving off it clears it.
+	if before, ok := t.selected(); ok {
+		defer func() {
+			if after, ok := t.selected(); !ok || after.ID != before.ID {
+				m.viewErr = ""
+			}
+		}()
+	}
 	switch s {
 	case "esc":
 		if t.filter != "" {
@@ -1175,9 +1184,20 @@ func (m *Model) runAction(key string) tea.Cmd {
 		return nil
 	}
 	for _, a := range m.table.res.Actions() {
-		if a.Key != key || (a.Applies != nil && !a.Applies(r)) {
+		if a.Key != key {
 			continue
 		}
+		// A key that does nothing looks broken: the policy view opens on a
+		// baseline rule, and x there used to be silently ignored.
+		if a.Applies != nil && !a.Applies(r) {
+			if a.Why != nil {
+				m.viewErr = a.Why(r)
+			} else {
+				m.viewErr = a.Label + " does not apply to this row"
+			}
+			continue
+		}
+		m.viewErr = ""
 		v, ctx := m.views, m.ctx
 		run := func() tea.Msg { return actionDoneMsg{err: a.Run(ctx, v, r)} }
 		if a.Confirm == nil {
@@ -1499,7 +1519,7 @@ func answerQuestion(ev daemon.WireEvent, ans policy.Answer) string {
 	case ans.Scope == policy.ScopeSession:
 		return "Allow " + ev.Tool + " for this session?"
 	case ans.Scope == policy.ScopePattern:
-		return "Always allow " + ev.Pattern + "?"
+		return "Allow once and propose " + ev.Pattern + " for review?"
 	}
 	return "Allow " + ev.Tool + " once?"
 }

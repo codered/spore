@@ -14,7 +14,7 @@
 │                              │┃   ║   }                                                      ║   ┃
 │                              │┃   ║                                                          ║   ┃
 │                              │┃   ║  y allow once   n deny   s allow fs.write this session   ║   ┃
-│                              │┃   ║  p always allow fs.write:cmd/spore/*                     ║   ┃
+│                              │┃   ║  p allow once + propose fs.write:cmd/spore/*             ║   ┃
 │                              │┃   ║                                                          ║   ┃
 │                              │┃   ║  waiting (no timeout)                                    ║   ┃
 │                              │┃   ║                                                          ║   ┃
@@ -27,4 +27,4 @@
 │                              │┃ │ Ask spore something…  (i to type · : for commands)           │ ┃
 │● working  ◐ blocked  ○ idle  │┃ ╰──────────────────────────────────────────────────────────────╯ ┃
 ╰──────────────────────────────╯┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
- APPROVAL  y once  n deny  s session  p pattern  b next blocked (c9d0)                      esc stop
+ APPROVAL  y once  n deny  s session  p propose  b next blocked (c9d0)                      esc stop

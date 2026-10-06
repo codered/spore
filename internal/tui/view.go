@@ -389,7 +389,7 @@ func helpText() string {
 		"  z         open / close the jobs folder     enter on the folder opens / closes it; on a job, lists its runs",
 		"",
 		styKey.Render("APPROVAL") + "  (normal mode, while one is showing)",
-		"  y allow once · n deny · s allow the tool this session · p always allow the pattern",
+		"  y allow once · n deny · s allow the tool this session · p allow once and propose the pattern for review",
 		"  each asks first: y confirms, esc cancels",
 		"  while typing: alt+y / alt+n answer at once; alt+s / alt+p ask first, since they",
 		"  change the policy past this call. The draft is kept either way.",

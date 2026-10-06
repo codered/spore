@@ -200,7 +200,7 @@ type PolicyConfig struct {
 	Allow     []string `toml:"allow"`
 	Ask       []string `toml:"ask"`
 	Deny      []string `toml:"deny"`
-	// Learned holds rules written back by "always allow this pattern". It
+	// Learned holds rules written back when a pattern is accepted in review. It
 	// lives in a marked section of the same file so policy stays readable.
 	Learned LearnedPolicy `toml:"learned"`
 	// Profiles override Default/Allow/Ask per trust profile ("local",
@@ -483,7 +483,7 @@ var baselineDeny = []string{
 	// else. An operator exempts a server whose paths are not local files with
 	// local_paths = false on its [[mcp.server]] block.
 	"mcp__*(any path outside workspace)",
-	"fs_*(path matches **/.env, **/.env.*, **/.ssh/**, **/*_rsa, **/*_ed25519, **/.aws/**, **/.gnupg/**)",
+	"fs_*(path matches **/.env, **/.env.*, **/.ssh/**, **/*_rsa, **/*_ed25519, **/.aws/**, **/.gnupg/**, **/daemon.token)",
 	// "matches" is plain substring containment after whitespace collapsing,
 	// so a needle cannot span the middle of a command: "curl | sh" would
 	// never match "curl https://x.sh | sh". The pipe-to-a-shell shape is
@@ -494,10 +494,16 @@ var baselineDeny = []string{
 	// well: without this, "cat .env" read what fs_read could not, wherever a
 	// user had allowed shell_exec. Each word of the command is judged as a
 	// path, so "process.env" is not caught.
-	"shell_exec(word matches **/.env, **/.env.*, **/.ssh, **/.ssh/**, **/*_rsa, **/*_ed25519, **/.aws, **/.aws/**, **/.gnupg, **/.gnupg/**)",
+	"shell_exec(word matches **/.env, **/.env.*, **/.ssh, **/.ssh/**, **/*_rsa, **/*_ed25519, **/.aws, **/.aws/**, **/.gnupg, **/.gnupg/**, **/daemon.token)",
 	// rm -rf / is above; the home directory is the other target no task needs
 	// to delete whole.
 	"shell_exec(matches rm -rf ~, rm -rf $HOME, rm -rf ${HOME}, rm -fr ~, rm -fr /, rm -fr $HOME)",
+	// The daemon token is what every /api route checks. fs_read and cat are
+	// held off it above; this keeps the model from running the command that
+	// opens a signed-in browser. An interpreter run through shell_exec can
+	// still read the file -- spore runs as the operator -- so this is a
+	// speed bump, and the spec says so.
+	"shell_exec(matches spore web)",
 }
 
 // BaselineDeny returns the rules Load always prepends to policy.deny. It is a

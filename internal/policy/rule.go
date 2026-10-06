@@ -1,5 +1,5 @@
 // Package policy decides whether a tool call may run. Every call resolves to
-// allow, ask or deny by matching ordered rules against the tool name AND its
+// allow, ask or deny by matching rules against the tool name AND its
 // arguments. Deny is evaluated first and is absolute: no approval, learned
 // rule or trust profile can override it.
 //
@@ -82,6 +82,10 @@ type Rule struct {
 
 	tool *regexp.Regexp
 	pred predicate
+	// tier ranks how narrow the rule is: 1 has an argument predicate, 2 is
+	// a bare exact tool name, 3 is a bare tool glob. Evaluate decides
+	// allow and ask by the narrowest tier that matched.
+	tier int
 }
 
 type predicate interface {
@@ -123,6 +127,14 @@ func ParseRule(d Decision, src string) (Rule, error) {
 		}
 		r.pred = p
 	}
+	switch {
+	case r.pred != nil:
+		r.tier = 1
+	case strings.Contains(toolSrc, "*"):
+		r.tier = 3
+	default:
+		r.tier = 2
+	}
 	return r, nil
 }
 
@@ -136,6 +148,10 @@ func (r Rule) Match(c Call, env Env) bool {
 	}
 	return r.pred.match(c, env)
 }
+
+// Tier is how narrow the rule is: 1 (argument predicate), 2 (exact tool
+// name) or 3 (tool glob).
+func (r Rule) Tier() int { return r.tier }
 
 // explain describes why this rule matched, for predicates that can. It is
 // called only after Match returned true.

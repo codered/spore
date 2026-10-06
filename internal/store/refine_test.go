@@ -221,3 +221,38 @@ func TestOpenAddsRefineColumnsToAnOldSessionsTable(t *testing.T) {
 		t.Fatalf("MarkRefineAttempt on a migrated row: %v", err)
 	}
 }
+
+func TestProposedPolicyExists(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "spore.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	sid, err := st.CreateSession(ctx, "t", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := "fs_write(path matches /ws/a/**)"
+	if ok, err := st.ProposedPolicyExists(ctx, KindPolicyAllow, rule); err != nil || ok {
+		t.Fatalf("empty table: ok=%v err=%v", ok, err)
+	}
+	after := rule
+	id, err := st.AddRefinement(ctx, Refinement{RoundID: "approval-1", SessionID: sid, Trigger: RefineTriggerApproval,
+		Kind: KindPolicyAllow, Target: rule, After: &after, Rationale: "r", Status: RefineProposed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := st.ProposedPolicyExists(ctx, KindPolicyAllow, rule); !ok {
+		t.Error("want true for a proposed row")
+	}
+	if ok, _ := st.ProposedPolicyExists(ctx, KindPolicyDeny, rule); ok {
+		t.Error("the other kind must not match")
+	}
+	if _, err := st.SetRefinementStatus(ctx, id, RefineProposed, RefineRejected); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := st.ProposedPolicyExists(ctx, KindPolicyAllow, rule); ok {
+		t.Error("a rejected row must not count")
+	}
+}

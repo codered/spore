@@ -61,7 +61,7 @@ func attachPolicy(t *testing.T, s *Server) *policy.Reloader {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := policy.NewGuard(nil, e, s.Approver(), s.Store(), nil)
+	g := policy.NewGuard(nil, e, s.Approver(), s.Store())
 	s.guard = g
 	rl := policy.NewReloader(path, pc, g)
 	s.AttachOperator(Operator{Policy: rl})

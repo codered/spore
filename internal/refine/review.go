@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
+	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/store"
 )
 
@@ -22,6 +24,9 @@ func (r *Refiner) Accept(ctx context.Context, id int64) (store.Refinement, error
 	}
 	if row.Status != store.RefineProposed {
 		return row, fmt.Errorf("refinement %d is %s, not proposed", id, row.Status)
+	}
+	if strings.HasPrefix(row.Kind, "policy.") {
+		return r.acceptPolicy(ctx, row)
 	}
 	path, err := r.pathFor(row)
 	if err != nil {
@@ -49,6 +54,37 @@ func (r *Refiner) Accept(ctx context.Context, id int64) (store.Refinement, error
 		_, _ = r.Store.SetRefinementStatus(ctx, id, store.RefineApplied, store.RefineFailed)
 		row.Status = store.RefineFailed
 		return row, err
+	}
+	row.Status = store.RefineApplied
+	return row, nil
+}
+
+// acceptPolicy applies a policy proposal. The row is claimed first, so two
+// accepts racing cannot both write the rule. There is no before-content to
+// compare: config.LearnRule deduplicates, so a rule already in the block is
+// applied without a second line.
+func (r *Refiner) acceptPolicy(ctx context.Context, row store.Refinement) (store.Refinement, error) {
+	moved, err := r.Store.SetRefinementStatus(ctx, row.ID, store.RefineProposed, store.RefineApplied)
+	if err != nil {
+		return row, err
+	}
+	if !moved {
+		return row, fmt.Errorf("refinement %d changed while it was being accepted", row.ID)
+	}
+	decision := policyDecision(row.Kind)
+	var werr error
+	switch {
+	case r.ApplyPolicy == nil:
+		werr = errors.New("policy proposals cannot be applied: no policy writer is attached")
+	case row.After == nil:
+		werr = fmt.Errorf("refinement %d has no rule", row.ID)
+	default:
+		werr = r.ApplyPolicy(decision, *row.After)
+	}
+	if werr != nil {
+		_, _ = r.Store.SetRefinementStatus(ctx, row.ID, store.RefineApplied, store.RefineFailed)
+		row.Status = store.RefineFailed
+		return row, werr
 	}
 	row.Status = store.RefineApplied
 	return row, nil
@@ -107,6 +143,12 @@ func (r *Refiner) Rollback(ctx context.Context, sessionID, roundID string) (Roll
 		if row.Status != store.RefineApplied {
 			continue
 		}
+		if strings.HasPrefix(row.Kind, "policy.") {
+			if err := r.rollbackPolicy(ctx, row, &out); err != nil {
+				return out, err
+			}
+			continue
+		}
 		path, err := r.pathFor(row)
 		if err != nil {
 			out.Failed = append(out.Failed, row)
@@ -142,4 +184,51 @@ func (r *Refiner) Rollback(ctx context.Context, sessionID, roundID string) (Roll
 		out.RolledBack = append(out.RolledBack, row)
 	}
 	return out, nil
+}
+
+// policyDecision is the decision a policy proposal's kind writes.
+func policyDecision(kind string) string {
+	if kind == KindPolicyDeny {
+		return "deny"
+	}
+	return "allow"
+}
+
+// rollbackPolicy undoes an accepted policy proposal by removing its rule
+// from the managed block, the same as revoking it in the policy view. A
+// rule the block no longer holds -- revoked there already -- leaves nothing
+// to undo, so the row is stale. On any other failure the row stays applied,
+// because the rule is still in force.
+func (r *Refiner) rollbackPolicy(ctx context.Context, row store.Refinement, out *RollbackResult) error {
+	var err error
+	switch {
+	case r.RevokePolicy == nil:
+		err = errors.New("policy rules cannot be removed: no policy writer is attached")
+	case row.After == nil:
+		err = fmt.Errorf("refinement %d has no rule", row.ID)
+	default:
+		err = r.RevokePolicy(policyDecision(row.Kind), *row.After)
+	}
+	to := store.RefineRolledBack
+	switch {
+	case errors.Is(err, config.ErrNotLearned):
+		to = store.RefineStale
+	case err != nil:
+		out.Failed = append(out.Failed, row)
+		return nil
+	}
+	moved, serr := r.Store.SetRefinementStatus(ctx, row.ID, store.RefineApplied, to)
+	if serr != nil {
+		return serr
+	}
+	if !moved {
+		return nil
+	}
+	row.Status = to
+	if to == store.RefineStale {
+		out.Stale = append(out.Stale, row)
+	} else {
+		out.RolledBack = append(out.RolledBack, row)
+	}
+	return nil
 }

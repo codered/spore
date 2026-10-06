@@ -27,6 +27,9 @@ const (
 	TriggerCompaction Trigger = "compaction"
 	TriggerIdle       Trigger = "idle"
 	TriggerModel      Trigger = "model"
+	// TriggerApproval marks a policy proposal written from an approval
+	// answer, not by a round.
+	TriggerApproval Trigger = store.RefineTriggerApproval
 )
 
 // Edit kinds: the closed vocabulary the planner may use.
@@ -36,6 +39,12 @@ const (
 	KindFactDelete   = "fact.delete"
 	KindNotesAppend  = "notes.append"
 	KindNotesReplace = "notes.replace"
+)
+
+// Policy kinds are written only by the guard, never by a round.
+const (
+	KindPolicyAllow = store.KindPolicyAllow
+	KindPolicyDeny  = store.KindPolicyDeny
 )
 
 // Refiner runs refinement rounds. One per daemon.
@@ -50,6 +59,16 @@ type Refiner struct {
 	// Notify, when set, is told the note each round writes, so a live view
 	// can show it. Set before any round runs; never changed after.
 	Notify func(sessionID, text string)
+	// ApplyPolicy writes an accepted policy proposal into the managed block
+	// and makes it live. The daemon sets it to the policy reloader. Nil
+	// makes accepting a policy row fail rather than mark it applied with
+	// nothing written.
+	ApplyPolicy func(decision, rule string) error
+	// RevokePolicy removes a rule an accepted proposal wrote, when its
+	// approval round is rolled back. The daemon sets it to the policy
+	// reloader; it returns config.ErrNotLearned for a rule the block no
+	// longer holds. Nil makes rolling back a policy row fail.
+	RevokePolicy func(decision, rule string) error
 
 	// ctx is what background rounds run under; Close cancels it.
 	ctx    context.Context

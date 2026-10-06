@@ -134,12 +134,14 @@ func buildRuleset(def string, allow, ask, deny []string, learned config.LearnedP
 	if err != nil {
 		return ruleset{}, err
 	}
-	// Hand-written rules are evaluated before learned ones, so a rule the
-	// user typed always outranks one an approval prompt wrote.
+	// Source plays no part in a decision: Evaluate ranks by tier, and ask
+	// wins within a tier. The list is kept in tier order so the policy view
+	// reads in the order decisions are made.
 	rs.allowAndAsk = append(rs.allowAndAsk, tagged(allowRules, SourceConfig)...)
 	rs.allowAndAsk = append(rs.allowAndAsk, tagged(askRules, SourceConfig)...)
 	rs.allowAndAsk = append(rs.allowAndAsk, tagged(learnedAllow, SourceLearned)...)
 	rs.allowAndAsk = append(rs.allowAndAsk, tagged(learnedAsk, SourceLearned)...)
+	slices.SortStableFunc(rs.allowAndAsk, func(a, b Rule) int { return a.tier - b.tier })
 
 	switch def {
 	case "allow":
@@ -231,10 +233,10 @@ func (e *Engine) ToolDecision(p Profile, tool string) (Result, bool) {
 }
 
 // Evaluate resolves one call for one session. Deny rules are checked first
-// and win outright; then allow and ask rules in configured order; then the
-// profile default. Path predicates are evaluated against the CALLING
-// session's workspace, so one daemon serving a local session in a project and
-// a bridge session in its own directory applies the right bound to each.
+// and win outright; then the narrowest matching tier of allow and ask rules, ask winning ties.
+// Path predicates are evaluated against the CALLING session's workspace, so one daemon
+// serving a local session in a project and a bridge session in its own directory applies
+// the right bound to each.
 func (e *Engine) Evaluate(s Session, c Call) Result {
 	env := e.env
 	if s.Workspace != "" {
@@ -257,14 +259,43 @@ func (e *Engine) Evaluate(s Session, c Call) Result {
 	if !ok {
 		rs = e.base
 	}
+	return decide(rs, env, c)
+}
+
+// decide runs one call through one ruleset. Deny wins outright. Otherwise
+// the narrowest tier with a matching allow or ask rule decides, and within
+// it ask beats allow, so neither a rule's position in the file nor whether
+// it was learned changes the outcome. List order only picks which rule is
+// named in the result.
+func decide(rs ruleset, env Env, c Call) Result {
 	for _, r := range rs.deny {
 		if r.Match(c, env) {
 			return Result{Decision: DecisionDeny, Rule: r.Raw, Detail: r.explain(c, env)}
 		}
 	}
-	for _, r := range rs.allowAndAsk {
-		if r.Match(c, env) {
-			return Result{Decision: r.Decision, Rule: r.Raw}
+	var firstAllow, firstAsk [4]*Rule
+	for i := range rs.allowAndAsk {
+		r := &rs.allowAndAsk[i]
+		if !r.Match(c, env) {
+			continue
+		}
+		switch r.Decision {
+		case DecisionAsk:
+			if firstAsk[r.tier] == nil {
+				firstAsk[r.tier] = r
+			}
+		case DecisionAllow:
+			if firstAllow[r.tier] == nil {
+				firstAllow[r.tier] = r
+			}
+		}
+	}
+	for t := 1; t <= 3; t++ {
+		if firstAsk[t] != nil {
+			return Result{Decision: DecisionAsk, Rule: firstAsk[t].Raw}
+		}
+		if firstAllow[t] != nil {
+			return Result{Decision: DecisionAllow, Rule: firstAllow[t].Raw}
 		}
 	}
 	// go_run has no effect of its own: everything a program does arrives
@@ -275,4 +306,31 @@ func (e *Engine) Evaluate(s Session, c Call) Result {
 		return Result{Decision: DecisionAllow, Rule: "policy.kernel"}
 	}
 	return Result{Decision: rs.fallback, Rule: "policy.default"}
+}
+
+// WouldAllow reports whether a learned allow rule, if it were added, would
+// decide this call as allow. The guard offers "propose this pattern" only
+// when it would: a proposal that cannot take effect is noise in review.
+// Learned allow rules are built into the base ruleset only, so a session
+// on a configured profile (remote, by default) always gets false.
+func (e *Engine) WouldAllow(s Session, c Call, rule string) bool {
+	if _, ok := e.profiles[s.Profile]; ok {
+		return false
+	}
+	r, err := ParseRule(DecisionAllow, rule)
+	if err != nil {
+		return false
+	}
+	r.Source = SourceLearned
+	env := e.env
+	if s.Workspace != "" {
+		env.Workspace = s.Workspace
+	}
+	var argObj map[string]json.RawMessage
+	if err := json.Unmarshal(c.Args, &argObj); err != nil || argObj == nil {
+		return false
+	}
+	rs := e.base
+	rs.allowAndAsk = append(slices.Clone(e.base.allowAndAsk), r)
+	return decide(rs, env, c).Decision == DecisionAllow
 }

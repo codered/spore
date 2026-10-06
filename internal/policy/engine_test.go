@@ -3,8 +3,10 @@ package policy
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -52,13 +54,13 @@ func TestDenyBeatsAllowRegardlessOfOrder(t *testing.T) {
 	}
 }
 
-func TestFirstMatchWinsBetweenAllowAndAsk(t *testing.T) {
+func TestAnExactAllowBeatsAGlobAsk(t *testing.T) {
 	e := engine(t, config.PolicyConfig{
 		Allow: []string{"fs_read"},
 		Ask:   []string{"fs_*"},
 	})
 	if got := e.Evaluate(Session{Profile: ProfileLocal}, Call{Tool: "fs_read", Args: json.RawMessage(`{}`)}); got.Decision != DecisionAllow {
-		t.Errorf("fs_read = %q, want allow (the earlier list wins)", got.Decision)
+		t.Errorf("fs_read = %q, want allow (tier 2 beats tier 3)", got.Decision)
 	}
 	if got := e.Evaluate(Session{Profile: ProfileLocal}, Call{Tool: "fs_write", Args: json.RawMessage(`{}`)}); got.Decision != DecisionAsk {
 		t.Errorf("fs_write = %q, want ask", got.Decision)
@@ -73,13 +75,12 @@ func TestUnmatchedFallsBackToDefault(t *testing.T) {
 	}
 }
 
-func TestLearnedRulesApplyAfterConfiguredOnes(t *testing.T) {
+func TestABareLearnedAllowTiesABareAskAndAskWins(t *testing.T) {
 	e := engine(t, config.PolicyConfig{
 		Ask:     []string{"fs_write"},
 		Learned: config.LearnedPolicy{Allow: []string{"fs_write"}},
 	})
-	// The hand-written ask rule is listed first, so it still wins: a learned
-	// rule cannot silently loosen an explicit one.
+	// Both rules are bare tool names, so they share a tier and ask wins the tie.
 	if got := e.Evaluate(Session{Profile: ProfileLocal}, Call{Tool: "fs_write", Args: json.RawMessage(`{}`)}); got.Decision != DecisionAsk {
 		t.Errorf("Decision = %q, want ask", got.Decision)
 	}
@@ -467,5 +468,183 @@ func TestBaselineHoldsAnAllowedShellAwayFromSecretsAndHome(t *testing.T) {
 		if got := e.Evaluate(sess, Call{Tool: "shell_exec", Args: args}); got.Decision != c.want {
 			t.Errorf("%q = %s, want %s", c.cmd, got.Decision, c.want)
 		}
+	}
+}
+
+func TestBaselineKeepsTheModelAwayFromTheDaemonToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "spore.toml")
+	cfgText := "default_model = \"anthropic/claude-opus-5\"\n[policy]\ndefault = \"allow\"\nallow = [\"shell_exec\", \"fs_read\"]\nask = []\n"
+	if err := os.WriteFile(path, []byte(cfgText), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	e, err := NewEngine(cfg.Policy)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	// The workspace contains the token, so the outside-workspace rule is
+	// not what denies it.
+	sess := Session{Profile: ProfileLocal, Workspace: "/home/u"}
+	for _, tc := range []struct{ tool, args, ruleHas string }{
+		{"fs_read", `{"path":"/home/u/.spore/daemon.token"}`, "daemon.token"},
+		{"shell_exec", `{"command":"cat ~/.spore/daemon.token"}`, "daemon.token"},
+		{"shell_exec", `{"command":"spore web"}`, "spore web"},
+		{"shell_exec", `{"command":"/usr/local/bin/spore   web"}`, "spore web"},
+	} {
+		got := e.Evaluate(sess, Call{Tool: tc.tool, Args: json.RawMessage(tc.args)})
+		if got.Decision != DecisionDeny || !strings.Contains(got.Rule, tc.ruleHas) {
+			t.Errorf("%s %s = %s by %q, want deny by a rule naming %q", tc.tool, tc.args, got.Decision, got.Rule, tc.ruleHas)
+		}
+	}
+}
+
+func evalDecision(t *testing.T, e *Engine, p Profile, tool, args string) Decision {
+	t.Helper()
+	return e.Evaluate(Session{Profile: p}, Call{Tool: tool, Args: json.RawMessage(args)}).Decision
+}
+
+// The bug this design fixes: a learned rule with a path condition never
+// applied because a bare ask for the same tool was listed before it.
+func TestALearnedPathAllowOutranksABareAsk(t *testing.T) {
+	e := engine(t, config.PolicyConfig{
+		Ask:     []string{"fs_write"},
+		Learned: config.LearnedPolicy{Allow: []string{"fs_write(path matches /ws/uuid-server/**)"}},
+	})
+	if got := evalDecision(t, e, ProfileLocal, "fs_write", `{"path":"/ws/uuid-server/a.go"}`); got != DecisionAllow {
+		t.Errorf("inside the pattern = %s, want allow", got)
+	}
+	if got := evalDecision(t, e, ProfileLocal, "fs_write", `{"path":"/ws/other/a.go"}`); got != DecisionAsk {
+		t.Errorf("outside the pattern = %s, want ask", got)
+	}
+}
+
+// A narrow ask is never overridden by a broader allow in the same tier,
+// however the globs are spelled. A depth ranking would get this wrong.
+func TestASameTierAskBeatsAnAllow(t *testing.T) {
+	e := engine(t, config.PolicyConfig{
+		Ask:     []string{"fs_read(path matches **/secrets/**)"},
+		Learned: config.LearnedPolicy{Allow: []string{"fs_read(path matches /ws/repo/**)"}},
+	})
+	if got := evalDecision(t, e, ProfileLocal, "fs_read", `{"path":"/ws/repo/secrets/key"}`); got != DecisionAsk {
+		t.Errorf("secrets = %s, want ask", got)
+	}
+	if got := evalDecision(t, e, ProfileLocal, "fs_read", `{"path":"/ws/repo/main.go"}`); got != DecisionAllow {
+		t.Errorf("repo file = %s, want allow", got)
+	}
+}
+
+func TestAnExactToolNameOutranksAToolGlob(t *testing.T) {
+	e := engine(t, config.PolicyConfig{
+		Allow: []string{"mcp__time__now"},
+		Ask:   []string{"mcp__*"},
+	})
+	if got := evalDecision(t, e, ProfileLocal, "mcp__time__now", `{}`); got != DecisionAllow {
+		t.Errorf("mcp__time__now = %s, want allow", got)
+	}
+	if got := evalDecision(t, e, ProfileLocal, "mcp__other__x", `{}`); got != DecisionAsk {
+		t.Errorf("mcp__other__x = %s, want ask", got)
+	}
+}
+
+func TestATierOneAskInsideABareAllowStillAsks(t *testing.T) {
+	e := engine(t, config.PolicyConfig{
+		Allow: []string{"fs_read"},
+		Ask:   []string{"fs_read(path matches **/secrets/**)"},
+	})
+	if got := evalDecision(t, e, ProfileLocal, "fs_read", `{"path":"/ws/secrets/k"}`); got != DecisionAsk {
+		t.Errorf("got %s, want ask", got)
+	}
+}
+
+func TestRuleTiers(t *testing.T) {
+	for _, tc := range []struct {
+		src  string
+		want int
+	}{
+		{"fs_write(path matches /a/**)", 1},
+		{"shell_exec(matches sudo)", 1},
+		{"fs_write", 2},
+		{"mcp__time__now", 2},
+		{"mcp__*", 3},
+		{"web_*", 3},
+	} {
+		r, err := ParseRule(DecisionAllow, tc.src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.Tier() != tc.want {
+			t.Errorf("%s: tier %d, want %d", tc.src, r.Tier(), tc.want)
+		}
+	}
+}
+
+// The whole design rests on this: where a rule sits in the file does not
+// change any decision.
+func TestDecisionsDoNotDependOnRuleOrder(t *testing.T) {
+	allow := []string{"fs_read", "web_*", "fs_write(path matches /ws/build/**)", "mcp__time__now"}
+	ask := []string{"fs_write", "mcp__*", "fs_read(path matches **/secrets/**)", "shell_exec"}
+	learned := []string{"fs_write(path matches /ws/uuid-server/**)", "shell_exec(word matches ls)"}
+	calls := []Call{
+		{Tool: "fs_read", Args: json.RawMessage(`{"path":"/ws/a"}`)},
+		{Tool: "fs_read", Args: json.RawMessage(`{"path":"/ws/secrets/a"}`)},
+		{Tool: "fs_write", Args: json.RawMessage(`{"path":"/ws/build/a"}`)},
+		{Tool: "fs_write", Args: json.RawMessage(`{"path":"/ws/uuid-server/a"}`)},
+		{Tool: "fs_write", Args: json.RawMessage(`{"path":"/ws/x"}`)},
+		{Tool: "mcp__time__now", Args: json.RawMessage(`{}`)},
+		{Tool: "mcp__gh__x", Args: json.RawMessage(`{}`)},
+		{Tool: "web_fetch", Args: json.RawMessage(`{}`)},
+		{Tool: "shell_exec", Args: json.RawMessage(`{"command":"ls"}`)},
+		{Tool: "shell_exec", Args: json.RawMessage(`{"command":"rm x"}`)},
+		{Tool: "agent_note", Args: json.RawMessage(`{}`)},
+	}
+	decide := func(al, as, le []string) []Decision {
+		e := engine(t, config.PolicyConfig{Allow: al, Ask: as, Learned: config.LearnedPolicy{Allow: le}})
+		var out []Decision
+		for _, c := range calls {
+			out = append(out, e.Evaluate(Session{Profile: ProfileLocal}, c).Decision)
+		}
+		return out
+	}
+	want := decide(allow, ask, learned)
+	rng := rand.New(rand.NewPCG(1, 2))
+	for i := 0; i < 200; i++ {
+		al, as, le := slices.Clone(allow), slices.Clone(ask), slices.Clone(learned)
+		rng.Shuffle(len(al), func(a, b int) { al[a], al[b] = al[b], al[a] })
+		rng.Shuffle(len(as), func(a, b int) { as[a], as[b] = as[b], as[a] })
+		rng.Shuffle(len(le), func(a, b int) { le[a], le[b] = le[b], le[a] })
+		if got := decide(al, as, le); !slices.Equal(got, want) {
+			t.Fatalf("permutation %d changed decisions:\n got %v\nwant %v\nallow=%v ask=%v learned=%v", i, got, want, al, as, le)
+		}
+	}
+}
+
+func TestWouldAllow(t *testing.T) {
+	e := engine(t, config.PolicyConfig{
+		Ask: []string{"fs_write", "fs_edit(path matches **/secrets/**)"},
+		Profiles: map[string]config.ProfilePolicy{
+			"remote": {Deny: []string{"memory"}},
+		},
+	})
+	local := Session{Profile: ProfileLocal, Workspace: "/ws"}
+	w := Call{Tool: "fs_write", Args: json.RawMessage(`{"path":"/ws/uuid-server/a.go"}`)}
+	if !e.WouldAllow(local, w, "fs_write(path matches /ws/uuid-server/**)") {
+		t.Error("the original bug's case: want true")
+	}
+	s := Call{Tool: "fs_edit", Args: json.RawMessage(`{"path":"/ws/secrets/a"}`)}
+	if e.WouldAllow(local, s, "fs_edit(path matches /ws/secrets/**)") {
+		t.Error("under a narrow written ask: want false")
+	}
+	if e.WouldAllow(Session{Profile: ProfileRemote, Workspace: "/ws"}, w, "fs_write(path matches /ws/uuid-server/**)") {
+		t.Error("remote never sees learned rules: want false")
+	}
+	if e.WouldAllow(local, w, "fs_write(") {
+		t.Error("an unparseable rule: want false")
+	}
+	// WouldAllow must not change the engine.
+	if got := e.Evaluate(local, w).Decision; got != DecisionAsk {
+		t.Errorf("after WouldAllow, Evaluate = %s, want ask", got)
 	}
 }

@@ -43,7 +43,9 @@ func withSupervisor(t *testing.T, s *Server, r subagent.Runner) *subagent.Superv
 
 func agentRequest(s *Server, method, path string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+	req := httptest.NewRequest(method, "http://127.0.0.1"+path, nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	s.Handler().ServeHTTP(rec, req)
 	return rec
 }
 

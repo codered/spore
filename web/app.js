@@ -83,6 +83,13 @@ async function api(method, tpl, params, body) {
     try { payload = JSON.parse(text); } catch (e) { payload = null; }
   }
   if (!res.ok) {
+    if (res.status === 401) {
+      // The daemon wants its token: this tab was opened without spore web,
+      // or the token was rotated.
+      const err = new Error("Signed out: run `spore web` in a terminal to open the UI again.");
+      err.status = 401;
+      throw err;
+    }
     const err = new Error(payload && payload.error ? payload.error : res.status + " " + res.statusText);
     err.status = res.status;
     throw err;
@@ -751,7 +758,7 @@ function approvalCard(a) {
     // arguments. The title says so; a vaguer label would understate it.
     ["This session", "s", true, "session", ""],
   ];
-  if (a.pattern) options.push(["Always " + a.pattern, "p", true, "pattern", ""]);
+  if (a.pattern) options.push(["Allow once + propose " + a.pattern, "p", true, "pattern", ""]);
   for (const [label, key, allow, scope, cls] of options) {
     const b = h("button", {
       type: "button", class: cls, "data-key": key,
@@ -762,7 +769,7 @@ function approvalCard(a) {
   }
   card.appendChild(buttons);
   if (a.pattern) {
-    card.appendChild(h("div", { class: "fine", text: "Always allow writes the pattern to the learned block of your policy." }));
+    card.appendChild(h("div", { class: "fine", text: "Propose queues the pattern in Refinements for you to accept; nothing changes until you do." }));
   }
   return card;
 }
@@ -1194,17 +1201,34 @@ const VIEW_DEFS = {
           {
             label: "Roll back round",
             applies: (r) => r.status === "applied",
-            confirm: (r) => "roll back every edit in round " + r.round_id + "?",
-            run: (r) => api("POST", "/api/sessions/{id}/refine/rollback", { id: r.session_id }, { round_id: r.round_id }),
-            done: (r) => "rolled back round " + r.round_id,
+            confirm: (r) => String(r.kind).startsWith("policy.")
+              ? "roll back: remove " + r.target + " from your policy?"
+              : "roll back every edit in round " + r.round_id + "?",
+            // The daemon answers 200 even when an edit could not be undone, and a
+            // policy rule that failed to come out is still in force.
+            run: async (r) => {
+              const res = (await api("POST", "/api/sessions/{id}/refine/rollback", { id: r.session_id }, { round_id: r.round_id })) || {};
+              const names = (rows) => (rows || []).map((x) => x.target).join(", ");
+              if ((res.failed || []).length) throw new Error("could not roll back " + names(res.failed));
+              if (!(res.rolled_back || []).length && (res.stale || []).length) {
+                throw new Error("nothing to roll back: " + names(res.stale) + " already changed or revoked");
+              }
+            },
+            done: (r) => String(r.kind).startsWith("policy.") ? "removed " + r.target : "rolled back round " + r.round_id,
           },
         ],
-        detail: (r) => h("div", {},
-          h("h3", { text: "#" + r.id + " · " + r.kind + " · " + r.target + " · round " + r.round_id }),
-          h("div", { class: "prose", text: r.rationale || "" }),
-          h("div", { class: "cols" },
-            h("div", {}, h("div", { class: "view-sub", text: "before" }), h("pre", { text: r.before === null ? "(none)" : r.before })),
-            h("div", {}, h("div", { class: "view-sub", text: "after" }), h("pre", { text: r.after === null ? "(none)" : r.after })))),
+        detail: (r) => String(r.kind).startsWith("policy.")
+          ? h("div", {},
+              h("h3", { text: "#" + r.id + " · " + r.kind }),
+              h("pre", { text: r.target }),
+              h("div", { class: "prose", text: r.rationale || "" }),
+              h("div", { class: "fine", text: "Accepting writes this rule to the managed block of config.toml and applies it at once; rolling back removes it." }))
+          : h("div", {},
+              h("h3", { text: "#" + r.id + " · " + r.kind + " · " + r.target + " · round " + r.round_id }),
+              h("div", { class: "prose", text: r.rationale || "" }),
+              h("div", { class: "cols" },
+                h("div", {}, h("div", { class: "view-sub", text: "before" }), h("pre", { text: r.before === null ? "(none)" : r.before })),
+                h("div", {}, h("div", { class: "view-sub", text: "after" }), h("pre", { text: r.after === null ? "(none)" : r.after })))),
         empty: "No refinements yet.",
       };
     },
@@ -1259,7 +1283,7 @@ const SHORTCUTS = [
   ["i", "focus the composer"],
   ["o / O", "toggle the tool row under the cursor / all"],
   ["esc", "close overlay → close detail → clear filter → stop the turn"],
-  ["y n s p", "approval: allow once, deny, this session, always pattern"],
+  ["y n s p", "approval: allow once, deny, this session, propose pattern"],
 ];
 
 function openOverlay(id) {
