@@ -20,7 +20,7 @@ once, and counts it.
 
 Usage: scenario_b.py <first run> <last run> [tool,tool,...]   appends to results-b.jsonl
 """
-import json, os, re, shutil, subprocess, sys, tempfile, time, urllib.request, uuid
+import json, os, re, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.request, uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "agents"))
@@ -151,7 +151,12 @@ workspace = "{rd}"
 
     def refine(self):
         before = len(self.req("GET", f"/api/sessions/{self.sid}")["messages"])
-        self.req("POST", f"/api/sessions/{self.sid}/refine", {})
+        self.refine_error = None
+        try:
+            self.req("POST", f"/api/sessions/{self.sid}/refine", {})
+        except urllib.error.HTTPError as e:
+            # A failed review is a result, not a crash: record what it said.
+            self.refine_error = f"{e.code}: {e.read().decode(errors='replace')[:400]}"
         return self.usage_since(before)[0]
 
     def later(self):

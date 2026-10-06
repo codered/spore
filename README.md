@@ -107,10 +107,11 @@ spore said and read is always on. With `spore recall setup` you also get
 <tr>
 <td valign="top">
 
-### 💸 Route by job, pay less
-Send conversation to a frontier model and mechanical work (compaction,
-titles, classification, refinement) to a **cheap local model**. Prompt
-caching is on for Anthropic. Per-turn cost appears in the TUI.
+### 💸 Route by job
+Send the conversation to a frontier model and background work (compaction,
+titles, refinement, sub-agents) to a **local model**. Prompt caching is on
+for Anthropic. The saving is small on short sessions
+([measured](#background-work-on-a-local-model)).
 
 </td>
 <td valign="top">
@@ -369,21 +370,17 @@ graders (the other tools' runs are unchanged):
 The runs from before #59 are kept in
 [`bench/agents/`](bench/agents/) as `*-spore-before-59.jsonl`.
 
-#### Where spore should still come out ahead (not measured)
+#### Where spore comes out ahead
 
-These benchmarks cover a single session on one model. They do not exercise
-these features, which are where spore is designed to save:
+[The scenarios below](#-scenarios-the-jobs-spore-is-built-for) test the jobs
+these runs do not touch:
 
-- **Questions it has seen before, across sessions.** Memory facts are in
-  every prompt, and `recall_search` finds earlier answers and summaries, so
-  spore can answer from what it already knows instead of reading the files
-  again. Recall indexes spore's own history, not your code.
-- **Cheap work on a cheap model.** Compaction, titles, refinement and
-  sub-agent turns can each be routed to a small or local model with
-  `[[route]]`. Here everything ran on Sonnet 5.5.
-- **Long investigations.** A sub-agent does the reading in its own context
-  and returns only its conclusion, so the parent's prompt, which every later
-  call pays for, stays small.
+- **Remembering across sessions:** spore applied 12 of 12 facts in a new
+  session, and the other three tools applied none.
+- **Working while you are away:** spore ran 3 of 3 scheduled jobs correctly;
+  pi and opencode cannot.
+- **Routing background work and delegating to sub-agents** did not save
+  money on tasks of this size. Those results are reported there too.
 
 The difference that does not depend on cost: pi and Prime Agent have no
 built-in permission system, and pi's own advice is to run it in a container.
@@ -442,6 +439,11 @@ python3 bench/agents/session.py 1 2      # sessions: 8 sessions of 10 turns, abo
 python3 bench/agents/analyze_sessions.py
 ```
 
+The scenarios (`bench/scenarios/scenario_{b,c,d,e}.py`) run inside a
+container built from [`bench/scenarios/Dockerfile`](bench/scenarios/Dockerfile),
+which holds the agents and a copy of the repository and nothing else. Their
+raw results are the `results-*-2026-10-05.jsonl` files beside them.
+
 The raw results are in [`bench/agents/`](bench/agents/).
 
 </details>
@@ -460,6 +462,13 @@ work on a cheap model, and delegating. Same rules as the benchmark:
 
 The design, including a prompt-injection scenario that was not run, is in
 [`docs/superpowers/specs/2026-10-05-advantage-scenarios-design.md`](docs/superpowers/specs/2026-10-05-advantage-scenarios-design.md).
+
+| Scenario | spore | Prime Agent | pi | opencode |
+| --- | --- | --- | --- | --- |
+| [Memory across sessions](#memory-across-sessions) | **12/12 facts**, $0.083 | 0/12, $0.084 | 0/12, **$0.046** | 0/12, $0.125 |
+| [Work while you are away](#work-while-you-are-away) | **3/3 ran and correct**, $0.039 | not measured | NA | NA |
+| [Background work on a local model](#background-work-on-a-local-model) | no measurable saving | NA | NA | NA |
+| [Delegating to sub-agents](#delegating-to-sub-agents) | 5/5, $0.402 | 5/5, $0.126 | NA (5/5, **$0.125** without) | 5/5, $0.447 |
 
 ### Memory across sessions
 
@@ -505,6 +514,103 @@ spore and in Prime Agent).
   To stop being asked, move `memory` from the `ask` list to the `allow` list
   in `[policy]`. Writing any of those lists replaces the defaults, so start
   from the full lists in the policy section.
+
+### Work while you are away
+
+The user asks, in a conversation about this project, for a one-off job two
+minutes later: "list the three Go files under `internal/` with the most
+lines, with exact line counts". They approve the schedule when asked, then
+leave. Nothing else is sent. Afterwards the harness checks that the job ran
+and that its answer is right.
+
+| | Ran with nobody attached | Correct | Cost (setup + run) | Approvals |
+| --- | :-: | :-: | --: | --: |
+| **spore** | **3 / 3** | **3 / 3** | $0.039 | 1 (the schedule) |
+| **Prime Agent** | not measured | | | |
+| **pi** | NA | | | |
+| **opencode** | NA | | | |
+
+- **spore** ran the job from its daemon and answered correctly each time.
+  The first attempt found a bug: the job ran in an empty session directory
+  instead of the project it was created in. It was fixed in #61 before these
+  runs.
+- **Prime Agent** has a scheduler (`prime-agent schedule add`) that runs in
+  resident workers, which interactive sessions create. A script could not
+  reach that state reliably: `schedule add` reported every session as an
+  "unknown active session". So it is not measured, rather than NA.
+- **pi and opencode** have no scheduler out of the box.
+- spore's cost comes from its own records, which do not count the session
+  title call (see the next section).
+
+### Background work on a local model
+
+spore can send its background calls to a cheap or local model with
+`[[route]]` while the conversation stays on Sonnet. Here, titles,
+compaction, refinement and sub-agent turns went to `gpt-oss-20b` on a local
+server, with its tokens costing $0. Each run is the session benchmark's ten
+turns plus `/refine`. Cost is measured at the wire by a metering proxy,
+because spore's own records leave out title and compaction calls. The other
+agents have no per-call-site routing (NA).
+
+| spore | Runs (cost) | Correct |
+| --- | --- | :-: |
+| D0: everything on Sonnet | $0.105, $0.102 | 10/10, 10/10 |
+| D1: background calls on `gpt-oss-20b` | $0.132, $0.159 | 10/10, 10/10 |
+| D2: D1 with a smaller context (never reached compaction) | $0.102, $0.105 | 10/10, 10/10 |
+| D3: D1 with a 12k context, so compaction ran on `gpt-oss-20b` | $0.140, **$0.091** | 10/10, **5/10** |
+| D4: D3's context on Sonnet (never reached compaction) | $0.119, $0.108 | 10/10, 10/10 |
+
+- **No measurable saving in a ten-turn session.** Routing moved only the
+  title and the refinement call. The chat turns, which stay on Sonnet,
+  vary between runs by more than that.
+- **Compaction on a 20B model was not dependable.** In D3 it kept every
+  answer once. The other time the session lost half its answers, including
+  both that depended on earlier turns. A busy local server may have made it
+  worse; that run overlapped another run that used the same server.
+- **Where routing should pay off** is long sessions that compact many times,
+  and sub-agents, which run on the routed model too (next section). On this
+  evidence, route to a stronger local model than 20B.
+
+### Delegating to sub-agents
+
+One session per tool:
+- **The task:** "use sub-agents: have one sub-agent read each of
+  `internal/policy`, `internal/kernel`, `internal/recall` and
+  `internal/refine` and report how it handles a failure", then a comparison
+  and a recommendation.
+- **Then five follow-up questions** with checked answers.
+- **Measured:**
+  - the main context's size after the task (input tokens on the first
+    follow-up);
+  - the cost of the follow-ups;
+  - the total, including every sub-agent session.
+
+| | Total | Main context after the task | Follow-ups | Correct |
+| --- | --: | --: | --: | :-: |
+| **Prime Agent** | $0.126 | **5.8k** | $0.076 | 10/10 |
+| **pi** (no sub-agents: NA) | **$0.125** | 16.0k | **$0.069** | 10/10 |
+| **spore, sub-agents denied** | $0.167 | 14.4k | $0.102 | 10/10 |
+| **spore** | $0.402 | 8.4k | $0.101 | 10/10 |
+| **spore, sub-agents on `gpt-oss-20b`** | $0.201 (1 run) | 16.3k | $0.121 | 5/5 |
+| **opencode** | $0.447 | 18.8k | $0.138 | 10/10 |
+
+<sub>2 runs each. Sub-agent sessions counted for every tool: spore through its API, opencode from `opencode stats` (its output stream leaves sub-agents out), and Prime Agent from its `session-artifacts/` files (its root session leaves them out too).</sub>
+
+- **spore's sub-agents made the main context smaller** (8.4k tokens against
+  14.4k without them), **but cost 2.4× as much** overall. Each started with
+  spore's full prompt and read files over several Sonnet calls, about $0.064
+  each. Prime Agent's sub-agents made one call each, about $0.012.
+- **A smaller main context did not pay back** over five follow-ups: they cost
+  the same with and without sub-agents. The saving per call is a fraction of
+  a cent, so it would take far more turns to recover the sub-agents' cost.
+- **Sub-agents on a local model** halved the cost against Sonnet sub-agents,
+  but behaved badly. The model started 8 sub-agents instead of 4, made 99
+  shell calls that each needed approval, and the second run failed in the
+  harness. Not a configuration to rely on.
+- **For a task this size, delegation cost more than it saved** in every tool
+  that has it. spore's sub-agents are for keeping a long investigation out
+  of a session that continues for a long time, and for limits on depth, cost
+  and concurrency, which these runs did not reach.
 
 ## 🔁 Refinement: an agent that learns, with an undo button
 

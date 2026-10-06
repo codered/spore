@@ -45,8 +45,8 @@ def inp(c):
 class SporeTree(Spore):
     """Spore with the cost of every session in the tree, children included."""
 
-    def __init__(self, rd, nosub):
-        self.nosub = nosub
+    def __init__(self, rd, nosub, local=False):
+        self.nosub, self.local = nosub, local
         super().__init__(rd)
 
     def start(self):
@@ -59,6 +59,18 @@ class SporeTree(Spore):
                         'ask = ["fs_write", "fs_edit", "shell_exec", "schedule_create", "schedule_cancel", "mcp__*", '
                         '"memory", "skill_install", "agent_note"]\n'
                         'deny = ["agent_*"]\n')
+        if self.local and "[[route]]" not in open(self.rd + "/config.toml").read():
+            # Sub-agent turns on the local model; the conversation stays on Sonnet.
+            with open(self.rd + "/config.toml", "a") as f:
+                f.write(f'''
+[providers.local]
+kind = "openai"
+base_url = "{os.environ.get("LOCAL_BASE_URL", "http://10.10.30.15:8888/v1")}"
+
+[[route]]
+when = "subagent"
+model = "local/{os.environ.get("LOCAL_MODEL", "unsloth/gpt-oss-20b-GGUF")}"
+''')
         super().start()
 
     def tree_calls(self):
@@ -69,7 +81,8 @@ class SporeTree(Spore):
                 if m.get("role") in ("assistant", "note") and (m.get("tokens_in") or m.get("tokens_out")):
                     calls.append({"in": m.get("tokens_in") or 0, "out": m.get("tokens_out") or 0,
                                   "cache_read": m.get("tokens_cache_read") or 0,
-                                  "cache_write": m.get("tokens_cache_write") or 0})
+                                  "cache_write": m.get("tokens_cache_write") or 0,
+                                  "local": "claude" not in (m.get("model") or "claude")})
         return calls
 
 
@@ -81,12 +94,48 @@ def opencode_total(rd):
     return out
 
 
+def prime_usage(rd):
+    """Usage from every session file Prime Agent wrote, per file, so sub-agent
+    sessions are counted and a root-level aggregate can be told apart. The
+    files are beside --session-dir (sessions/, and session-artifacts/ for
+    sub-agents) and under ~/.prime/agent; run one Prime Agent session per
+    container, so they are all this run's."""
+    out = {}
+    for root in (rd, os.path.expanduser("~/.prime/agent")):
+        for dirpath, _, files in os.walk(root):
+            if "kernel-venv" in dirpath or dirpath.startswith(rd + "/ws"):
+                continue
+            for fn in files:
+                if fn.endswith(".jsonl"):
+                    calls = prime_calls(os.path.join(dirpath, fn))
+                    if calls:
+                        key = os.path.join(os.path.basename(root), os.path.relpath(os.path.join(dirpath, fn), root))
+                        out[key] = {"calls": len(calls), "cost": round(bench.cost(calls), 5)}
+    return out
+
+
+def prime_calls(path):
+    calls = []
+    for line in open(path, errors="replace"):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        m = e.get("message") if isinstance(e, dict) else None
+        if isinstance(m, dict) and m.get("role") == "assistant" and isinstance(m.get("usage"), dict):
+            u = m["usage"]
+            calls.append({"in": u.get("input", 0), "out": u.get("output", 0),
+                          "cache_read": u.get("cacheRead", 0), "cache_write": u.get("cacheWrite", 0)})
+    return calls
+
+
 def one(variant, run):
     rd = tempfile.mkdtemp(prefix="sscen-e.", dir="/tmp")
     try:
         shutil.copytree(bench.WS, rd + "/ws")
         tool = "spore" if variant.startswith("spore") else variant
-        agent = SporeTree(rd, variant == "spore-nosub") if tool == "spore" else CLI(tool, rd)
+        agent = (SporeTree(rd, variant == "spore-nosub", variant == "spore-local")
+                 if tool == "spore" else CLI(tool, rd))
         notes = {}
         try:
             agent.new_session()
@@ -101,12 +150,15 @@ def one(variant, run):
                 correct += bool(ok(bench.norm(text)))
             wall = time.monotonic() - t0
             if tool == "spore":
-                total = agent.tree_calls()
+                # Local-model calls cost $0; only Sonnet calls are priced.
+                total = [c for c in agent.tree_calls() if not c.pop("local", False)]
                 notes["subagent_sessions"] = len(agent.req("GET", "/api/sessions?children=1") or []) - 1
             else:
                 total = task_calls + follow_calls
             if tool == "opencode":
                 notes["opencode_stats"] = opencode_total(rd)[-1500:]
+            if tool == "prime":
+                notes["prime_files"] = prime_usage(rd)
         finally:
             agent.close()
         rec = {"variant": variant, "run": run, "parent_ctx": first_follow,

@@ -7,9 +7,12 @@ the end, on spore three ways:
   D0  everything on Claude Sonnet 5.5 (defaults)
   D1  titles, compaction, refinement and sub-agent turns routed to a local
       gpt-oss-20b with [[route]]; everything else default
-  D2  D1 plus [context] max_tokens = 24000, so compaction runs on the local
-      model during the session; turns 9 and 10 depend on early turns, which
-      tests whether compaction kept them
+  D2  D1 plus [context] max_tokens = 24000 (in practice the session stayed
+      under the compaction threshold, so this is D1 again)
+  D3  D1 plus max_tokens = 12000: compaction runs during the session, on the
+      local model; turns 9 and 10 depend on early turns, which tests whether
+      the summary kept them
+  D4  max_tokens = 12000 with everything on Sonnet: D3's control
 
 Local tokens cost $0. The other agents have no per-call-site routing (NA);
 their cost for the same ten turns is in bench/agents/sessions-2026-10-05.jsonl.
@@ -43,12 +46,15 @@ class RoutedSpore(Spore):
             # every Anthropic call goes through the meter instead.
             body = body.replace('kind = "anthropic"\n', f'kind = "anthropic"\nbase_url = "http://127.0.0.1:{METER_PORT}"\n', 1)
             open(cfg, "w").write(body)
-        if self.variant != "D0" and "[[route]]" not in open(cfg).read():
+        routed = self.variant in ("D1", "D2", "D3")
+        budget = {"D2": 24000, "D3": 12000, "D4": 12000}.get(self.variant)
+        if (routed or budget) and "[[route]]" not in open(cfg).read() and "[context]" not in open(cfg).read():
             with open(cfg) as f:
                 body = f.read()
             # Top-level keys must precede the first table, so routes and the
             # local provider are added as tables at the end.
-            body += f'''
+            if routed:
+                body += f'''
 [providers.local]
 kind = "openai"
 base_url = "{LOCAL_BASE_URL}"
@@ -57,8 +63,8 @@ base_url = "{LOCAL_BASE_URL}"
 when = "title|compaction|refinement|subagent"
 model = "local/{LOCAL_MODEL}"
 '''
-            if self.variant == "D2":
-                body += "\n[context]\nmax_tokens = 24000\n"
+            if budget:
+                body += f"\n[context]\nmax_tokens = {budget}\n"
             with open(cfg, "w") as f:
                 f.write(body)
         super().start()
@@ -95,11 +101,12 @@ def one(variant, run):
         rec = {"variant": variant, "run": run, "correct": correct, "turns": turns,
                "late_turns_correct": sum(t["correct"] for t in turns if t["turn"] >= 9),
                "cost": round(bench.cost(sonnet), 5), "sonnet_calls": len(sonnet),
-               "local_calls_in_transcript": local, "compacted": compacted, "approvals": sp.approvals}
+               "local_calls_in_transcript": local, "compacted": compacted, "approvals": sp.approvals,
+               "refine_error": sp.refine_error}
         with open(OUT, "a") as f:
             f.write(json.dumps(rec) + "\n")
         print(f"{variant} run{run} ${rec['cost']:.4f} correct={correct}/10 late={rec['late_turns_correct']}/2 "
-              f"sonnet_calls={len(sonnet)} local={local} compacted={compacted}", flush=True)
+              f"sonnet_calls={len(sonnet)} local={local} compacted={compacted} refine_error={sp.refine_error}", flush=True)
     finally:
         shutil.rmtree(rd, ignore_errors=True)
 
