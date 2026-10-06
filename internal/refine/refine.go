@@ -39,8 +39,12 @@ const (
 	KindFactDelete   = "fact.delete"
 	KindNotesAppend  = "notes.append"
 	KindNotesReplace = "notes.replace"
-	KindPolicyAllow  = store.KindPolicyAllow
-	KindPolicyDeny   = store.KindPolicyDeny
+)
+
+// Policy kinds are written only by the guard, never by a round.
+const (
+	KindPolicyAllow = store.KindPolicyAllow
+	KindPolicyDeny  = store.KindPolicyDeny
 )
 
 // Refiner runs refinement rounds. One per daemon.

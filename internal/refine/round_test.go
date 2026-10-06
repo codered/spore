@@ -666,7 +666,13 @@ func TestARoundCannotProposeAPolicyEdit(t *testing.T) {
 	f := newFix(t, store.SourceChat,
 		`{"edits":[{"kind":"policy.allow","name":"x","body":"fs_write","rationale":"r"}]}`)
 	f.say(t, "user", text("hello"))
-	_, _ = f.r.Round(context.Background(), f.sid, TriggerManual, "", 0)
+	res, err := f.r.Round(context.Background(), f.sid, TriggerManual, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Dropped) != 1 || !strings.Contains(res.Dropped[0], "unknown edit kind") {
+		t.Fatalf("dropped = %q, want one 'unknown edit kind' error", res.Dropped)
+	}
 	rows, err := f.st.Refinements(context.Background(), "", 50)
 	if err != nil {
 		t.Fatal(err)
