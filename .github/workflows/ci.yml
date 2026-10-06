@@ -93,7 +93,13 @@ jobs:
             # aimed at the target too, or the link fails on mismatched objects.
             export CGO_CFLAGS="-arch x86_64" CGO_LDFLAGS="-arch x86_64"
           fi
-          go build -tags "$TAGS" -trimpath -ldflags="-s -w" -o "$out" ./cmd/spore
+          # A release tag names the version; any other build reports the commit.
+          if [ "${{ github.ref_type }}" = tag ]; then
+            version="${{ github.ref_name }}"
+          else
+            version="dev-${GITHUB_SHA::7}"
+          fi
+          go build -tags "$TAGS" -trimpath -ldflags="-s -w -X main.version=$version" -o "$out" ./cmd/spore
           file "$out" || true
           ls -l "$out"
       - name: smoke
@@ -106,6 +112,17 @@ jobs:
         shell: bash
         run: |
           ./spore-${{ matrix.goos }}-${{ matrix.goarch }} | grep -q "spore — a personal agent"
+          ./spore-${{ matrix.goos }}-${{ matrix.goarch }} version
+      - name: package
+        # A tarball keeps the executable bit, which upload-artifact drops from
+        # a bare file. The binary inside is named plain `spore`.
+        shell: bash
+        run: |
+          name=spore-${{ matrix.goos }}-${{ matrix.goarch }}
+          mkdir -p "pkg/$name"
+          cp "$name" "pkg/$name/spore"
+          cp LICENSE README.md "pkg/$name/"
+          tar -C pkg -czf "$name.tar.gz" "$name"
       # Every target is built and smoke-tested on a pull request, so breakage
       # specific to one of them cannot reach master. Only master and release
       # tags keep the binaries.
@@ -113,5 +130,33 @@ jobs:
         if: github.event_name == 'push'
         with:
           name: spore-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: spore-${{ matrix.goos }}-${{ matrix.goarch }}*
+          path: spore-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
           if-no-files-found: error
+
+  release:
+    # A v* tag publishes a GitHub release with every target's tarball and a
+    # checksum file. A tag with a suffix (v0.1.0-alpha.1) is a pre-release.
+    name: release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: checksums
+        working-directory: dist
+        run: sha256sum *.tar.gz | tee SHA256SUMS
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags=()
+          case "$TAG" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS \
+            --title "spore $TAG" --generate-notes --verify-tag "${flags[@]}"

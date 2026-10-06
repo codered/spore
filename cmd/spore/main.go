@@ -38,6 +38,7 @@ usage:
   spore trace setup            provision the phoenix collector and turn tracing on
   spore trace status           report trace configuration and collector health
   spore trace teardown         stop the collector and turn tracing off
+  spore version                print the version
 
 flags:
   -config <path>       config file (default ~/.spore/config.toml)
@@ -66,6 +67,10 @@ func run(args []string) error {
 	}
 	if len(args) == 0 {
 		fmt.Print(usage)
+		return nil
+	}
+	if isVersionArg(args) {
+		fmt.Println("spore", version)
 		return nil
 	}
 	if configPath == "" {

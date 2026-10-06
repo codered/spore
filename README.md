@@ -1120,6 +1120,28 @@ it is designed so that a prompt injection cannot do more than you allowed:
 
 ## 📦 Installation
 
+### Prebuilt binaries
+
+Each [release](https://github.com/codered/spore/releases) has a tarball for
+linux/amd64, linux/arm64, darwin/amd64 and darwin/arm64, plus a `SHA256SUMS`
+file. Releases tagged `-alpha` are early builds: expect rough edges, and please
+[open an issue](https://github.com/codered/spore/issues) when you hit one.
+
+```bash
+# pick linux-amd64, linux-arm64, darwin-amd64 or darwin-arm64
+target=linux-amd64
+tag=v0.1.0-alpha.1
+curl -fsSLO https://github.com/codered/spore/releases/download/$tag/spore-$target.tar.gz
+tar -xzf spore-$target.tar.gz
+install -m 0755 spore-$target/spore ~/.local/bin/spore
+spore version
+```
+
+On macOS, a binary fetched by a browser is quarantined; clear that with
+`xattr -d com.apple.quarantine ~/.local/bin/spore`.
+
+### From source
+
 Requires Go 1.26+ and a C compiler (for SQLite). Linux and macOS are
 supported. On Windows, use `[kernel] mode = "tools"`.
 
