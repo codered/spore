@@ -264,6 +264,42 @@ func TestRefinementDetailShowsAPolicyRuleNotADiff(t *testing.T) {
 	}
 }
 
+func TestRollbackActionExcludesPolicyRows(t *testing.T) {
+	acts := (refinementsRes{}).Actions()
+	var rollback Action
+	for _, a := range acts {
+		if a.Key == "x" {
+			rollback = a
+			break
+		}
+	}
+	if rollback.Key == "" {
+		t.Fatal("rollback action not found")
+	}
+
+	// Policy row (applied): rollback should NOT apply
+	policyRow := Row{Data: daemon.RefinementJSON{
+		ID:      1,
+		Kind:    "policy.allow",
+		Status:  "applied",
+		RoundID: "r1",
+	}}
+	if rollback.Applies(policyRow) {
+		t.Error("rollback should not apply to policy rows")
+	}
+
+	// Notes row (applied): rollback SHOULD apply
+	notesRow := Row{Data: daemon.RefinementJSON{
+		ID:      2,
+		Kind:    "notes.append",
+		Status:  "applied",
+		RoundID: "r1",
+	}}
+	if !rollback.Applies(notesRow) {
+		t.Error("rollback should apply to applied notes rows")
+	}
+}
+
 func TestMemoryRowsAndSearch(t *testing.T) {
 	fb := &fakeBackend{memory: daemon.MemoryJSON{Facts: []daemon.FactJSON{
 		{Name: "prefers-tabs", Type: "feedback", Description: "indentation", Body: "Use tabs."},

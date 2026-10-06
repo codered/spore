@@ -350,8 +350,8 @@ var nonLearnable = map[string]bool{
 	"agent_note": true,
 }
 
-// PatternFor proposes the rule an "always allow this pattern" answer would
-// write, and reports whether a real pattern exists. Deriving one needs a
+// PatternFor proposes the rule an "allow once and propose this pattern for review" answer would
+// queue, and reports whether a real pattern exists. Deriving one needs a
 // single path-shaped argument. Without one the only thing left is the bare
 // tool name, and a rule that broad is not a pattern — it is a blanket allow
 // for the tool, bounded only by the baseline deny list. Rather than return
