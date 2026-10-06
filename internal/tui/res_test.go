@@ -255,6 +255,15 @@ func TestPolicyRowsRevokeOnlyLearned(t *testing.T) {
 	}
 }
 
+func TestRefinementDetailShowsAPolicyRuleNotADiff(t *testing.T) {
+	after := "fs_write(path matches /ws/a/**)"
+	row := Row{Data: daemon.RefinementJSON{ID: 7, Kind: "policy.allow", Target: after, After: &after, Status: "proposed", Rationale: "allow fs_write on /ws/a/x"}}
+	got := refinementsRes{}.Detail(row)
+	if !strings.Contains(got, "rule: "+after) || strings.Contains(got, "--- before") {
+		t.Errorf("detail:\n%s", got)
+	}
+}
+
 func TestMemoryRowsAndSearch(t *testing.T) {
 	fb := &fakeBackend{memory: daemon.MemoryJSON{Facts: []daemon.FactJSON{
 		{Name: "prefers-tabs", Type: "feedback", Description: "indentation", Body: "Use tabs."},

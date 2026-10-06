@@ -1499,7 +1499,7 @@ func answerQuestion(ev daemon.WireEvent, ans policy.Answer) string {
 	case ans.Scope == policy.ScopeSession:
 		return "Allow " + ev.Tool + " for this session?"
 	case ans.Scope == policy.ScopePattern:
-		return "Always allow " + ev.Pattern + "?"
+		return "Allow once and propose " + ev.Pattern + " for review?"
 	}
 	return "Allow " + ev.Tool + " once?"
 }

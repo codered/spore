@@ -14,7 +14,7 @@
 │                              │┃   ║   }                                                      ║   ┃
 │                              │┃   ║                                                          ║   ┃
 │                              │┃   ║  alt+y allow once   alt+n deny   alt+s allow fs.write …  ║   ┃
-│                              │┃   ║  alt+p always allow fs.write:cmd/spore/*                 ║   ┃
+│                              │┃   ║  alt+p allow once + propose fs.write:cmd/spore/*         ║   ┃
 │                              │┃   ║                                                          ║   ┃
 │                              │┃   ║  waiting (no timeout)                                    ║   ┃
 │                              │┃   ║                                                          ║   ┃

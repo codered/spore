@@ -116,7 +116,7 @@ func approvalMessage(sessionID string, ev daemon.WireEvent) Message {
 	if ev.Pattern != "" {
 		buttons = append(buttons, Button{
 			CustomID: encodeCustomID(sessionID, ev.PendingID, true, policy.ScopePattern),
-			Label:    truncateLabel("always allow " + ev.Pattern),
+			Label:    truncateLabel("allow once + propose " + ev.Pattern),
 		})
 	}
 

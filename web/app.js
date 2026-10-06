@@ -751,7 +751,7 @@ function approvalCard(a) {
     // arguments. The title says so; a vaguer label would understate it.
     ["This session", "s", true, "session", ""],
   ];
-  if (a.pattern) options.push(["Always " + a.pattern, "p", true, "pattern", ""]);
+  if (a.pattern) options.push(["Allow once + propose " + a.pattern, "p", true, "pattern", ""]);
   for (const [label, key, allow, scope, cls] of options) {
     const b = h("button", {
       type: "button", class: cls, "data-key": key,
@@ -762,7 +762,7 @@ function approvalCard(a) {
   }
   card.appendChild(buttons);
   if (a.pattern) {
-    card.appendChild(h("div", { class: "fine", text: "Always allow writes the pattern to the learned block of your policy." }));
+    card.appendChild(h("div", { class: "fine", text: "Propose queues the pattern in Refinements for you to accept; nothing changes until you do." }));
   }
   return card;
 }
@@ -1193,18 +1193,24 @@ const VIEW_DEFS = {
           },
           {
             label: "Roll back round",
-            applies: (r) => r.status === "applied",
+            applies: (r) => r.status === "applied" && !String(r.kind).startsWith("policy."),
             confirm: (r) => "roll back every edit in round " + r.round_id + "?",
             run: (r) => api("POST", "/api/sessions/{id}/refine/rollback", { id: r.session_id }, { round_id: r.round_id }),
             done: (r) => "rolled back round " + r.round_id,
           },
         ],
-        detail: (r) => h("div", {},
-          h("h3", { text: "#" + r.id + " · " + r.kind + " · " + r.target + " · round " + r.round_id }),
-          h("div", { class: "prose", text: r.rationale || "" }),
-          h("div", { class: "cols" },
-            h("div", {}, h("div", { class: "view-sub", text: "before" }), h("pre", { text: r.before === null ? "(none)" : r.before })),
-            h("div", {}, h("div", { class: "view-sub", text: "after" }), h("pre", { text: r.after === null ? "(none)" : r.after })))),
+        detail: (r) => String(r.kind).startsWith("policy.")
+          ? h("div", {},
+              h("h3", { text: "#" + r.id + " · " + r.kind }),
+              h("pre", { text: r.target }),
+              h("div", { class: "prose", text: r.rationale || "" }),
+              h("div", { class: "fine", text: "Accepting writes this rule to the managed block of config.toml and applies it at once." }))
+          : h("div", {},
+              h("h3", { text: "#" + r.id + " · " + r.kind + " · " + r.target + " · round " + r.round_id }),
+              h("div", { class: "prose", text: r.rationale || "" }),
+              h("div", { class: "cols" },
+                h("div", {}, h("div", { class: "view-sub", text: "before" }), h("pre", { text: r.before === null ? "(none)" : r.before })),
+                h("div", {}, h("div", { class: "view-sub", text: "after" }), h("pre", { text: r.after === null ? "(none)" : r.after })))),
         empty: "No refinements yet.",
       };
     },
@@ -1259,7 +1265,7 @@ const SHORTCUTS = [
   ["i", "focus the composer"],
   ["o / O", "toggle the tool row under the cursor / all"],
   ["esc", "close overlay → close detail → clear filter → stop the turn"],
-  ["y n s p", "approval: allow once, deny, this session, always pattern"],
+  ["y n s p", "approval: allow once, deny, this session, propose pattern"],
 ];
 
 function openOverlay(id) {

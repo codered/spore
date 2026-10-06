@@ -14,7 +14,7 @@
 │                              │┃   ║   timeout 300s                                           ║   ┃
 │                              │┃   ║                                                          ║   ┃
 │                              │┃   ║  y allow once   n deny   s allow shell_exec this sessi…  ║   ┃
-│                              │┃   ║  p always allow shell_exec(command matches go test*)     ║   ┃
+│                              │┃   ║  p allow once + propose shell_exec(command matches go …  ║   ┃
 │                              │┃   ║                                                          ║   ┃
 │                              │┃   ║  auto-deny in 4:32                                       ║   ┃
 │                              │┃   ║                                                          ║   ┃
@@ -27,4 +27,4 @@
 │                              │┃ │ Ask spore something…  (i to type · : for commands)           │ ┃
 │● working  ◐ blocked  ○ idle  │┃ ╰──────────────────────────────────────────────────────────────╯ ┃
 ╰──────────────────────────────╯┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
- APPROVAL  y once  n deny  s session  p pattern  b next blocked (7f3e)                      esc stop
+ APPROVAL  y once  n deny  s session  p propose  b next blocked (7f3e)                      esc stop

@@ -159,7 +159,7 @@ func (m *Model) approvalHints() []string {
 	_, ev, _ := m.cache.approvalFor(m.selected)
 	parts := []string{hint("y", "once"), hint("n", "deny"), hint("s", "session")}
 	if ev.Pattern != "" {
-		parts = append(parts, hint("p", "pattern"))
+		parts = append(parts, hint("p", "propose"))
 	}
 	if id := m.nextBlockedID(); id != "" {
 		parts = append(parts, hint("b", "next blocked ("+short(id)+")"))

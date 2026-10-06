@@ -156,7 +156,7 @@ func TestAnApprovalKeyAsksBeforeAnswering(t *testing.T) {
 		"y": "Allow shell once?",
 		"n": "Deny shell?",
 		"s": "Allow shell for this session?",
-		"p": "Always allow shell:go *?",
+		"p": "Allow once and propose shell:go * for review?",
 	}
 	for key, question := range cases {
 		fb, m := approvalModel(t)
@@ -217,7 +217,7 @@ func TestTheScreenFitsTheTerminalWithTheModalOpen(t *testing.T) {
 				t.Errorf("[%d] row %d is %d cells: %q", w, i, lipgloss.Width(l), ansi.Strip(l))
 			}
 		}
-		if !strings.Contains(ansi.Strip(m.View()), "Always allow") {
+		if !strings.Contains(ansi.Strip(m.View()), "Allow once and propose") {
 			t.Errorf("[%d] the modal is not on screen", w)
 		}
 	}

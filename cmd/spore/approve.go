@@ -35,7 +35,7 @@ func (t terminalApprover) Ask(ctx context.Context, a policy.Ask) (policy.Answer,
 		if a.Pattern == "" {
 			_, _ = fmt.Fprintf(t.out, "allow? [y]es once  [n]o  [s]ession (always %s this session)\n> ", a.Tool)
 		} else {
-			_, _ = fmt.Fprintf(t.out, "allow? [y]es once  [n]o  [s]ession (always %s this session)  [p]attern (always %s)\n> ",
+			_, _ = fmt.Fprintf(t.out, "allow? [y]es once  [n]o  [s]ession (always %s this session)  [p]ropose (allow once, queue %s for review)\n> ",
 				a.Tool, a.Pattern)
 		}
 		// Honour cancellation between prompts: an approval that timed out
