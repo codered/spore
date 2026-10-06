@@ -597,8 +597,8 @@ prints is what the daemon sees.
 
 ### Policy engine
 
-Every tool call resolves to `allow`, `ask`, or `deny` by first match against
-ordered rules, evaluated on the tool *and its arguments*:
+Every tool call resolves to `allow`, `ask`, or `deny` by evaluating against
+rules on the tool *and its arguments*:
 
 ```toml
 [policy]
@@ -613,6 +613,13 @@ deny  = [
   "shell.exec(matches rm -rf /, sudo, curl|sh, git push --force)",
 ]
 ```
+
+**Precedence:** Any deny wins. Otherwise the narrowest matching tier of allow
+and ask rules decides: tier 1, a rule with an argument condition (`path
+matches`, `word matches`, `matches`, `path outside workspace`); tier 2, a bare
+exact tool name; tier 3, a bare tool glob. Within a tier, ask wins a tie;
+otherwise the profile default. Rule position and whether a rule was learned no
+longer matter. See `docs/superpowers/specs/2026-10-06-policy-precedence-proposals-design.md`.
 
 - **`workspace` is a ceiling, not a location.** Each session carries its own
   workspace (section 5); `policy.workspace` bounds where one is allowed to be,
@@ -634,24 +641,25 @@ deny  = [
   is the barrier against prompt injection talking its way to `sudo`.
 - **`ask` suspends the turn.** The pending call is persisted, an
   approval-request event goes to every attached client, and the first response
-  wins. Answers are *once*, *always this session*, or *always this pattern* —
-  the last writes a rule into a marked section of the config file, keeping
-  policy readable and editable rather than an opaque cache.
-- **A pattern is only offered when there is a pattern.** Deriving one needs a
-  path-shaped argument; without one it can only fall back to the bare tool
-  name, so "always allow this pattern" on a `shell_exec` prompt would write an
-  allow for *every* `shell_exec`, bounded only by the baseline deny list. When
-  the derivation degrades that way the answer is not offered — the request
-  carries an empty pattern and every client, terminal, browser and bridge
-  alike, hides the option. Presentation is not the enforcement: the guard
-  recomputes the pattern when an answer arrives and records a degraded one as
-  *once*, so a client cannot be talked into writing the blanket rule. Widening
-  policy that far stays a deliberate edit to the config file.
+  wins. Answers are *once*, *always this session*, or *allow once and propose* —
+  the last proposes a rule for review in the refinements view, and accepting it
+  writes a marked section of the config file, keeping policy readable and
+  editable rather than an opaque cache.
+- **A pattern is only offered when it would decide the call.** The guard
+  evaluates the call with a candidate allow rule added; the pattern is offered
+  only if the result is allow. This covers a narrow ask the operator wrote,
+  another rule in the same tier, and the `remote` profile, where learned rules
+  never apply. Presentation is not the enforcement: the guard recomputes the
+  pattern when an answer arrives.
 - **Unanswered approvals deny** after a timeout and report back to the model, so
   a turn started from a phone cannot sit half-executed indefinitely.
 - **Trust profiles.** Clients carry a profile (`local`, `remote`) and rulesets
   may differ per profile: the chat bridge can be strictly `ask` on writes while
   localhost is not.
+- **Daemon route authentication.** Every `/api/*` route requires the token in
+  `~/.spore/daemon.token` (bearer header or the `spore web` cookie). A Host
+  check refuses foreign hostnames, and an Origin check refuses cross-origin
+  requests.
 
 Every tool action emits a structured event, so the UI can render tool calls
 inline and the SQLite transcript is a complete audit log.

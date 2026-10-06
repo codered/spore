@@ -176,7 +176,7 @@ EOF
 
 spore once "what is this repo?"    # one turn, printed to stdout
 spore chat                         # full-screen TUI (starts the daemon for you)
-open http://127.0.0.1:7777         # the same sessions in your browser
+spore web                          # the same sessions in your browser
 ```
 
 > [!TIP]
@@ -368,10 +368,7 @@ prompt), `/usage`, `/agents`, `/skills`, `/refine [focus]`, `/refine rollback`.
 
 <br>
 
-Open `http://127.0.0.1:7777/` while the daemon runs. Nothing needs to be
-built or installed. It has the session list, transcripts with collapsible tool
-calls, the model and cost of each step, scheduled jobs, and approvals with a
-countdown to the automatic deny.
+Run `spore web` while the daemon runs; it opens the UI signed in. Every `/api` route needs the token in `~/.spore/daemon.token`, so a plain browser tab or `curl` without it gets 401. The UI has the session list, transcripts with collapsible tool calls, the model and cost of each step, scheduled jobs, and approvals with a countdown to the automatic deny.
 
 <table>
 <tr>
@@ -407,14 +404,16 @@ allow   = ["fs_read", "fs_list", "fs_glob", "fs_grep"]
 - **Deny is checked first and is absolute.** The baseline deny list (paths
   outside the workspace, `.env`, `.ssh`, private keys, common destructive shell
   forms, MCP path arguments outside the workspace) cannot be turned off.
+- **Precedence is tiered.** If no deny matches, the narrowest matching tier of allow and ask rules decides: tier 1, a rule with an argument condition (path matches, word matches, matches, path outside workspace); tier 2, a bare exact tool name; tier 3, a bare tool glob. Within a tier, ask wins a tie; otherwise the profile default.
 - Rules are `tool` or `tool(predicate)`, where a predicate is
   `path outside workspace`, `path matches <globs>` or `matches <text>`.
 - `ask` suspends the turn. **s** remembers the answer for this session. **p**
-  writes a rule with an absolute path into a marked block of `config.toml`,
-  and the rule takes effect without a restart.
+  allows the call once and proposes a rule shown in the Refinements view (`R` in the TUI, Refinements in the web UI); accepting it writes the managed block of `config.toml` and applies it live.
 - An approval that nobody answers within `approval_timeout` (default 5m) is denied.
 - `[policy] workspace` is a **ceiling**. Each session is rooted at the
   directory you started it in, and a root outside the ceiling is refused.
+
+**Upgrading:** learned rules that a bare ask used to shadow become live on upgrade. An allow and an ask in the same tier now resolve to ask (stricter). Both are documented in the release notes.
 
 Test a rule without running anything:
 
@@ -552,6 +551,7 @@ Read Message History, Embed Links and Add Reactions.
 
 ```bash
 curl -s localhost:7777/api/jobs \
+  -H "Authorization: Bearer $(cat ~/.spore/daemon.token)" \
   -d '{"spec":"0 9 * * 1-5","prompt":"summarise yesterday'\''s commits"}'
 ```
 
