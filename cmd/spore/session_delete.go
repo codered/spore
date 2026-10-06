@@ -26,6 +26,11 @@ func runSessionDelete(ctx context.Context, cfg *config.Config, st *store.Store, 
 	cancel()
 	if err != nil {
 		c = nil
+	} else {
+		// Daemon is running; read its token.
+		if tok, err := daemon.ReadToken(cfg.DataDir); err == nil {
+			c.token = tok
+		}
 	}
 	return sessionDelete(ctx, st, c, args, in, out)
 }

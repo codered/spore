@@ -211,7 +211,13 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 // is constructed first with no agent, and the agent is attached once its
 // tools have been built around the server's broker.
 func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, *mcphost.Host, *mirror.Mirror, error) {
-	srv := daemon.New(daemon.Options{Store: st, Cfg: cfg})
+	// The token file is written before the listener opens, so a client that
+	// started this daemon can read it as soon as /healthz answers.
+	token, err := daemon.LoadOrCreateToken(cfg.DataDir)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("daemon token: %w", err)
+	}
+	srv := daemon.New(daemon.Options{Store: st, Cfg: cfg, Token: token})
 	a, parts, err := buildAgent(cfg, st, srv.Approver())
 	if err != nil {
 		return nil, nil, nil, err

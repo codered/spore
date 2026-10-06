@@ -20,6 +20,17 @@ import (
 	"github.com/codered/spore/internal/store"
 )
 
+// authed lets the existing transport tests keep using plain http.Get and
+// http.Post: it adds the bearer header to every request that has none.
+func authed(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			r.Header.Set("Authorization", "Bearer "+testToken)
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
 // newTestServer wires a real store, a real agent and a scripted provider.
 // Only the model is fake — the goal is to test the transport against the
 // real core, not against a mock of it.
@@ -43,8 +54,8 @@ func newTestServer(t *testing.T, turns ...provider.ScriptTurn) (*Server, *httpte
 	}
 	a := agent.New(st, preg, rt, cfg, nil)
 
-	s := New(Options{Agent: a, Store: st, Cfg: cfg})
-	ts := httptest.NewServer(s.Handler())
+	s := New(Options{Agent: a, Store: st, Cfg: cfg, Token: testToken})
+	ts := httptest.NewServer(authed(s.Handler()))
 	t.Cleanup(ts.Close)
 	return s, ts
 }

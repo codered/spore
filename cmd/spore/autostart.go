@@ -40,6 +40,10 @@ func ensureDaemon(ctx context.Context, cfg *config.Config) (*client, error) {
 	err := c.health(probe)
 	cancel()
 	if err == nil {
+		// Daemon was already running; read its token.
+		if tok, err := daemon.ReadToken(cfg.DataDir); err == nil {
+			c.token = tok
+		}
 		return c, nil
 	}
 
@@ -72,6 +76,10 @@ func ensureDaemon(ctx context.Context, cfg *config.Config) (*client, error) {
 
 	if err := waitForHealth(ctx, c, startupTimeout); err != nil {
 		return nil, fmt.Errorf("%w\n%s", err, tailFile(logPath, 2048))
+	}
+	// Read the daemon token now that the daemon is running.
+	if tok, err := daemon.ReadToken(cfg.DataDir); err == nil {
+		c.token = tok
 	}
 	fmt.Fprintf(os.Stderr, "spore: started a daemon on %s (log: %s)\n", cfg.Daemon.Addr, logPath)
 	return c, nil

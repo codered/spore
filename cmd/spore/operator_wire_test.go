@@ -18,6 +18,16 @@ import (
 	"github.com/codered/spore/internal/store"
 )
 
+// authedHandler adds the daemon token to every request that has no Authorization header.
+func authedHandler(h http.Handler, token string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
 // Through the real wiring: a "pattern" answer queues a proposal, accepting
 // it through HTTP makes the next matching call run without asking, and a
 // revoke over HTTP makes it ask again. No restart.
@@ -43,7 +53,7 @@ func TestLearnAndRevokeAreLiveThroughTheDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer host.Close()
-	ts := httptest.NewServer(srv.Handler())
+	ts := httptest.NewServer(authedHandler(srv.Handler(), srv.Token()))
 	defer ts.Close()
 
 	ws := filepath.Join(dir, "ws")

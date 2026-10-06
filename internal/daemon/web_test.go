@@ -125,10 +125,7 @@ func TestAppJSRoutesAreRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mux, ok := (&Server{}).Handler().(*http.ServeMux)
-	if !ok {
-		t.Fatal("Handler is not a *http.ServeMux")
-	}
+	mux := (&Server{}).buildMux()
 	matches := func(method, tpl string) bool {
 		path, _, _ := strings.Cut(tpl, "?")
 		path = placeholder.ReplaceAllString(path, "1")

@@ -63,7 +63,7 @@ func newFullServerWithPolicy(t *testing.T, policyTOML string, turns ...provider.
 		t.Fatalf("router.New: %v", err)
 	}
 
-	srv := New(Options{Store: st, Cfg: cfg})
+	srv := New(Options{Store: st, Cfg: cfg, Token: testToken})
 
 	reg := tool.NewRegistry(cfg.Policy.MaxOutput)
 	tools := append(fs.New(cfg.Policy.MaxOutput), schedule.New(st)...)
@@ -79,7 +79,7 @@ func newFullServerWithPolicy(t *testing.T, policyTOML string, turns ...provider.
 	guard := policy.NewGuard(reg, engine, srv.Approver(), st)
 	srv.Attach(agent.New(st, preg, rt, cfg, guard), guard)
 
-	ts := httptest.NewServer(srv.Handler())
+	ts := httptest.NewServer(authed(srv.Handler()))
 	t.Cleanup(ts.Close)
 	return srv, ts, workspace
 }
@@ -98,6 +98,7 @@ ask = ["fs_write"]
 func attachStream(t *testing.T, ts *httptest.Server, sessionID string) *bufio.Reader {
 	t.Helper()
 	req, _ := http.NewRequest("GET", ts.URL+"/api/sessions/"+sessionID+"/events", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("attach: %v", err)
