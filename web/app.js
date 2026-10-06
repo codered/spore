@@ -1200,8 +1200,10 @@ const VIEW_DEFS = {
           },
           {
             label: "Roll back round",
-            applies: (r) => r.status === "applied" && !String(r.kind).startsWith("policy."),
-            confirm: (r) => "roll back every edit in round " + r.round_id + "?",
+            applies: (r) => r.status === "applied",
+            confirm: (r) => String(r.kind).startsWith("policy.")
+              ? "roll back: remove " + r.target + " from your policy?"
+              : "roll back every edit in round " + r.round_id + "?",
             run: (r) => api("POST", "/api/sessions/{id}/refine/rollback", { id: r.session_id }, { round_id: r.round_id }),
             done: (r) => "rolled back round " + r.round_id,
           },
@@ -1211,7 +1213,7 @@ const VIEW_DEFS = {
               h("h3", { text: "#" + r.id + " · " + r.kind }),
               h("pre", { text: r.target }),
               h("div", { class: "prose", text: r.rationale || "" }),
-              h("div", { class: "fine", text: "Accepting writes this rule to the managed block of config.toml and applies it at once." }))
+              h("div", { class: "fine", text: "Accepting writes this rule to the managed block of config.toml and applies it at once; rolling back removes it." }))
           : h("div", {},
               h("h3", { text: "#" + r.id + " · " + r.kind + " · " + r.target + " · round " + r.round_id }),
               h("div", { class: "prose", text: r.rationale || "" }),

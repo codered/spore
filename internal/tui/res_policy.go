@@ -63,6 +63,10 @@ func (policyRes) Actions() []Action {
 			p, ok := r.Data.(daemon.PolicyRuleJSON)
 			return ok && p.Source == "learned"
 		},
+		Why: func(r Row) string {
+			p, _ := r.Data.(daemon.PolicyRuleJSON)
+			return fmt.Sprintf("x revokes learned rules only; this one is %s (edit config.toml), move to a learned row with j/k", p.Source)
+		},
 		Confirm: func(r Row) string { return fmt.Sprintf("revoke %q?", r.Data.(daemon.PolicyRuleJSON).Rule) },
 		Run: func(ctx context.Context, v Views, r Row) error {
 			p := r.Data.(daemon.PolicyRuleJSON)

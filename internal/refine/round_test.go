@@ -637,26 +637,81 @@ func TestAFailedPolicyWriteMarksTheRowFailed(t *testing.T) {
 	}
 }
 
-func TestRollbackAndLatestRoundSkipPolicyRows(t *testing.T) {
-	f := newFix(t, store.SourceChat)
+func acceptPolicyRow(t *testing.T, f *fix, rule string) int64 {
+	t.Helper()
 	f.r.ApplyPolicy = func(string, string) error { return nil }
-	id := addPolicyRow(t, f, store.KindPolicyAllow, "fs_write(path matches /ws/a/**)")
+	id := addPolicyRow(t, f, store.KindPolicyAllow, rule)
 	if _, err := f.r.Accept(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := f.st.LatestAppliedRound(context.Background(), f.sid); err != nil || ok {
-		t.Fatalf("LatestAppliedRound found a round (ok=%v err=%v); policy rows must not count", ok, err)
+	return id
+}
+
+// Rolling back the approval round undoes the accept: the rule leaves the
+// managed block, the same as revoking it in the policy view.
+func TestRollingBackAnAcceptedPolicyRowRemovesTheRule(t *testing.T) {
+	f := newFix(t, store.SourceChat)
+	rule := "fs_write(path matches /ws/a/**)"
+	id := acceptPolicyRow(t, f, rule)
+	var revoked []string
+	f.r.RevokePolicy = func(d, r string) error {
+		revoked = append(revoked, d+" "+r)
+		return nil
 	}
 	res, err := f.r.Rollback(context.Background(), f.sid, "approval-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.RolledBack)+len(res.Stale)+len(res.Failed) != 0 {
-		t.Errorf("rollback touched a policy row: %+v", res)
+	if len(res.RolledBack) != 1 || len(revoked) != 1 || revoked[0] != "allow "+rule {
+		t.Fatalf("rolled back %+v, revoked %v", res, revoked)
+	}
+	row, _, _ := f.st.Refinement(context.Background(), id)
+	if row.Status != store.RefineRolledBack {
+		t.Errorf("status = %s, want rolled_back", row.Status)
+	}
+}
+
+// A rule already revoked in the policy view has nothing left to undo.
+func TestRollingBackARevokedPolicyRuleIsStale(t *testing.T) {
+	f := newFix(t, store.SourceChat)
+	id := acceptPolicyRow(t, f, "fs_write(path matches /ws/a/**)")
+	f.r.RevokePolicy = func(string, string) error { return config.ErrNotLearned }
+	res, err := f.r.Rollback(context.Background(), f.sid, "approval-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Stale) != 1 {
+		t.Fatalf("result = %+v, want one stale row", res)
+	}
+	row, _, _ := f.st.Refinement(context.Background(), id)
+	if row.Status != store.RefineStale {
+		t.Errorf("status = %s, want stale", row.Status)
+	}
+}
+
+func TestRollingBackAPolicyRowWithoutRevokePolicyFails(t *testing.T) {
+	f := newFix(t, store.SourceChat)
+	id := acceptPolicyRow(t, f, "fs_write(path matches /ws/a/**)")
+	res, err := f.r.Rollback(context.Background(), f.sid, "approval-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Failed) != 1 {
+		t.Fatalf("result = %+v, want one failed row", res)
 	}
 	row, _, _ := f.st.Refinement(context.Background(), id)
 	if row.Status != store.RefineApplied {
-		t.Errorf("status = %s, want applied", row.Status)
+		t.Errorf("status = %s, want applied (nothing was undone)", row.Status)
+	}
+}
+
+// "/refine rollback" with no round undoes the latest refinement round; an
+// approval is not a round, so it is never picked implicitly.
+func TestLatestAppliedRoundSkipsPolicyRows(t *testing.T) {
+	f := newFix(t, store.SourceChat)
+	acceptPolicyRow(t, f, "fs_write(path matches /ws/a/**)")
+	if _, ok, err := f.st.LatestAppliedRound(context.Background(), f.sid); err != nil || ok {
+		t.Fatalf("LatestAppliedRound found a round (ok=%v err=%v); policy rows must not count", ok, err)
 	}
 }
 

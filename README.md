@@ -414,7 +414,7 @@ allow   = ["fs_read", "fs_list", "fs_glob", "fs_grep"]
 - Rules are `tool` or `tool(predicate)`, where a predicate is
   `path outside workspace`, `path matches <globs>` or `matches <text>`.
 - `ask` suspends the turn. **s** remembers the answer for this session. **p**
-  allows the call once and proposes a rule shown in the Refinements view (`R` in the TUI, Refinements in the web UI); accepting it writes the managed block of `config.toml` and applies it live.
+  allows the call once and proposes a rule shown in the Refinements view (`R` in the TUI, Refinements in the web UI); accepting it writes the managed block of `config.toml` and applies it live, and rolling it back there removes the rule again (as does revoking it in the policy view, `P`).
 - An approval that nobody answers within `approval_timeout` (default 5m) is denied.
 - `[policy] workspace` is a **ceiling**. Each session is rooted at the
   directory you started it in, and a root outside the ceiling is refused.

@@ -64,6 +64,11 @@ type Refiner struct {
 	// makes accepting a policy row fail rather than mark it applied with
 	// nothing written.
 	ApplyPolicy func(decision, rule string) error
+	// RevokePolicy removes a rule an accepted proposal wrote, when its
+	// approval round is rolled back. The daemon sets it to the policy
+	// reloader; it returns config.ErrNotLearned for a rule the block no
+	// longer holds. Nil makes rolling back a policy row fail.
+	RevokePolicy func(decision, rule string) error
 
 	// ctx is what background rounds run under; Close cancels it.
 	ctx    context.Context

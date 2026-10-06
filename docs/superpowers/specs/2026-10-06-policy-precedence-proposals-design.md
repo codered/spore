@@ -164,9 +164,16 @@ refinements view for review.
   the row `failed` and returns the error. A nil `ApplyPolicy` is an error,
   not a silent no-op.
 - `Refiner.Reject` is unchanged.
-- `Refiner.Rollback` skips `policy.*` rows; the `P` view's revoke removes a
-  rule. `Store.LatestAppliedRound` ignores `policy.*` rows, so `/refine
-  rollback` never picks an approval round.
+- Rolling back an approval round (`Refiner.Rollback` with its round id)
+  removes the rule through `Refiner.RevokePolicy`, wired to
+  `Reloader.Unlearn`, and marks the row `rolled_back`; a rule the block no
+  longer holds (revoked in the `P` view already) marks it `stale`, and any
+  other failure leaves it `applied`. Added after the first manual test: the
+  user expected undo where they accepted. `Store.LatestAppliedRound` still
+  ignores `policy.*` rows, so a bare `/refine rollback` never picks an
+  approval round.
+- An action key pressed on a row its action does not apply to says why
+  (the `P` view opens on a baseline rule, where `x` used to do nothing).
 - `pathFor` is not reached for `policy.*` rows.
 - The TUI refinements view and the web refinements view render a `policy.*`
   row as decision, rule and rationale instead of a file diff.
@@ -280,8 +287,9 @@ Refine:
 - Accepting a `policy.allow` row writes the block and the next `Evaluate`
   allows without a restart; accepting one already present is applied with no
   second line; a nil `ApplyPolicy` fails the accept.
-- Reject leaves the config untouched; Rollback skips policy rows;
-  `LatestAppliedRound` ignores them.
+- Reject leaves the config untouched; rolling back removes the rule (stale
+  if already revoked, failed if no writer); `LatestAppliedRound` ignores
+  policy rows.
 
 Auth:
 

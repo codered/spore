@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/store"
 )
 
@@ -70,10 +71,7 @@ func (r *Refiner) acceptPolicy(ctx context.Context, row store.Refinement) (store
 	if !moved {
 		return row, fmt.Errorf("refinement %d changed while it was being accepted", row.ID)
 	}
-	decision := "allow"
-	if row.Kind == KindPolicyDeny {
-		decision = "deny"
-	}
+	decision := policyDecision(row.Kind)
 	var werr error
 	switch {
 	case r.ApplyPolicy == nil:
@@ -145,9 +143,10 @@ func (r *Refiner) Rollback(ctx context.Context, sessionID, roundID string) (Roll
 		if row.Status != store.RefineApplied {
 			continue
 		}
-		// A policy rule is removed by revoking it in the policy view, not by
-		// rolling back the approval that proposed it.
 		if strings.HasPrefix(row.Kind, "policy.") {
+			if err := r.rollbackPolicy(ctx, row, &out); err != nil {
+				return out, err
+			}
 			continue
 		}
 		path, err := r.pathFor(row)
@@ -185,4 +184,51 @@ func (r *Refiner) Rollback(ctx context.Context, sessionID, roundID string) (Roll
 		out.RolledBack = append(out.RolledBack, row)
 	}
 	return out, nil
+}
+
+// policyDecision is the decision a policy proposal's kind writes.
+func policyDecision(kind string) string {
+	if kind == KindPolicyDeny {
+		return "deny"
+	}
+	return "allow"
+}
+
+// rollbackPolicy undoes an accepted policy proposal by removing its rule
+// from the managed block, the same as revoking it in the policy view. A
+// rule the block no longer holds -- revoked there already -- leaves nothing
+// to undo, so the row is stale. On any other failure the row stays applied,
+// because the rule is still in force.
+func (r *Refiner) rollbackPolicy(ctx context.Context, row store.Refinement, out *RollbackResult) error {
+	var err error
+	switch {
+	case r.RevokePolicy == nil:
+		err = errors.New("policy rules cannot be removed: no policy writer is attached")
+	case row.After == nil:
+		err = fmt.Errorf("refinement %d has no rule", row.ID)
+	default:
+		err = r.RevokePolicy(policyDecision(row.Kind), *row.After)
+	}
+	to := store.RefineRolledBack
+	switch {
+	case errors.Is(err, config.ErrNotLearned):
+		to = store.RefineStale
+	case err != nil:
+		out.Failed = append(out.Failed, row)
+		return nil
+	}
+	moved, serr := r.Store.SetRefinementStatus(ctx, row.ID, store.RefineApplied, to)
+	if serr != nil {
+		return serr
+	}
+	if !moved {
+		return nil
+	}
+	row.Status = to
+	if to == store.RefineStale {
+		out.Stale = append(out.Stale, row)
+	} else {
+		out.RolledBack = append(out.RolledBack, row)
+	}
+	return nil
 }

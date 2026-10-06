@@ -128,3 +128,82 @@ func TestLearnAndRevokeAreLiveThroughTheDaemon(t *testing.T) {
 	answer(false, "once") // it asked again: the revoke is live
 	<-done
 }
+
+// Rolling back an accepted proposal's approval round removes the rule from
+// the managed block and from the running engine. No restart.
+func TestRollingBackAnAcceptedProposalRemovesTheRule(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "spore.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("[policy]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Path = path
+	cfg.DataDir = dir
+	cfg.DefaultModel = "anthropic/claude-opus-5"
+	cfg.Providers = map[string]config.ProviderConfig{"anthropic": {Kind: "anthropic", APIKey: "sk-x"}}
+	srv, host, _, err := buildServer(cfg, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	ts := httptest.NewServer(authedHandler(srv.Handler(), srv.Token()))
+	defer ts.Close()
+
+	ctx := context.Background()
+	ws := filepath.Join(dir, "ws")
+	sid, err := st.CreateSession(ctx, "t", ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := "fs_write(path matches " + filepath.Join(ws, "notes") + "/**)"
+	after := rule
+	id, err := st.AddRefinement(ctx, store.Refinement{
+		RoundID: "approval-1", SessionID: sid, Trigger: store.RefineTriggerApproval,
+		Kind: store.KindPolicyAllow, Target: rule, After: &after, Rationale: "r", Status: store.RefineProposed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := func(url, body string) {
+		t.Helper()
+		resp, err := http.Post(ts.URL+url, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST %s: %d", url, resp.StatusCode)
+		}
+	}
+	decide := func() policy.Decision {
+		args, _ := json.Marshal(map[string]string{"path": filepath.Join(ws, "notes", "a.txt")})
+		return srv.Guard().Engine().Evaluate(policy.Session{Profile: policy.ProfileLocal, Workspace: ws},
+			policy.Call{Tool: "fs_write", Args: args}).Decision
+	}
+
+	post("/api/refinements/"+strconv.FormatInt(id, 10)+"/accept", "")
+	if got := decide(); got != policy.DecisionAllow {
+		t.Fatalf("after accept: %s, want allow", got)
+	}
+	post("/api/sessions/"+sid+"/refine/rollback", `{"round_id":"approval-1"}`)
+	learned, err := config.ReadLearned(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(learned.Allow) != 0 {
+		t.Errorf("learned allow after rollback = %v, want none", learned.Allow)
+	}
+	if got := decide(); got != policy.DecisionAsk {
+		t.Errorf("after rollback: %s, want ask", got)
+	}
+	row, _, _ := st.Refinement(ctx, id)
+	if row.Status != store.RefineRolledBack {
+		t.Errorf("status = %s, want rolled_back", row.Status)
+	}
+}

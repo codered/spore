@@ -238,6 +238,7 @@ func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, *mcphost.
 	}
 	ref.Notify = srv.PublishNote                                                                     // set before any turn can run a round
 	ref.ApplyPolicy = func(d, rule string) error { return reloader.Learn(policy.Decision(d), rule) } // set before any accept can run
+	ref.RevokePolicy = func(d, rule string) error { return reloader.Unlearn(policy.Decision(d), rule) }
 	srv.AttachRefiner(ref)
 	// Sessions are named on the router's title site, from the same registry
 	// and rules every other call uses.
