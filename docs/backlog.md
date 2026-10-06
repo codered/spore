@@ -337,3 +337,55 @@ which loosens policy. Baseline deny rules cannot be revoked this way.
    `daemon.addr`)?
 2. Should the daemon require a per-process token, or check `Host`/`Origin`,
    so only its own clients can call state-changing routes?
+
+## LICENSE is a stub: fixed
+
+Closed. #63 (723434c) replaced the 128-byte stub -- the MPL-2.0 name, a wrong
+date and a link -- with the verbatim MPL-2.0 text. The release job copies
+`LICENSE` into every tarball, so the next tag ships the full text with no
+workflow change; `v0.1.0-alpha.1` shipped the stub.
+
+## `/usage` in the TUI, the web UI and Discord: shipped
+
+Closed. #65 (2b794b1). The premise was half right: the TUI already had a
+`/usage`, summed from the transcript; the plain chat loop, the web UI and
+Discord had none, and sent `/usage` to the model. Every surface now prints
+the same report from `GET /api/usage`, formatted by `internal/usage` (Go)
+and `usageReport` in `web/app.js`. The 30-day window lives in
+`usage.Window`, so the daemon's query and the report's label agree.
+
+The three open questions are answered:
+
+1. **This session plus the 30-day total.** Turns, tokens, cache share and
+   cost for the session, then one line with every session's totals.
+2. **Inline in the web UI.** `send()` answers `/usage` as a notice row; it is
+   not posted and starts no turn. Any other `/text` still goes to the model.
+3. **A text intercept in Discord**, beside `/new`. A DM or thread bound to a
+   session reports that session and the total; a plain channel has no
+   session, so it reports the total alone and opens no thread. Cost follows
+   `show_cost`.
+
+The web change was checked in a headless browser against an isolated
+daemon. `/usage` in a real Discord server was not tried by hand.
+
+## Skills were not loading: fixed
+
+Closed. #64 (26da049). The skills were installed; they were not loading.
+Run against a real `~/.spore/skills`, `skill.Load` rejected 12 of 16. Eleven
+wrote their description as a YAML block scalar (`description: >` and
+indented lines), and the frontmatter parser read only one-line
+`key: value`. The twelfth has no frontmatter at all and still fails, as it
+should; `/skills` reports it.
+
+The parser now reads block scalars, indented continuation lines and quoted
+values, folds name and description onto one line, and skips keys it does
+not use (`license`, `allowed-tools`, `metadata`) with their indented lines
+instead of rejecting the skill.
+
+The same check found a second gap: nine of those skills cite files beside
+`SKILL.md` (`references/`, templates), and the skills directory is outside
+the workspace, so nothing could read them. `skill_load` now lists a skill's
+other files after its body and takes an optional `file` argument to read
+one, confined to that skill's directory once symlinks are followed, with
+dotted paths refused and a 256 KiB cap. A file-only read does not mark the
+skill loaded in `/skills`. `skill_install` still writes only `SKILL.md`.
