@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/codered/spore/internal/daemon"
+	usagereport "github.com/codered/spore/internal/usage"
 )
 
 // compactSummary says what a compaction actually did. A session with nothing
@@ -86,17 +87,6 @@ func castInt(v any) int {
 	return 0
 }
 
-// castFloat safely converts an any to float64, returning 0.0 on failure.
-func castFloat(v any) float64 {
-	if f, ok := v.(float64); ok {
-		return f
-	}
-	if i, ok := v.(int); ok {
-		return float64(i)
-	}
-	return 0.0
-}
-
 // formatContext is the /context report: the live messages after the summary
 // boundary and a rough token count for them.
 func formatContext(data map[string]any) string {
@@ -115,32 +105,8 @@ func formatContext(data map[string]any) string {
 	return fmt.Sprintf("context snapshot\n  messages: %d\n  tokens: ~%d", count, total)
 }
 
-// formatUsage is the /usage report: token and cost totals for the session.
-func formatUsage(data map[string]any, showCost bool) string {
-	var in, out, cacheRead, cacheWrite, turns int
-	var cost float64
-	if arr, ok := data["messages"].([]any); ok {
-		for _, raw := range arr {
-			msg, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			in += castInt(msg["tokens_in"])
-			out += castInt(msg["tokens_out"])
-			cacheRead += castInt(msg["tokens_cache_read"])
-			cacheWrite += castInt(msg["tokens_cache_write"])
-			cost += castFloat(msg["cost_usd"])
-			turns++
-		}
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "usage\n  turns: %d\n  tokens in: %d\n  tokens out: %d", turns, in, out)
-	if cacheRead+cacheWrite > 0 {
-		share := cacheRead * 100 / (in + cacheRead + cacheWrite)
-		fmt.Fprintf(&b, "\n  cache: %d read, %d written (%d%% of input)", cacheRead, cacheWrite, share)
-	}
-	if showCost {
-		fmt.Fprintf(&b, "\n  cost: $%.4f", cost)
-	}
-	return b.String()
+// usageReport is the /usage report: this session's totals, then every
+// session's over the last 30 days, in the format every surface shares.
+func usageReport(u daemon.UsageJSON, showCost bool) string {
+	return usagereport.Session(u.Session, showCost) + usagereport.Total(u.Days, showCost)
 }

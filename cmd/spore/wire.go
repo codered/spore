@@ -262,5 +262,6 @@ func buildBridge(cfg *config.Config, srv *daemon.Server) (*discord.Bridge, error
 	return discord.New(discord.Options{
 		Cfg: d, Client: client, Turns: srv, Sessions: srv,
 		Store: srv.Store(), Broker: srv.Broker(), Guard: srv.Guard(),
+		ShowCost: cfg.ShowCost,
 	})
 }

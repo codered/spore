@@ -96,15 +96,18 @@ func (b tuiBackend) Slash(ctx context.Context, id, cmd string) (string, error) {
 			return "", err
 		}
 		return compactSummary(res), nil
-	case "context", "usage":
+	case "context":
 		data, err := b.c.getTranscript(ctx, id)
 		if err != nil {
 			return "", err
 		}
-		if cmd == "context" {
-			return formatContext(data), nil
+		return formatContext(data), nil
+	case "usage":
+		u, err := b.c.usage(ctx, id)
+		if err != nil {
+			return "", err
 		}
-		return formatUsage(data, b.showCost), nil
+		return usageReport(u, b.showCost), nil
 	case "skills":
 		list, err := b.c.listSkills(ctx, id)
 		if err != nil {
@@ -162,12 +165,7 @@ func (b tuiBackend) JobRuns(ctx context.Context, jobID int64) ([]daemon.JobRunJS
 }
 
 func (b tuiBackend) Usage(ctx context.Context, sessionID string) (daemon.UsageJSON, error) {
-	var out daemon.UsageJSON
-	path := "/api/usage"
-	if sessionID != "" {
-		path += "?session=" + sessionID
-	}
-	err := b.c.do(ctx, "GET", path, nil, &out)
+	out, err := b.c.usage(ctx, sessionID)
 	return out, viewErr(err)
 }
 

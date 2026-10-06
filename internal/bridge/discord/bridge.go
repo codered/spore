@@ -13,6 +13,7 @@ import (
 	"github.com/codered/spore/internal/daemon"
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/store"
+	"github.com/codered/spore/internal/usage"
 )
 
 // bridgeName is the namespace used for every store binding and dedupe row.
@@ -49,6 +50,9 @@ type Options struct {
 	Store    *store.Store
 	Broker   *daemon.Broker
 	Guard    *policy.Guard
+	// ShowCost puts USD cost in the /usage reply, as config's show_cost does
+	// on every other surface.
+	ShowCost bool
 	// Throttle overrides the render throttle. Zero means defaultThrottle
 	// (New substitutes it); a negative value means "flush on every event"
 	// and is what tests pass so they never wait on a clock.
@@ -69,6 +73,7 @@ type Bridge struct {
 	store    *store.Store
 	answer   *answerer
 	throttle time.Duration
+	showCost bool
 
 	// details holds recent turns' tool transcripts for the "show details"
 	// button. It lives here, not on the renderer, because the press arrives
@@ -147,6 +152,7 @@ func New(o Options) (*Bridge, error) {
 		store:    o.Store,
 		answer:   newAnswerer(o.Broker, o.Guard),
 		throttle: throttle,
+		showCost: o.ShowCost,
 		details:  newDetails(),
 	}, nil
 }
@@ -247,6 +253,12 @@ func (b *Bridge) handleMessage(in Inbound) {
 		return
 	}
 
+	if content == "/usage" {
+		b.handleUsage(in)
+		b.settle(in) // no turn runs, so nothing else settles it; see /new
+		return
+	}
+
 	sessionID, replyChannel, err := b.resolveSession(in)
 	if err != nil {
 		slog.Warn("discord session resolution failed", "err", err)
@@ -285,6 +297,35 @@ func (b *Bridge) handleNew(in Inbound) {
 		return
 	}
 	b.say(in.ChannelID, "started a fresh session")
+}
+
+// handleUsage replies with the conversation's usage. A DM or thread already
+// bound to a session reports that session and the 30-day total; anywhere
+// else -- a plain guild channel, or a conversation with no session yet --
+// there is no session to report, so it reports the total alone. It never
+// calls resolveSession: asking for usage must not open a thread or a session.
+func (b *Bridge) handleUsage(in Inbound) {
+	var report string
+	sid, found, err := b.store.SessionForExternal(b.ctx, bridgeName, in.ChannelID)
+	if err != nil {
+		slog.Warn("discord /usage: look up session", "err", err)
+		return
+	}
+	if found {
+		rows, err := b.store.SessionUsage(b.ctx, sid)
+		if err != nil {
+			slog.Warn("discord /usage: session usage", "err", err)
+			return
+		}
+		report = usage.Session(rows, b.showCost)
+	}
+	days, err := b.store.DailyUsage(b.ctx, time.Now().Add(-usage.Window))
+	if err != nil {
+		slog.Warn("discord /usage: daily usage", "err", err)
+		return
+	}
+	report += usage.Total(days, b.showCost)
+	b.say(in.ChannelID, "```\n"+report+"```")
 }
 
 // resolveSession maps an inbound message to the session it belongs to,

@@ -798,12 +798,25 @@ function tickCountdowns() {
 
 // ---------- composer ----------
 
+// slashCommands answer in the browser instead of reaching the model. Any
+// other text starting with "/" is still sent as an ordinary message.
+const slashCommands = { "/usage": showUsage };
+
 async function send() {
   const input = el("input");
   const text = input.value.trim();
   if (!text || !S.open) return;
   input.value = "";
   addUser(text);
+  const cmd = slashCommands[text];
+  if (cmd) {
+    try {
+      await cmd(S.open);
+    } catch (err) {
+      addLine("msg error", text + " failed: " + err.message);
+    }
+    return;
+  }
   // Show the turn as started now rather than when turn_started arrives, so
   // the message visibly went somewhere.
   const r = rec(S.open);
@@ -821,6 +834,34 @@ async function send() {
     renderThinking();
     setStatus(err.message, true);
   }
+}
+
+async function showUsage(sid) {
+  const u = await api("GET", "/api/usage?session={id}", { id: sid });
+  addLine("msg note usage", usageReport(u));
+}
+
+// usageReport mirrors internal/usage in Go, so /usage reads the same on
+// every surface. Cost is always shown here, as everywhere else in this UI.
+function usageReport(u) {
+  const sum = (rows) => (rows || []).reduce((t, r) => ({
+    turns: t.turns + r.turns, in: t.in + r.tokens_in, out: t.out + r.tokens_out,
+    cw: t.cw + r.tokens_cache_write, cr: t.cr + r.tokens_cache_read, cost: t.cost + r.cost_usd,
+  }), { turns: 0, in: 0, out: 0, cw: 0, cr: 0, cost: 0 });
+  const commas = (n) => n.toLocaleString("en-US");
+  const short = (n) => n >= 1e6 ? +(n / 1e6).toFixed(1) + "M" : n >= 1e3 ? +(n / 1e3).toFixed(1) + "k" : String(n);
+  const s = sum(u.session);
+  let out = "usage, this session\n  turns: " + s.turns +
+    "\n  tokens in: " + commas(s.in) + "  out: " + commas(s.out) + "\n";
+  if (s.cr + s.cw > 0) {
+    const share = Math.round(s.cr * 100 / (s.in + s.cr + s.cw));
+    out += "  cache: " + commas(s.cr) + " read, " + commas(s.cw) + " written (" + share + "% of input)\n";
+  }
+  out += "  cost: " + money(s.cost) + "\n";
+  const d = sum(u.days);
+  out += "last 30 days, all sessions: " + d.turns + " turns, " + short(d.in) + " in, " +
+    short(d.out) + " out, $" + d.cost.toFixed(2);
+  return out;
 }
 
 // ---------- views ----------

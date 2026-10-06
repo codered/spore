@@ -72,8 +72,15 @@ func chatTUI(ctx context.Context, cfg *config.Config, c *client, sessionID strin
 // runPlainSlash handles commands that have a direct daemon API in the
 // line-oriented loop. It reports whether text was a command; true means the
 // caller must not send it as a model turn.
-func runPlainSlash(ctx context.Context, c *client, sessionID, text string, out io.Writer) (bool, error) {
+func runPlainSlash(ctx context.Context, c *client, sessionID, text string, showCost bool, out io.Writer) (bool, error) {
 	switch text {
+	case "/usage":
+		u, err := c.usage(ctx, sessionID)
+		if err != nil {
+			return true, err
+		}
+		_, err = fmt.Fprint(out, usageReport(u, showCost))
+		return true, err
 	case "/skills":
 		list, err := c.listSkills(ctx, sessionID)
 		if err != nil {
@@ -178,7 +185,7 @@ func chatPlain(ctx context.Context, cfg *config.Config, c *client, sessionID str
 			if text == "" {
 				continue
 			}
-			if handled, err := runPlainSlash(ctx, c, sessionID, text, os.Stdout); handled {
+			if handled, err := runPlainSlash(ctx, c, sessionID, text, cfg.ShowCost, os.Stdout); handled {
 				if err != nil {
 					fmt.Fprintln(os.Stderr, "command failed:", err)
 				}
