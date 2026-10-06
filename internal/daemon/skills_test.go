@@ -29,13 +29,13 @@ func TestSkillsEndpoint(t *testing.T) {
 	if err := skill.Write(dir, skill.Skill{Name: "beta", Description: "the beta skill", Body: "do beta things"}); err != nil {
 		t.Fatal(err)
 	}
-	// A broken skill: a directory with a SKILL.md whose frontmatter has an
-	// unknown key, so Load reports a per-file error.
+	// A broken skill: a directory with a SKILL.md whose frontmatter has no
+	// description, so Load reports a per-file error.
 	brokenDir := filepath.Join(dir, "gamma")
 	if err := os.MkdirAll(brokenDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(brokenDir, "SKILL.md"), []byte("---\nname: gamma\ndescription: broken\nbad: key\n---\n\nbody\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(brokenDir, "SKILL.md"), []byte("---\nname: gamma\n---\n\nbody\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -63,8 +63,12 @@ func TestSkillsEndpoint(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// An interrupted load and an error result must not mark beta loaded.
+	// An interrupted load, an error result and a read of one of its other
+	// files must not mark beta loaded: none put its body in the context.
 	failed := []provider.Block{
+		{Type: provider.BlockToolUse, ID: "call_4", Name: "skill_load",
+			Input: json.RawMessage(`{"name":"beta","file":"notes.md"}`)},
+		{Type: provider.BlockToolResult, ID: "call_4", Content: "# beta/notes.md\n\nnotes"},
 		{Type: provider.BlockToolUse, ID: "call_2", Name: "skill_load",
 			Input: json.RawMessage(`{"name":"beta"}`)},
 		{Type: provider.BlockToolResult, ID: "call_2", Content: "no skill named beta", IsError: true},

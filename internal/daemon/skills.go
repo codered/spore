@@ -70,8 +70,10 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 			case b.Type == provider.BlockToolUse && b.Name == "skill_load":
 				var args struct {
 					Name string `json:"name"`
+					File string `json:"file"`
 				}
-				if json.Unmarshal(b.Input, &args) == nil && args.Name != "" {
+				// A call with a file read one supporting file, not the body.
+				if json.Unmarshal(b.Input, &args) == nil && args.Name != "" && args.File == "" {
 					pending[b.ID] = args.Name
 				}
 			case b.Type == provider.BlockToolResult && !b.IsError:

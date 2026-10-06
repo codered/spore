@@ -17,7 +17,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Skill is one directory holding a SKILL.md. A skill carries no token count:
@@ -162,9 +164,119 @@ func Exists(dir, name string) bool {
 	return err == nil
 }
 
-// parse reads the fixed two-key frontmatter. This is not YAML and does not
-// pretend to be: two known keys do not justify a dependency, and a hand
-// parser gives error messages that name the actual problem.
+// maxFiles and maxFileBytes bound what one skill_load call can put into a
+// turn: a skill directory is hand-assembled and may hold anything.
+const (
+	maxFiles     = 200
+	maxFileBytes = 256 << 10
+)
+
+// Files lists a skill's supporting files -- everything in its directory but
+// SKILL.md -- as slash-separated paths relative to it, sorted. Dotted files
+// and directories are skipped, as Load skips them, so neither Write's
+// temporary file nor a .git directory is offered to the model.
+func Files(dir, name string) ([]string, error) {
+	d, err := Dir(dir, name)
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	err = filepath.WalkDir(d, func(path string, e fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == d {
+			return nil
+		}
+		if strings.HasPrefix(e.Name(), ".") {
+			if e.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if e.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(d, path)
+		if err != nil {
+			return err
+		}
+		if rel == "SKILL.md" {
+			return nil
+		}
+		if len(files) == maxFiles {
+			return fs.SkipAll
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+// ReadFile reads one supporting file of a skill. rel is model-supplied, so it
+// must name a regular file that is still inside the skill's own directory
+// once symlinks are followed: not another skill, not the rest of the skills
+// directory, and not a dotted path Files would not have listed.
+func ReadFile(dir, name, rel string) (string, error) {
+	d, err := Dir(dir, name)
+	if err != nil {
+		return "", err
+	}
+	rel = filepath.FromSlash(rel)
+	if !filepath.IsLocal(rel) {
+		return "", fmt.Errorf("%q is not a path inside skill %q", rel, name)
+	}
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if strings.HasPrefix(part, ".") {
+			return "", fmt.Errorf("%q is not a file of skill %q", rel, name)
+		}
+	}
+	root, err := filepath.EvalSymlinks(d)
+	if err != nil {
+		return "", fmt.Errorf("no skill named %q", name)
+	}
+	path, err := filepath.EvalSymlinks(filepath.Join(d, rel))
+	if err != nil {
+		return "", fmt.Errorf("skill %q has no file %q", name, filepath.ToSlash(rel))
+	}
+	if inside, err := filepath.Rel(root, path); err != nil || !filepath.IsLocal(inside) {
+		return "", fmt.Errorf("%q leaves skill %q", filepath.ToSlash(rel), name)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%q is not a file", filepath.ToSlash(rel))
+	}
+	if info.Size() > maxFileBytes {
+		return "", fmt.Errorf("%q is %d bytes, over the %d-byte limit", filepath.ToSlash(rel), info.Size(), maxFileBytes)
+	}
+	//nolint:gosec // G304: path is confined to the skill's directory above
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if !utf8.Valid(data) {
+		return "", fmt.Errorf("%q is not text", filepath.ToSlash(rel))
+	}
+	return string(data), nil
+}
+
+// parse reads the frontmatter's name and description. This is not YAML and
+// does not pretend to be: two known keys do not justify a dependency, and a
+// hand parser gives error messages that name the actual problem. It does read
+// the subset that skills written for other agents use -- block scalars (>, |),
+// indented continuation lines, quoted values -- and it skips every other key
+// (license, allowed-tools, metadata) along with its indented lines, so a skill
+// copied in from elsewhere loads instead of failing on its frontmatter.
+//
+// Both values are folded onto one line: a description is a one-line index
+// entry whatever style it was written in.
 func parse(text string) (Skill, error) {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	rest, ok := strings.CutPrefix(text, "---\n")
@@ -175,30 +287,58 @@ func parse(text string) (Skill, error) {
 	if !ok {
 		return Skill{}, errors.New("missing closing --- frontmatter delimiter")
 	}
-	var s Skill
+	values := map[string][]string{}
+	key := ""
 	for _, line := range strings.Split(head, "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		key, value, ok := strings.Cut(line, ":")
+		if line[0] == ' ' || line[0] == '\t' {
+			if key == "" {
+				return Skill{}, fmt.Errorf("frontmatter line %q is indented under no key", line)
+			}
+			values[key] = append(values[key], strings.TrimSpace(line))
+			continue
+		}
+		k, value, ok := strings.Cut(line, ":")
 		if !ok {
 			return Skill{}, fmt.Errorf("frontmatter line %q is not key: value", line)
 		}
+		key = strings.TrimSpace(k)
 		value = strings.TrimSpace(value)
-		switch strings.TrimSpace(key) {
-		case "name":
-			s.Name = value
-		case "description":
-			s.Description = value
+		switch value {
+		case ">", ">-", ">+", "|", "|-", "|+":
+			values[key] = nil // a block scalar: the value is the indented lines
 		default:
-			return Skill{}, fmt.Errorf("unknown frontmatter key %q", strings.TrimSpace(key))
+			values[key] = []string{value}
 		}
 	}
-	s.Body = strings.TrimSpace(body)
+	s := Skill{
+		Name:        scalar(values["name"]),
+		Description: scalar(values["description"]),
+		Body:        strings.TrimSpace(body),
+	}
 	if err := s.Validate(); err != nil {
 		return Skill{}, err
 	}
 	return s, nil
+}
+
+// scalar folds a value's lines onto one line and removes YAML quoting.
+func scalar(lines []string) string {
+	v := strings.Join(strings.Fields(strings.Join(lines, " ")), " ")
+	if len(v) >= 2 {
+		switch {
+		case v[0] == '"' && v[len(v)-1] == '"':
+			if u, err := strconv.Unquote(v); err == nil {
+				return u
+			}
+			return v[1 : len(v)-1]
+		case v[0] == '\'' && v[len(v)-1] == '\'':
+			return strings.ReplaceAll(v[1:len(v)-1], "''", "'")
+		}
+	}
+	return v
 }
 
 // Render is the on-disk form. Write and the tests both go through it so the

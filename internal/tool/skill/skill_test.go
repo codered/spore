@@ -168,3 +168,56 @@ func TestInstallDescriptionUnderWorkspaceScope(t *testing.T) {
 		t.Fatalf("description says nothing about where skills live: %q", got)
 	}
 }
+
+func TestSkillLoadListsAndReadsSupportingFiles(t *testing.T) {
+	cfg, caches, dir := fixture(t)
+	if err := skillfiles.Write(dir, skillfiles.Skill{
+		Name: "release-checklist", Description: "How to cut a release", Body: "See references/steps.md.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	refs := filepath.Join(dir, "release-checklist", "references")
+	if err := os.MkdirAll(refs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(refs, "steps.md"), []byte("1. tag from master\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	load := find(t, New(cfg, caches), "skill_load")
+
+	out, err := load.Call(ctxFor("/ws"), json.RawMessage(`{"name":"release-checklist"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "references/steps.md") || !strings.Contains(out, `"file"`) {
+		t.Fatalf("want the body followed by the file list and how to read one, got %q", out)
+	}
+
+	out, err = load.Call(ctxFor("/ws"), json.RawMessage(`{"name":"release-checklist","file":"references/steps.md"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "1. tag from master") || strings.Contains(out, "See references/steps.md.") {
+		t.Fatalf("want the file alone, got %q", out)
+	}
+
+	if _, err := load.Call(ctxFor("/ws"), json.RawMessage(`{"name":"release-checklist","file":"../../config.toml"}`)); err == nil {
+		t.Fatal("a file outside the skill must be refused")
+	}
+}
+
+func TestSkillLoadWithoutFilesListsNone(t *testing.T) {
+	cfg, caches, dir := fixture(t)
+	if err := skillfiles.Write(dir, skillfiles.Skill{
+		Name: "release-checklist", Description: "How to cut a release", Body: "Tag from master only.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := find(t, New(cfg, caches), "skill_load").Call(ctxFor("/ws"), json.RawMessage(`{"name":"release-checklist"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "file") {
+		t.Fatalf("a skill with no other files should not mention them, got %q", out)
+	}
+}

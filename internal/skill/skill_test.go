@@ -171,3 +171,112 @@ func TestExists(t *testing.T) {
 		t.Fatal("Exists must not follow a traversal name")
 	}
 }
+
+// Skills written for other agents use YAML block scalars and extra keys. The
+// parser reads that subset rather than rejecting the whole skill over it.
+func TestParseFrontmatterFromOtherAgents(t *testing.T) {
+	cases := []struct {
+		name, head, want string
+	}{
+		{"folded", "description: >\n  Use this when\n  cutting a release.\n", "Use this when cutting a release."},
+		{"folded strip", "description: >-\n  Use this when\n\n  cutting a release.\n", "Use this when cutting a release."},
+		{"literal", "description: |\n  Use this when\n  cutting a release.\n", "Use this when cutting a release."},
+		{"plain continuation", "description: Use this when\n  cutting a release.\n", "Use this when cutting a release."},
+		{"double quoted", "description: \"Use this: when cutting a release.\"\n", "Use this: when cutting a release."},
+		{"single quoted", "description: 'It''s for releases.'\n", "It's for releases."},
+		{"extra keys", "license: MIT\nallowed-tools: Bash, Read\ndescription: How to cut a release\nmetadata:\n  version: 1.2\n  tags: [a, b]\n", "How to cut a release"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s, err := parse("---\nname: release-checklist\n" + c.head + "---\n\nTag from master only.\n")
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if s.Name != "release-checklist" || s.Description != c.want || s.Body != "Tag from master only." {
+				t.Fatalf("got %+v, want description %q", s, c.want)
+			}
+		})
+	}
+}
+
+func TestParseRejectsMalformedFrontmatter(t *testing.T) {
+	for name, head := range map[string]string{
+		"indented first line": "  name: release-checklist\ndescription: x\n",
+		"not key value":       "name: release-checklist\ndescription: x\njust words\n",
+		"missing description": "name: release-checklist\nlicense: MIT\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parse("---\n" + head + "---\n\nbody\n"); err == nil {
+				t.Fatal("want an error")
+			}
+		})
+	}
+}
+
+func skillWithFiles(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	write(t, dir, "release-checklist", good)
+	root := filepath.Join(dir, "release-checklist")
+	for path, body := range map[string]string{
+		"references/steps.md":  "1. tag\n",
+		"template.md":          "# Release\n",
+		".SKILL-123.md":        "orphan",
+		".git/config":          "hidden",
+		"references/.notes.md": "hidden",
+	} {
+		p := filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func TestFilesListsSupportingFiles(t *testing.T) {
+	dir := skillWithFiles(t)
+	files, err := Files(dir, "release-checklist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"references/steps.md", "template.md"}
+	if strings.Join(files, ",") != strings.Join(want, ",") {
+		t.Fatalf("got %v, want %v (no SKILL.md, no dotfiles)", files, want)
+	}
+}
+
+func TestReadFileReadsInsideTheSkill(t *testing.T) {
+	dir := skillWithFiles(t)
+	got, err := ReadFile(dir, "release-checklist", "references/steps.md")
+	if err != nil || got != "1. tag\n" {
+		t.Fatalf("got %q %v", got, err)
+	}
+}
+
+func TestReadFileStaysInsideTheSkill(t *testing.T) {
+	dir := skillWithFiles(t)
+	write(t, dir, "other-skill", strings.ReplaceAll(good, "release-checklist", "other-skill"))
+	outside := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "release-checklist", "link.md")); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{
+		"../other-skill/SKILL.md",
+		"references/../../other-skill/SKILL.md",
+		outside,
+		"link.md",
+		".git/config",
+		"references",
+		"",
+	} {
+		if got, err := ReadFile(dir, "release-checklist", rel); err == nil {
+			t.Errorf("%q: want refusal, got %q", rel, got)
+		}
+	}
+}
