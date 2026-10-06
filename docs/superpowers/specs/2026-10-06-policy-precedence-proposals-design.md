@@ -96,10 +96,9 @@ reader needs to predict a decision.
 ### 4.1 In the ask window
 
 `p` still answers the call, once, with the decision chosen. It no longer
-writes `config.toml`. The guard's `learn` hook is replaced by a `propose`
-hook with the signature `func(ctx context.Context, sessionID string,
-pendingID int64, d Decision, rule, rationale string) error`, which adds one
-refinement row:
+writes `config.toml`. The guard's `learn` hook is removed (`NewGuard` loses
+its last parameter, and `SetLearn` goes); the guard already holds the store
+and adds one refinement row itself:
 
 | column      | value                                                        |
 |-------------|--------------------------------------------------------------|
@@ -107,7 +106,7 @@ refinement row:
 | `session_id`| the session the call belongs to                              |
 | `trigger`   | `approval` (new `refine.TriggerApproval`)                    |
 | `kind`      | `policy.allow` or `policy.deny` (new `refine.KindPolicyAllow`, `refine.KindPolicyDeny`) |
-| `target`    | the config path                                              |
+| `target`    | the rule text (what the refinements view's TARGET column shows) |
 | `before`    | NULL                                                         |
 | `after`     | the rule text                                                |
 | `rationale` | `<tool> on <path> in session <id>`                           |
@@ -198,8 +197,10 @@ This also closes `web_fetch` reading the API: it has no loopback guard and
 
 ### 6.3 Host check
 
-A request whose `Host` is not the configured daemon address, `localhost:<port>`
-or `127.0.0.1:<port>` / `[::1]:<port>` is refused with 403, on every route.
+A request whose `Host` names any host other than `localhost`, `127.0.0.1`,
+`::1` or the configured daemon address's host is refused with 403, on every
+route. The port is not compared: rebinding works through a hostname the
+attacker controls, so the hostname is what must be checked.
 This stops DNS rebinding; the `SameSite=Strict` cookie covers cross-site
 requests.
 
@@ -210,7 +211,8 @@ requests.
   including the event stream. A missing file sends nothing (the daemon then
   answers 401, which the client reports as "daemon token missing").
 - **Web UI:** a new `spore web` command opens `http://<addr>/?token=<token>`
-  in the browser (printing the URL as well). `GET /` with a valid `token`
+  in the browser. It prints the URL only when stdout is a terminal, so a
+  model running it through `shell_exec` is not handed the token. `GET /` with a valid `token`
   query sets `spore_token` (`HttpOnly; SameSite=Strict; Path=/`) and
   redirects to `/`, dropping the token from the address bar. `GET /` without
   a valid cookie serves a short page saying to run `spore web`. `app.js`
@@ -221,8 +223,10 @@ requests.
 ### 6.5 Keeping the model away from the token
 
 `**/daemon.token` is added to the baseline deny's credential lists: the
-`fs_*` `path matches` list and the `shell_exec` `word matches` list. That
-stops `fs_read` and `cat`. It does not stop an interpreter run through
+`fs_*` `path matches` list and the `shell_exec` `word matches` list, and a
+new baseline rule `shell_exec(matches spore web)` keeps the model from
+running the command that opens a signed-in browser. That stops `fs_read`
+and `cat`. It does not stop an interpreter run through
 `shell_exec`; see section 2.
 
 ## 7. Migration
