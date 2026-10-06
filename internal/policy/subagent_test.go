@@ -67,7 +67,7 @@ func pendingIn(t *testing.T, st *store.Store, sessionID string) int64 {
 func TestPendingTreeIncludesDescendants(t *testing.T) {
 	ctx := context.Background()
 	st, root, childA, _ := treeStore(t)
-	g := NewGuard(&recordingRunner{}, askEverything(t, "/tmp/ws"), &scriptedApprover{}, st, nil)
+	g := NewGuard(&recordingRunner{}, askEverything(t, "/tmp/ws"), &scriptedApprover{}, st)
 
 	pendingIn(t, st, root)
 	pendingIn(t, st, childA)
@@ -92,7 +92,7 @@ func TestPendingTreeIncludesDescendants(t *testing.T) {
 func TestParentMayAnswerAChildsApproval(t *testing.T) {
 	ctx := context.Background()
 	st, root, childA, _ := treeStore(t)
-	g := NewGuard(&recordingRunner{}, askEverything(t, "/tmp/ws"), &scriptedApprover{}, st, nil)
+	g := NewGuard(&recordingRunner{}, askEverything(t, "/tmp/ws"), &scriptedApprover{}, st)
 
 	id := pendingIn(t, st, childA)
 	if err := g.Resolve(ctx, root, id, Answer{Allow: true, Scope: ScopeOnce}); err != nil {
@@ -103,7 +103,7 @@ func TestParentMayAnswerAChildsApproval(t *testing.T) {
 func TestChildMayNotAnswerItsOwnApproval(t *testing.T) {
 	ctx := context.Background()
 	st, _, childA, _ := treeStore(t)
-	g := NewGuard(&recordingRunner{}, askEverything(t, "/tmp/ws"), &scriptedApprover{}, st, nil)
+	g := NewGuard(&recordingRunner{}, askEverything(t, "/tmp/ws"), &scriptedApprover{}, st)
 
 	id := pendingIn(t, st, childA)
 	err := g.Resolve(ctx, childA, id, Answer{Allow: true, Scope: ScopeOnce})
@@ -118,7 +118,7 @@ func TestChildMayNotAnswerItsOwnApproval(t *testing.T) {
 func TestSiblingMayNotAnswerAnothersApproval(t *testing.T) {
 	ctx := context.Background()
 	st, _, childA, childB := treeStore(t)
-	g := NewGuard(&recordingRunner{}, askEverything(t, "/tmp/ws"), &scriptedApprover{}, st, nil)
+	g := NewGuard(&recordingRunner{}, askEverything(t, "/tmp/ws"), &scriptedApprover{}, st)
 
 	id := pendingIn(t, st, childA)
 	if err := g.Resolve(ctx, childB, id, Answer{Allow: true, Scope: ScopeOnce}); err == nil {
@@ -149,7 +149,7 @@ func TestRememberedDecisionsAreRootScoped(t *testing.T) {
 func TestRootScopedDecisionWrittenViaResolve(t *testing.T) {
 	ctx := context.Background()
 	st, root, childA, childB := treeStore(t)
-	g := NewGuard(&recordingRunner{}, askEverything(t, "/tmp/ws"), &scriptedApprover{}, st, nil)
+	g := NewGuard(&recordingRunner{}, askEverything(t, "/tmp/ws"), &scriptedApprover{}, st)
 
 	// Child A raises a pending call
 	id := pendingIn(t, st, childA)
@@ -181,7 +181,7 @@ func TestRootScopedDecisionWrittenViaRun(t *testing.T) {
 	ctx := context.Background()
 	st, _, childA, childB := treeStore(t)
 	ap := &scriptedApprover{answer: Answer{Allow: true, Scope: ScopeSession}}
-	g := NewGuard(&recordingRunner{}, askEverything(t, "/tmp/ws"), ap, st, nil)
+	g := NewGuard(&recordingRunner{}, askEverything(t, "/tmp/ws"), ap, st)
 
 	// A child makes a call that needs approval
 	sess := WithSession(ctx, Session{ID: childA, Profile: ProfileLocal, Workspace: "/tmp/ws"})
@@ -214,7 +214,7 @@ func TestRootScopedDecisionWrittenViaRun(t *testing.T) {
 func TestBrokerAnswerChecksRootID(t *testing.T) {
 	ctx := context.Background()
 	st, root, childA, _ := treeStore(t)
-	g := NewGuard(&recordingRunner{}, askEverything(t, "/tmp/ws"), &scriptedApprover{}, st, nil)
+	g := NewGuard(&recordingRunner{}, askEverything(t, "/tmp/ws"), &scriptedApprover{}, st)
 
 	// Child raises a pending call
 	id := pendingIn(t, st, childA)

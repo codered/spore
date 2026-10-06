@@ -40,9 +40,8 @@ func newReloaderFix(t *testing.T) *reloaderFix {
 		t.Fatal(err)
 	}
 	ap := &scriptedApprover{answer: Answer{Allow: true, Scope: ScopePattern}}
-	var rl *Reloader
-	g := NewGuard(&recordingRunner{}, engine(t, pc), ap, st, func(d Decision, rule string) error { return rl.Learn(d, rule) })
-	rl = NewReloader(path, pc, g)
+	g := NewGuard(&recordingRunner{}, engine(t, pc), ap, st)
+	rl := NewReloader(path, pc, g)
 	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal, Workspace: "/ws"})
 	return &reloaderFix{g: g, rl: rl, ap: ap, path: path, ctx: ctx}
 }
@@ -51,8 +50,8 @@ func (f *reloaderFix) evaluate(tool string) Decision {
 	return f.g.Engine().Evaluate(Session{Profile: ProfileLocal}, Call{Tool: tool, Args: []byte(`{}`)}).Decision
 }
 
-// The bug this fixes: "always allow this pattern" wrote the rule to the
-// config file, but the running engine never saw it until a restart.
+// The bug this fixes: "always allow this pattern" proposes the rule to
+// review, and accepting through the reloader makes it live for the next call.
 func TestAPatternAnswerAppliesToTheVeryNextCall(t *testing.T) {
 	f := newReloaderFix(t)
 	call := toolCall("fs_write", "c1", `{"path":"/ws/src/a.go"}`)
@@ -60,9 +59,17 @@ func TestAPatternAnswerAppliesToTheVeryNextCall(t *testing.T) {
 	if f.ap.count() != 1 {
 		t.Fatalf("first call asked %d times, want 1", f.ap.count())
 	}
-	f.g.Run(f.ctx, toolCall("fs_write", "c2", `{"path":"/ws/src/a.go"}`))
+	rows, err := f.g.store.Refinements(context.Background(), store.RefineProposed, 10)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("proposals = %v (err %v), want 1", rows, err)
+	}
+	// Accepting in review calls the reloader, exactly as Refiner.ApplyPolicy does.
+	if err := f.rl.Learn(DecisionAllow, *rows[0].After); err != nil {
+		t.Fatal(err)
+	}
+	f.g.Run(f.ctx, toolCall("fs_write", "c2", `{"path":"/ws/src/b.go"}`))
 	if f.ap.count() != 1 {
-		t.Fatalf("the learned rule did not apply without a restart: asked %d times", f.ap.count())
+		t.Errorf("asked %d times; the accepted rule should have allowed the second call", f.ap.count())
 	}
 
 	learned, err := config.ReadLearned(f.path)

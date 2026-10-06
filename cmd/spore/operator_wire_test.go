@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -19,8 +18,9 @@ import (
 	"github.com/codered/spore/internal/store"
 )
 
-// Through the real wiring: a "pattern" answer makes the next matching call
-// run without asking, and a revoke over HTTP makes it ask again. No restart.
+// Through the real wiring: a "pattern" answer queues a proposal, accepting
+// it through HTTP makes the next matching call run without asking, and a
+// revoke over HTTP makes it ask again. No restart.
 func TestLearnAndRevokeAreLiveThroughTheDaemon(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "spore.db"))
@@ -37,10 +37,6 @@ func TestLearnAndRevokeAreLiveThroughTheDaemon(t *testing.T) {
 	cfg.DataDir = dir
 	cfg.DefaultModel = "anthropic/claude-opus-5"
 	cfg.Providers = map[string]config.ProviderConfig{"anthropic": {Kind: "anthropic", APIKey: "sk-x"}}
-
-	// A learned allow never outranks a hand-written ask, so fs_write must
-	// reach the profile default for a "pattern" answer to apply.
-	cfg.Policy.Ask = slices.DeleteFunc(slices.Clone(cfg.Policy.Ask), func(r string) bool { return r == "fs_write" })
 
 	srv, host, _, err := buildServer(cfg, st)
 	if err != nil {
@@ -86,19 +82,33 @@ func TestLearnAndRevokeAreLiveThroughTheDaemon(t *testing.T) {
 	answer(true, "pattern")
 	<-done
 
+	// The "p" answer queued a proposal. Accept it through HTTP.
+	proposals, _ := st.Refinements(context.Background(), store.RefineProposed, 10)
+	if len(proposals) != 1 {
+		t.Fatalf("proposals = %d, want 1", len(proposals))
+	}
+	body, _ := json.Marshal(map[string]bool{"accept": true})
+	url := ts.URL + "/api/refinements/" + strconv.FormatInt(proposals[0].ID, 10) + "/accept"
+	resp, err := http.Post(url, "application/json", strings.NewReader(string(body)))
+	if err != nil || resp.StatusCode >= 300 {
+		t.Fatalf("accept proposal: %v %v", resp, err)
+	}
+	resp.Body.Close()
+
+	// The accepted rule should now apply.
 	quick, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	if res := g.Run(quick, call("c2")); res.IsError {
-		t.Fatalf("the learned rule did not apply without a restart: %s", res.Content)
+		t.Fatalf("the accepted rule did not apply: %s", res.Content)
 	}
 
 	learned, _ := config.ReadLearned(path)
 	if len(learned.Allow) != 1 {
 		t.Fatalf("learned = %+v", learned)
 	}
-	body, _ := json.Marshal(map[string]string{"decision": "allow", "rule": learned.Allow[0]})
+	body, _ = json.Marshal(map[string]string{"decision": "allow", "rule": learned.Allow[0]})
 	req, _ := http.NewRequest("DELETE", ts.URL+"/api/policy/learned", strings.NewReader(string(body)))
-	resp, err := http.DefaultClient.Do(req)
+	resp, err = http.DefaultClient.Do(req)
 	if err != nil || resp.StatusCode != 200 {
 		t.Fatalf("revoke: %v %v", resp, err)
 	}

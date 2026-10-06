@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -72,7 +73,7 @@ func guardFixture(t *testing.T, pc config.PolicyConfig, ap Approver) (*Guard, *r
 		t.Fatal(err)
 	}
 	inner := &recordingRunner{}
-	g := NewGuard(inner, engine(t, pc), ap, st, nil)
+	g := NewGuard(inner, engine(t, pc), ap, st)
 	return g, inner, st, sid
 }
 
@@ -239,26 +240,80 @@ func TestRememberedSessionAllowStillCannotBeatDeny(t *testing.T) {
 	}
 }
 
-func TestPatternScopeLearnsARule(t *testing.T) {
-	ap := &scriptedApprover{answer: Answer{Allow: true, Scope: ScopePattern}}
-	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
+func proposals(t *testing.T, st *store.Store) []store.Refinement {
+	t.Helper()
+	rows, err := st.Refinements(context.Background(), store.RefineProposed, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { st.Close() })
-	sid, _ := st.CreateSession(context.Background(), "t", "")
-	var learned []string
-	g := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{Ask: []string{"fs_write"}}), ap, st,
-		func(d Decision, rule string) error {
-			learned = append(learned, string(d)+" "+rule)
-			return nil
-		})
-	g.Run(WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal, Workspace: "/ws"}), toolCall("fs_write", "c1", `{"path":"/ws/src/a.go"}`))
-	if len(learned) != 1 {
-		t.Fatalf("learned = %v, want one rule written back", learned)
+	return rows
+}
+
+// "p" answers this call once and queues the rule for review. Nothing is
+// written to the config from the ask window.
+func TestPatternAnswerProposesARule(t *testing.T) {
+	ap := &scriptedApprover{answer: Answer{Allow: true, Scope: ScopePattern}}
+	g, inner, st, sid := guardFixture(t, config.PolicyConfig{Ask: []string{"fs_write"}}, ap)
+	ctx := WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal, Workspace: "/ws"})
+	g.Run(ctx, toolCall("fs_write", "c1", `{"path":"/ws/src/a.go"}`))
+	if len(inner.calls) != 1 {
+		t.Fatalf("the call ran %d times, want once", len(inner.calls))
 	}
-	if !strings.HasPrefix(learned[0], "allow fs_write") {
-		t.Errorf("learned %q, want an allow rule for fs_write", learned[0])
+	rows := proposals(t, st)
+	if len(rows) != 1 {
+		t.Fatalf("proposals = %d, want 1", len(rows))
+	}
+	r := rows[0]
+	if r.Kind != store.KindPolicyAllow || r.Trigger != store.RefineTriggerApproval || r.SessionID != sid {
+		t.Errorf("row = %+v", r)
+	}
+	if r.After == nil || *r.After != "fs_write(path matches /ws/src/**)" || r.Target != *r.After {
+		t.Errorf("rule: target=%q after=%v", r.Target, r.After)
+	}
+	if !strings.HasPrefix(r.RoundID, "approval-") {
+		t.Errorf("round = %q", r.RoundID)
+	}
+	if !strings.Contains(r.Rationale, "/ws/src/a.go") {
+		t.Errorf("rationale %q should name the path", r.Rationale)
+	}
+	// The next call in the pattern still asks: nothing changed policy.
+	g.Run(ctx, toolCall("fs_write", "c2", `{"path":"/ws/src/b.go"}`))
+	if ap.count() != 2 {
+		t.Errorf("asked %d times, want 2", ap.count())
+	}
+	// A second "p" for the same rule adds no row.
+	if n := len(proposals(t, st)); n != 1 {
+		t.Errorf("proposals after a repeat = %d, want 1", n)
+	}
+}
+
+// The offer is withheld when the proposed rule could not decide this call.
+func TestPatternIsNotOfferedWhenItCouldNotApply(t *testing.T) {
+	cases := []struct {
+		name string
+		pc   config.PolicyConfig
+		prof Profile
+	}{
+		{"narrow written ask", config.PolicyConfig{Ask: []string{"fs_write(path matches **/src/**)"}}, ProfileLocal},
+		{"remote profile", config.PolicyConfig{Ask: []string{"fs_write"},
+			Profiles: map[string]config.ProfilePolicy{"remote": {Deny: []string{"memory"}}}}, ProfileRemote},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ap := &scriptedApprover{answer: Answer{Allow: true, Scope: ScopePattern}}
+			g, _, st, sid := guardFixture(t, tc.pc, ap)
+			ctx := WithSession(context.Background(), Session{ID: sid, Profile: tc.prof, Workspace: "/ws"})
+			g.Run(ctx, toolCall("fs_write", "c1", `{"path":"/ws/src/a.go"}`))
+			if ap.count() != 1 {
+				t.Fatalf("asked %d times", ap.count())
+			}
+			if p := ap.asked[0].Pattern; p != "" {
+				t.Errorf("pattern offered: %q", p)
+			}
+			if n := len(proposals(t, st)); n != 0 {
+				t.Errorf("proposals = %d, want 0", n)
+			}
+		})
 	}
 }
 
@@ -445,7 +500,7 @@ func TestNoDuplicateAuditRowsWhenApprovalRacesBetweenGuardAndBroker(t *testing.T
 	// Simulate Guard.Resolve being called out of band to answer the suspension
 	// (e.g., via HTTP API or another client). This will claim the suspension
 	// and write an approval row via ClaimPendingCall (which is atomic).
-	guard := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{}), nil, st, nil)
+	guard := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{}), nil, st)
 	err = guard.Resolve(ctx, sid, pendingID, Answer{Allow: true, Scope: ScopeOnce})
 	if err != nil {
 		t.Fatalf("Guard.Resolve failed: %v", err)
@@ -470,20 +525,7 @@ func TestNoDuplicateAuditRowsWhenApprovalRacesBetweenGuardAndBroker(t *testing.T
 
 func TestResolveDowngradesADegradedPatternAnswer(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	sid, err := st.CreateSession(ctx, "t", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	learned := []string{}
-	g := NewGuard(nil, engine(t, config.PolicyConfig{}), nil, st, func(d Decision, rule string) error {
-		learned = append(learned, string(d)+" "+rule)
-		return nil
-	})
+	g, _, st, sid := guardFixture(t, config.PolicyConfig{}, nil)
 
 	id, err := st.AddPendingCall(ctx, store.PendingCall{
 		SessionID: sid, ToolUseID: "tu1", Tool: "shell_exec",
@@ -498,8 +540,8 @@ func TestResolveDowngradesADegradedPatternAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(learned) != 0 {
-		t.Fatalf("a rule was learned for a call with no pattern: %v", learned)
+	if n := len(proposals(t, st)); n != 0 {
+		t.Fatalf("a rule was proposed for a call with no pattern: %d rows", n)
 	}
 	// The audit row must say what actually happened, not what was asked for.
 	scope, err := lastApprovalScope(t, st, sid)
@@ -508,6 +550,27 @@ func TestResolveDowngradesADegradedPatternAnswer(t *testing.T) {
 	}
 	if scope != string(ScopeOnce) {
 		t.Fatalf("audit scope = %q, want %q", scope, ScopeOnce)
+	}
+}
+
+func TestPatternAnswerLeavesTheConfigUntouched(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	orig := []byte("[policy]\n")
+	if err := os.WriteFile(path, orig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pc := config.PolicyConfig{Default: "ask", ApprovalTimeout: "5m", Workspace: "/ws", Ask: []string{"fs_write"}}
+	ap := &scriptedApprover{answer: Answer{Allow: true, Scope: ScopePattern}}
+	g, _, _, sid := guardFixture(t, pc, ap)
+	_ = NewReloader(path, pc, g) // wired exactly as the daemon wires it
+	g.Run(WithSession(context.Background(), Session{ID: sid, Profile: ProfileLocal, Workspace: "/ws"}),
+		toolCall("fs_write", "c1", `{"path":"/ws/src/a.go"}`))
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, orig) {
+		t.Fatalf("config changed:\n%s", got)
 	}
 }
 
@@ -853,26 +916,13 @@ func TestPatternForNeedsAWorkspace(t *testing.T) {
 	}
 }
 
-// The rule learned on answer is the pattern stored when the call was
+// The rule proposed on answer is the pattern stored when the call was
 // suspended, never one re-derived from the arguments: between the ask and
 // the answer a directory can become a symlink, or the session be re-rooted,
 // and the human approved what they were shown.
-func TestResolveLearnsTheStoredPatternNotARederivedOne(t *testing.T) {
+func TestResolveProposesTheStoredPatternNotARederivedOne(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	sid, err := st.CreateSession(ctx, "t", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var learned []string
-	g := NewGuard(nil, engine(t, config.PolicyConfig{}), nil, st, func(d Decision, rule string) error {
-		learned = append(learned, string(d)+" "+rule)
-		return nil
-	})
+	g, _, st, sid := guardFixture(t, config.PolicyConfig{}, nil)
 	const shown = "fs_write(path matches /ws/notes/**)"
 	// The arguments would now derive something else entirely.
 	id, err := st.AddPendingCall(ctx, store.PendingCall{
@@ -885,8 +935,9 @@ func TestResolveLearnsTheStoredPatternNotARederivedOne(t *testing.T) {
 	if err := g.Resolve(ctx, sid, id, Answer{Allow: true, Scope: ScopePattern}); err != nil {
 		t.Fatal(err)
 	}
-	if len(learned) != 1 || learned[0] != "allow "+shown {
-		t.Fatalf("learned = %v, want exactly the pattern that was shown", learned)
+	rows := proposals(t, st)
+	if len(rows) != 1 || rows[0].After == nil || *rows[0].After != shown {
+		t.Fatalf("proposals = %+v, want exactly the pattern that was shown", rows)
 	}
 }
 

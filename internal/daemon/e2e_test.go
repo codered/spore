@@ -76,7 +76,7 @@ func newFullServerWithPolicy(t *testing.T, policyTOML string, turns ...provider.
 	if err != nil {
 		t.Fatalf("policy.NewEngine: %v", err)
 	}
-	guard := policy.NewGuard(reg, engine, srv.Approver(), st, nil)
+	guard := policy.NewGuard(reg, engine, srv.Approver(), st)
 	srv.Attach(agent.New(st, preg, rt, cfg, guard), guard)
 
 	ts := httptest.NewServer(srv.Handler())
@@ -97,7 +97,7 @@ ask = ["fs_write"]
 
 func attachStream(t *testing.T, ts *httptest.Server, sessionID string) *bufio.Reader {
 	t.Helper()
-	req, _ := http.NewRequest("GET", ts.URL+"/api/sessions/"+sessionID+"/events", nil)
+	req, _ := http.NewRequest("GET", ts.URL+"/api/sessions/"+sessionID+"/events")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("attach: %v", err)

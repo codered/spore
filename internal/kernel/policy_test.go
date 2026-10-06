@@ -84,7 +84,7 @@ func newFixture(t *testing.T) fixture {
 		t.Fatal(err)
 	}
 	tools, ap := &stubTools{}, &allowOnce{}
-	return fixture{guard: policy.NewGuard(tools, eng, ap, st, nil), tools: tools, ap: ap, ws: ws, sid: sid}
+	return fixture{guard: policy.NewGuard(tools, eng, ap, st), tools: tools, ap: ap, ws: ws, sid: sid}
 }
 
 func (f fixture) run(t *testing.T, profile policy.Profile, body string) string {

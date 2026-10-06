@@ -33,7 +33,7 @@ func TestSuspensionSurvivesARestart(t *testing.T) {
 	g1 := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{
 		Ask:             []string{"fs_write"},
 		ApprovalTimeout: "50ms",
-	}), ap, st1, nil)
+	}), ap, st1)
 	res := g1.Run(WithSession(ctx, Session{ID: sid, Profile: ProfileLocal, Workspace: "/ws"}), toolCall("fs_write", "c1", `{"path":"/ws/a.go"}`))
 	if !res.IsError {
 		t.Fatal("the unanswered call was allowed")
@@ -48,7 +48,7 @@ func TestSuspensionSurvivesARestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st2.Close()
-	g2 := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{Ask: []string{"fs_write"}}), nil, st2, nil)
+	g2 := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{Ask: []string{"fs_write"}}), nil, st2)
 
 	// The timed-out call is resolved, not dangling: the restarted process
 	// must not re-ask about a request that already expired.
@@ -78,7 +78,7 @@ func TestSuspensionSurvivesARestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st3.Close()
-	g3 := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{Ask: []string{"fs_write"}}), nil, st3, nil)
+	g3 := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{Ask: []string{"fs_write"}}), nil, st3)
 
 	pending, err = g3.Pending(ctx, sid)
 	if err != nil {
@@ -121,7 +121,7 @@ func TestResolveAdmitsExactlyOneConcurrentAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{Ask: []string{"fs_write"}}), nil, st, nil)
+	g := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{Ask: []string{"fs_write"}}), nil, st)
 
 	// Several clients answer the same suspension at once, half allowing and
 	// half denying. Exactly one may win: two recorded answers would leave the
@@ -163,7 +163,7 @@ func TestResolveRejectsAForeignPendingCall(t *testing.T) {
 	b, _ := st.CreateSession(ctx, "b", "")
 	id, _ := st.AddPendingCall(ctx, store.PendingCall{SessionID: a, ToolUseID: "c", Tool: "fs_write", ArgsJSON: []byte(`{}`)})
 
-	g := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{}), nil, st, nil)
+	g := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{}), nil, st)
 	err = g.Resolve(ctx, b, id, Answer{Allow: true, Scope: ScopeOnce})
 	if err == nil || !strings.Contains(err.Error(), "session") {
 		t.Errorf("Resolve across sessions = %v, want a session-mismatch error", err)
