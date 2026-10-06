@@ -48,14 +48,16 @@ func (loadTool) Name() string { return "skill_load" }
 
 func (loadTool) Description() string {
 	return "Read one skill in full. The skills index in your context lists them; load one before " +
-		"doing the work it covers."
+		"doing the work it covers. A skill that ships other files lists them after its body; pass " +
+		"one as file to read it."
 }
 
 func (loadTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
 	  "type": "object",
 	  "properties": {
-	    "name": {"type": "string", "description": "The skill's name, as listed in the skills index."}
+	    "name": {"type": "string", "description": "The skill's name, as listed in the skills index."},
+	    "file": {"type": "string", "description": "Optional: one of the skill's other files, as its body's file list names it. Omit to read the skill itself."}
 	  },
 	  "required": ["name"]
 	}`)
@@ -67,6 +69,7 @@ func (loadTool) ReadOnly() bool { return true }
 func (t loadTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var a struct {
 		Name string `json:"name"`
+		File string `json:"file"`
 	}
 	if err := decode(args, &a); err != nil {
 		return "", err
@@ -78,11 +81,30 @@ func (t loadTool) Call(ctx context.Context, args json.RawMessage) (string, error
 	if err := skillfiles.ValidName(a.Name); err != nil {
 		return "", err
 	}
+	if a.File != "" {
+		body, err := skillfiles.ReadFile(dir, a.Name, a.File)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("# %s/%s\n\n%s", a.Name, a.File, body), nil
+	}
 	s, err := skillfiles.Read(dir, a.Name)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("# %s\n\n%s\n", s.Name, s.Body), nil
+	out := fmt.Sprintf("# %s\n\n%s\n", s.Name, s.Body)
+	// The skills directory is outside the workspace, so these files are
+	// reachable only through this tool; a body that cites references/x.md
+	// is useless unless the model is told it can read it here.
+	files, err := skillfiles.Files(dir, a.Name)
+	if err != nil || len(files) == 0 {
+		return out, nil //nolint:nilerr // the body loaded; a listing failure costs only the list
+	}
+	out += fmt.Sprintf("\nThis skill's other files. Read one with skill_load {\"name\": %q, \"file\": \"<path>\"}:\n", a.Name)
+	for _, f := range files {
+		out += "- " + f + "\n"
+	}
+	return out, nil
 }
 
 type installTool struct {
