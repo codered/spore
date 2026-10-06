@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/codered/spore/internal/store"
 )
@@ -22,6 +23,9 @@ func (r *Refiner) Accept(ctx context.Context, id int64) (store.Refinement, error
 	}
 	if row.Status != store.RefineProposed {
 		return row, fmt.Errorf("refinement %d is %s, not proposed", id, row.Status)
+	}
+	if strings.HasPrefix(row.Kind, "policy.") {
+		return r.acceptPolicy(ctx, row)
 	}
 	path, err := r.pathFor(row)
 	if err != nil {
@@ -49,6 +53,40 @@ func (r *Refiner) Accept(ctx context.Context, id int64) (store.Refinement, error
 		_, _ = r.Store.SetRefinementStatus(ctx, id, store.RefineApplied, store.RefineFailed)
 		row.Status = store.RefineFailed
 		return row, err
+	}
+	row.Status = store.RefineApplied
+	return row, nil
+}
+
+// acceptPolicy applies a policy proposal. The row is claimed first, so two
+// accepts racing cannot both write the rule. There is no before-content to
+// compare: config.LearnRule deduplicates, so a rule already in the block is
+// applied without a second line.
+func (r *Refiner) acceptPolicy(ctx context.Context, row store.Refinement) (store.Refinement, error) {
+	moved, err := r.Store.SetRefinementStatus(ctx, row.ID, store.RefineProposed, store.RefineApplied)
+	if err != nil {
+		return row, err
+	}
+	if !moved {
+		return row, fmt.Errorf("refinement %d changed while it was being accepted", row.ID)
+	}
+	decision := "allow"
+	if row.Kind == KindPolicyDeny {
+		decision = "deny"
+	}
+	var werr error
+	switch {
+	case r.ApplyPolicy == nil:
+		werr = errors.New("policy proposals cannot be applied: no policy writer is attached")
+	case row.After == nil:
+		werr = fmt.Errorf("refinement %d has no rule", row.ID)
+	default:
+		werr = r.ApplyPolicy(decision, *row.After)
+	}
+	if werr != nil {
+		_, _ = r.Store.SetRefinementStatus(ctx, row.ID, store.RefineApplied, store.RefineFailed)
+		row.Status = store.RefineFailed
+		return row, werr
 	}
 	row.Status = store.RefineApplied
 	return row, nil
@@ -105,6 +143,11 @@ func (r *Refiner) Rollback(ctx context.Context, sessionID, roundID string) (Roll
 	for i := len(rows) - 1; i >= 0; i-- {
 		row := rows[i]
 		if row.Status != store.RefineApplied {
+			continue
+		}
+		// A policy rule is removed by revoking it in the policy view, not by
+		// rolling back the approval that proposed it.
+		if strings.HasPrefix(row.Kind, "policy.") {
 			continue
 		}
 		path, err := r.pathFor(row)

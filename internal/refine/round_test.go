@@ -559,3 +559,121 @@ func TestRollbackHandlesUnreadableTargets(t *testing.T) {
 }
 
 func strp(s string) *string { return &s }
+
+func addPolicyRow(t *testing.T, f *fix, kind, rule string) int64 {
+	t.Helper()
+	after := rule
+	id, err := f.st.AddRefinement(context.Background(), store.Refinement{
+		RoundID: "approval-1", SessionID: f.sid, Trigger: store.RefineTriggerApproval,
+		Kind: kind, Target: rule, After: &after, Rationale: "fs_write on /ws/a/x", Status: store.RefineProposed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func TestAcceptingAPolicyRowAppliesTheRuleOnce(t *testing.T) {
+	f := newFix(t, store.SourceChat)
+	var applied []string
+	f.r.ApplyPolicy = func(d, rule string) error {
+		applied = append(applied, d+" "+rule)
+		return nil
+	}
+	id := addPolicyRow(t, f, store.KindPolicyAllow, "fs_write(path matches /ws/a/**)")
+	row, err := f.r.Accept(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != store.RefineApplied {
+		t.Errorf("status = %s, want applied", row.Status)
+	}
+	if len(applied) != 1 || applied[0] != "allow fs_write(path matches /ws/a/**)" {
+		t.Fatalf("applied = %v", applied)
+	}
+	if _, err := f.r.Accept(context.Background(), id); err == nil {
+		t.Error("a second accept succeeded; want an error")
+	}
+	if len(applied) != 1 {
+		t.Errorf("the rule was applied %d times, want once", len(applied))
+	}
+}
+
+func TestAcceptingAPolicyDenyPassesDeny(t *testing.T) {
+	f := newFix(t, store.SourceChat)
+	var got string
+	f.r.ApplyPolicy = func(d, rule string) error { got = d; return nil }
+	id := addPolicyRow(t, f, store.KindPolicyDeny, "fs_write(path matches /ws/a/**)")
+	if _, err := f.r.Accept(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if got != "deny" {
+		t.Errorf("decision = %q, want deny", got)
+	}
+}
+
+func TestAcceptingAPolicyRowWithoutApplyPolicyFails(t *testing.T) {
+	f := newFix(t, store.SourceChat)
+	id := addPolicyRow(t, f, store.KindPolicyAllow, "fs_write(path matches /ws/a/**)")
+	if _, err := f.r.Accept(context.Background(), id); err == nil {
+		t.Fatal("accept with no ApplyPolicy succeeded")
+	}
+	row, _, _ := f.st.Refinement(context.Background(), id)
+	if row.Status != store.RefineFailed {
+		t.Errorf("status = %s, want failed", row.Status)
+	}
+}
+
+func TestAFailedPolicyWriteMarksTheRowFailed(t *testing.T) {
+	f := newFix(t, store.SourceChat)
+	f.r.ApplyPolicy = func(string, string) error { return errors.New("disk full") }
+	id := addPolicyRow(t, f, store.KindPolicyAllow, "fs_write(path matches /ws/a/**)")
+	if _, err := f.r.Accept(context.Background(), id); err == nil {
+		t.Fatal("want the write error")
+	}
+	row, _, _ := f.st.Refinement(context.Background(), id)
+	if row.Status != store.RefineFailed {
+		t.Errorf("status = %s, want failed", row.Status)
+	}
+}
+
+func TestRollbackAndLatestRoundSkipPolicyRows(t *testing.T) {
+	f := newFix(t, store.SourceChat)
+	f.r.ApplyPolicy = func(string, string) error { return nil }
+	id := addPolicyRow(t, f, store.KindPolicyAllow, "fs_write(path matches /ws/a/**)")
+	if _, err := f.r.Accept(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := f.st.LatestAppliedRound(context.Background(), f.sid); err != nil || ok {
+		t.Fatalf("LatestAppliedRound found a round (ok=%v err=%v); policy rows must not count", ok, err)
+	}
+	res, err := f.r.Rollback(context.Background(), f.sid, "approval-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.RolledBack)+len(res.Stale)+len(res.Failed) != 0 {
+		t.Errorf("rollback touched a policy row: %+v", res)
+	}
+	row, _, _ := f.st.Refinement(context.Background(), id)
+	if row.Status != store.RefineApplied {
+		t.Errorf("status = %s, want applied", row.Status)
+	}
+}
+
+// A refinement round is driven by the model. It must not be able to mint
+// a policy proposal: only the guard writes those.
+func TestARoundCannotProposeAPolicyEdit(t *testing.T) {
+	f := newFix(t, store.SourceChat,
+		`{"edits":[{"kind":"policy.allow","name":"x","body":"fs_write","rationale":"r"}]}`)
+	f.say(t, "user", text("hello"))
+	_, _ = f.r.Round(context.Background(), f.sid, TriggerManual, "", 0)
+	rows, err := f.st.Refinements(context.Background(), "", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if strings.HasPrefix(r.Kind, "policy.") {
+			t.Fatalf("a round wrote a policy row: %+v", r)
+		}
+	}
+}

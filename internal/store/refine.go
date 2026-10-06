@@ -19,6 +19,15 @@ const (
 	RefineFailed     = "failed"
 )
 
+// Policy proposals share the refinement ledger. The guard writes them when
+// a human answers "propose this pattern"; Accept applies them through the
+// policy reloader. Target and After both hold the rule text.
+const (
+	KindPolicyAllow       = "policy.allow"
+	KindPolicyDeny        = "policy.deny"
+	RefineTriggerApproval = "approval"
+)
+
 // Refinement is one ledger row: an edit a refinement round made or proposed.
 // Before and After are whole-file contents; nil means "no file".
 type Refinement struct {
@@ -127,12 +136,24 @@ func (s *Store) queryRefinements(ctx context.Context, q string, args ...any) ([]
 	return out, rows.Err()
 }
 
+// ProposedPolicyExists reports whether a proposal for this exact rule is
+// already waiting, so a second "propose" answer adds nothing.
+func (s *Store) ProposedPolicyExists(ctx context.Context, kind, rule string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM refinements WHERE kind = ? AND after = ? AND status = ?`,
+		kind, rule, RefineProposed).Scan(&n)
+	return n > 0, err
+}
+
 // LatestAppliedRound is the most recent round in the session that still has
-// an applied row: what "/refine rollback" undoes.
+// an applied row: what "/refine rollback" undoes. Policy rows are not
+// rounds anyone rolls back -- the policy view revokes a rule -- so they are
+// skipped.
 func (s *Store) LatestAppliedRound(ctx context.Context, sessionID string) (string, bool, error) {
 	var round string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT round_id FROM refinements WHERE session_id = ? AND status = ? ORDER BY id DESC LIMIT 1`,
+		`SELECT round_id FROM refinements WHERE session_id = ? AND status = ? AND kind NOT LIKE 'policy.%' ORDER BY id DESC LIMIT 1`,
 		sessionID, RefineApplied).Scan(&round)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
