@@ -136,6 +136,8 @@ func surface(ch *child) interp.Exports {
 		"Call": reflect.ValueOf(func(tool string, args map[string]any) (string, error) {
 			return ch.call(tool, args)
 		}),
+		"JSONGet":   reflect.ValueOf(jsonGet),
+		"JSONShape": reflect.ValueOf(jsonShape),
 		"Help": reflect.ValueOf(func(tool string) (string, error) {
 			if d, ok := ch.docs[tool]; ok {
 				return d, nil

@@ -31,6 +31,8 @@ var Helpers = []Helper{
 	{"func Grep(pattern, glob string) (string, error)", `Search file contents by RE2 regexp; glob "" searches every file.`, "fs_grep"},
 	{"func Shell(command string) (string, error)", "Run a bash command in the workspace.", "shell_exec"},
 	{"func Recall(query string) (string, error)", "Search past conversations.", "recall_search"},
+	{"func JSONShape(body string) string", "Outline a JSON document: keys in order, types, sample values, array lengths. Print it before reading an unfamiliar API.", ""},
+	{"func JSONGet(body, path string) (any, error)", `The value at a path like "a.b.0.c" (-1 is the last element). A wrong path errors with the keys that exist. Numbers are float64, objects map[string]any, arrays []any.`, ""},
 	{"func Call(tool string, args map[string]any) (string, error)", "Call any tool below by name with its JSON arguments.", ""},
 	{"func Help(tool string) (string, error)", "A tool's full description and JSON schema, with what each argument means.", ""},
 }
@@ -62,9 +64,9 @@ func Reference(specs []provider.ToolSpec) string {
 
 	b.WriteString("The interpreter is Go 1.21: the clear builtin is undefined, so write it " +
 		"out, and range over an integer (for i := range n) is not supported; use a " +
-		"counted loop. When you do not know a JSON " +
-		"API's exact shape, decode into map[string]any, or print a slice of the body " +
-		"first, instead of guessing struct types.\n\n")
+		"counted loop. Do not guess the struct shape of an unfamiliar JSON API: a " +
+		"wrong guess decodes to empty values without an error. Print " +
+		"spore.JSONShape(body) first, or read values with spore.JSONGet.\n\n")
 	b.WriteString("### package spore\n\n")
 	for _, h := range Helpers {
 		fmt.Fprintf(&b, "- `%s` — %s\n", h.Signature, h.Doc)
