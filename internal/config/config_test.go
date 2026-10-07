@@ -825,3 +825,25 @@ func TestRefineDefaultsAndValidation(t *testing.T) {
 		t.Error("negative max_edits must fail validation with error containing 'refine'")
 	}
 }
+
+func TestMaxOutputTokensDefaultsAndOverrides(t *testing.T) {
+	if got := loadTestConfig(t, "").Context.MaxOutputTokens; got != 4096 {
+		t.Errorf("default MaxOutputTokens = %d, want 4096", got)
+	}
+	got := loadTestConfig(t, "[context]\nmax_output_tokens = 16384\n").Context.MaxOutputTokens
+	if got != 16384 {
+		t.Errorf("MaxOutputTokens = %d, want 16384", got)
+	}
+}
+
+func TestMaxOutputTokensMustFitTheContextWindow(t *testing.T) {
+	for _, tc := range []struct{ body, want string }{
+		{"[context]\nmax_output_tokens = -1\n", "context.max_output_tokens must not be negative"},
+		{"[context]\nmax_tokens = 8000\nmax_output_tokens = 8000\n", "context.max_output_tokens (8000) must be less than context.max_tokens (8000)"},
+	} {
+		_, err := loadTestConfigErr(t, tc.body)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: err = %v, want it to contain %q", tc.body, err, tc.want)
+		}
+	}
+}

@@ -335,6 +335,7 @@ func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Eve
 		var calls []provider.Block
 		invalid := map[int]string{} // call index → why its arguments were refused
 		var usage provider.Usage
+		var hitMaxTokens bool
 		var streamErr error
 	stream:
 		for ev := range ch {
@@ -356,6 +357,7 @@ func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Eve
 				if ev.Usage != nil {
 					usage = *ev.Usage
 				}
+				hitMaxTokens = ev.HitMaxTokens
 			case provider.EventError:
 				streamErr = ev.Err
 				break stream
@@ -402,6 +404,12 @@ func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Eve
 			return err
 		}
 
+		if len(calls) == 0 && text == "" && hitMaxTokens {
+			// A reasoning model can spend the whole budget thinking. Ending
+			// the turn as answered would show the user a blank reply.
+			return fmt.Errorf("the model used all %d output tokens without replying; raise context.max_output_tokens in the config",
+				req.MaxTokens)
+		}
 		if len(calls) == 0 {
 			out <- Event{Type: EvTurnDone, Model: ref, Usage: usage, Cost: cost}
 			return nil

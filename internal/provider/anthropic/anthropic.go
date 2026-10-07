@@ -260,6 +260,7 @@ func (c *Client) parse(rc io.ReadCloser, ch chan<- provider.Event) {
 	}
 	tools := map[int]*pending{}
 	var usage provider.Usage
+	var hitMaxTokens bool
 	var sawStop bool
 
 	sc := bufio.NewScanner(rc)
@@ -285,6 +286,7 @@ func (c *Client) parse(rc io.ReadCloser, ch chan<- provider.Event) {
 				Type        string `json:"type"`
 				Text        string `json:"text"`
 				PartialJSON string `json:"partial_json"`
+				StopReason  string `json:"stop_reason"`
 			} `json:"delta"`
 			Usage struct {
 				InputTokens  int `json:"input_tokens"`
@@ -333,6 +335,9 @@ func (c *Client) parse(rc io.ReadCloser, ch chan<- provider.Event) {
 			if ev.Usage.OutputTokens > 0 {
 				usage.OutputTokens = ev.Usage.OutputTokens
 			}
+			if ev.Delta.StopReason == "max_tokens" {
+				hitMaxTokens = true
+			}
 		case "message_stop":
 			sawStop = true
 		case "error":
@@ -349,5 +354,5 @@ func (c *Client) parse(rc io.ReadCloser, ch chan<- provider.Event) {
 		return
 	}
 	u := usage
-	ch <- provider.Event{Type: provider.EventDone, Usage: &u}
+	ch <- provider.Event{Type: provider.EventDone, Usage: &u, HitMaxTokens: hitMaxTokens}
 }

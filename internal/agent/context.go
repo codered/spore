@@ -286,7 +286,7 @@ func Assemble(snap Snapshot, cfg config.ContextConfig) provider.Request {
 	copy(msgs, snap.Messages)
 	msgs = markTailAndAppendEnvironment(msgs, snap.Environment)
 
-	return provider.Request{System: sys, Messages: msgs, MaxTokens: 4096}
+	return provider.Request{System: sys, Messages: msgs, MaxTokens: cfg.MaxOutputTokens}
 }
 
 // markTailAndAppendEnvironment puts the moving breakpoint on the last block of

@@ -1047,6 +1047,10 @@ base_url = "http://localhost:11434/v1"
 when  = "compaction|title|classify|refinement"
 model = "ollama/qwen3:8b"
 
+[context]
+max_tokens        = 180000  # context window; compaction runs at compact_at of it
+max_output_tokens = 4096    # one reply, hidden reasoning included; raise for reasoning models
+
 [web]
 brave_api_key = "${BRAVE_API_KEY}"   # enables web_search
 
