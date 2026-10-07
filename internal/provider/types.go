@@ -86,6 +86,9 @@ type Event struct {
 	Block *Block
 	Usage *Usage
 	Err   error
+	// HitMaxTokens, on EventDone, reports that the reply stopped because it
+	// reached Request.MaxTokens rather than because the model finished.
+	HitMaxTokens bool
 }
 
 // Provider streams one assistant response. Implementations must close the

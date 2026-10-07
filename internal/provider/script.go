@@ -15,6 +15,8 @@ type ScriptTurn struct {
 	// Hold, when set, keeps the stream open after Text until Hold is closed
 	// or the request's context ends. It is how a test stops a turn mid-reply.
 	Hold <-chan struct{}
+	// HitMaxTokens is reported on the turn's EventDone.
+	HitMaxTokens bool
 }
 
 // Script is a Provider that replays canned turns in order. It is the test
@@ -72,7 +74,7 @@ func (s *Script) Stream(ctx context.Context, req Request) (<-chan Event, error) 
 			ch <- Event{Type: EventToolCall, Block: &b}
 		}
 		u := turn.Usage
-		ch <- Event{Type: EventDone, Usage: &u}
+		ch <- Event{Type: EventDone, Usage: &u, HitMaxTokens: turn.HitMaxTokens}
 	}()
 	return ch, nil
 }

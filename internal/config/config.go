@@ -163,9 +163,13 @@ type Route struct {
 }
 
 type ContextConfig struct {
-	MaxTokens  int     `toml:"max_tokens"`
-	CompactAt  float64 `toml:"compact_at"`
-	KeepRecent int     `toml:"keep_recent"`
+	MaxTokens int     `toml:"max_tokens"`
+	CompactAt float64 `toml:"compact_at"`
+	// MaxOutputTokens caps one model reply: its text, its tool calls and any
+	// hidden reasoning the model does first. A reasoning model can spend the
+	// whole cap thinking and reply with nothing, so raise it for those.
+	MaxOutputTokens int `toml:"max_output_tokens"`
+	KeepRecent      int `toml:"keep_recent"`
 	// FactBudget caps the estimated tokens of inlined fact bodies. Facts past
 	// the budget still appear, as one name-and-description line each, so the
 	// model always knows they exist.
@@ -518,7 +522,7 @@ func Default() *Config {
 			"Never name or speculate about the underlying model or provider that powers you.",
 		DataDir:   filepath.Join(home, ".spore"),
 		Providers: map[string]ProviderConfig{},
-		Context:   ContextConfig{MaxTokens: 180_000, CompactAt: 0.75, KeepRecent: 12, FactBudget: 2000, SkillBudget: 500},
+		Context:   ContextConfig{MaxTokens: 180_000, MaxOutputTokens: 4096, CompactAt: 0.75, KeepRecent: 12, FactBudget: 2000, SkillBudget: 500},
 		Skills:    SkillsConfig{Scope: SkillsGlobal},
 		Trace:     TraceConfig{Endpoint: "http://localhost:6006/v1/traces", SampleRate: 1.0},
 		Recall:    RecallConfig{Backend: RecallSQLiteFTS},
@@ -685,6 +689,9 @@ func Load(path string) (*Config, error) {
 	if cfg.Context.MaxTokens == 0 {
 		cfg.Context.MaxTokens = Default().Context.MaxTokens
 	}
+	if cfg.Context.MaxOutputTokens == 0 {
+		cfg.Context.MaxOutputTokens = Default().Context.MaxOutputTokens
+	}
 	if cfg.Context.CompactAt == 0 {
 		cfg.Context.CompactAt = Default().Context.CompactAt
 	}
@@ -824,6 +831,13 @@ func (c *Config) Validate() error {
 	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt >= 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)
+	}
+	if c.Context.MaxOutputTokens < 0 {
+		return fmt.Errorf("context.max_output_tokens must not be negative")
+	}
+	if c.Context.MaxOutputTokens >= c.Context.MaxTokens {
+		return fmt.Errorf("context.max_output_tokens (%d) must be less than context.max_tokens (%d): the reply has to fit in the context window",
+			c.Context.MaxOutputTokens, c.Context.MaxTokens)
 	}
 	if c.Context.FactBudget < 0 {
 		return fmt.Errorf("context.fact_budget must not be negative")

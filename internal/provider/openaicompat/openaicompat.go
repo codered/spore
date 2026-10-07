@@ -141,7 +141,7 @@ func parse(rc io.ReadCloser, ch chan<- provider.Event) {
 	}
 	calls := map[int]*pending{}
 	var usage provider.Usage
-	var sawDone bool
+	var sawDone, hitMaxTokens bool
 
 	sc := bufio.NewScanner(rc)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -168,6 +168,7 @@ func parse(rc io.ReadCloser, ch chan<- provider.Event) {
 						} `json:"function"`
 					} `json:"tool_calls"`
 				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
 			Usage *struct {
 				PromptTokens     int `json:"prompt_tokens"`
@@ -191,6 +192,9 @@ func parse(rc io.ReadCloser, ch chan<- provider.Event) {
 			usage.OutputTokens = chunk.Usage.CompletionTokens
 		}
 		for _, choice := range chunk.Choices {
+			if choice.FinishReason == "length" {
+				hitMaxTokens = true
+			}
 			if choice.Delta.Content != "" {
 				ch <- provider.Event{Type: provider.EventTextDelta, Text: choice.Delta.Content}
 			}
@@ -237,5 +241,5 @@ func parse(rc io.ReadCloser, ch chan<- provider.Event) {
 		}}
 	}
 	u := usage
-	ch <- provider.Event{Type: provider.EventDone, Usage: &u}
+	ch <- provider.Event{Type: provider.EventDone, Usage: &u, HitMaxTokens: hitMaxTokens}
 }
