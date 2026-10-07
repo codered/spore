@@ -81,14 +81,20 @@ func TestReferenceIsDeterministic(t *testing.T) {
 	}
 }
 
-// yaegi v0.16.1 lacks the min, max and clear builtins and crashes on range
-// over an int. A model writing modern Go reaches for all four, and each
-// costs a round trip, so the prompt must say so up front.
+// yaegi v0.16.1 lacks the clear builtin and crashes on range over an int.
+// A model writing modern Go reaches for both, and each costs a round trip,
+// so the prompt must say so up front. min and max are supplied by the
+// kernel, so the prompt must not call them undefined.
 func TestReferenceWarnsAboutMissingLanguageFeatures(t *testing.T) {
 	got := Reference(referenceSpecs())
-	for _, want := range []string{"min", "max", "clear", "range over an integer", "map[string]any"} {
+	for _, want := range []string{"clear", "range over an integer", "map[string]any"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("reference does not mention %q", want)
+		}
+	}
+	for _, bad := range []string{"min, max", "min and max"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("reference still warns about %q, which the kernel now supplies", bad)
 		}
 	}
 }

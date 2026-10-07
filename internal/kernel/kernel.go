@@ -83,9 +83,10 @@ const crashReportBytes = 2048
 // errors, panics, crashes or runs out of time returns an error together with
 // whatever output it produced.
 func Run(ctx context.Context, src string, r Runner, opt Options) (Result, error) {
+	written := src
 	src, err := prepare(src)
 	if err != nil {
-		return Result{}, err
+		return Result{}, errors.New(explainError(written, err.Error()))
 	}
 	runID, err := newRunID()
 	if err != nil {
@@ -178,7 +179,7 @@ func Run(ctx context.Context, src string, r Runner, opt Options) (Result, error)
 				truncated = truncated || m.Truncated
 				mu.Unlock()
 				if m.Error != "" {
-					return result(), errors.New(m.Error)
+					return result(), errors.New(explainError(written, m.Error))
 				}
 				return result(), nil
 			}
@@ -225,7 +226,8 @@ func stoppedErr(cause error, opt Options) error {
 }
 
 // prepare refuses what yaegi would either reject with a worse message or
-// run in a way the model did not intend, and adds a forgotten spore import.
+// run in a way the model did not intend, adds a forgotten spore import, and
+// supplies the min and max builtins the interpreter lacks.
 func prepare(src string) (string, error) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "main.go", src, 0)
@@ -250,7 +252,7 @@ func prepare(src string) (string, error) {
 		at := fset.Position(f.Name.End()).Offset
 		src = src[:at] + `; import "spore"` + src[at:]
 	}
-	return src, nil
+	return src + shims(f), nil
 }
 
 // needsSporeImport reports whether the program uses spore.X with no import

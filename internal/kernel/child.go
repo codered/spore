@@ -71,7 +71,12 @@ func ChildMain() int {
 	if err := i.Use(surface(ch)); err != nil {
 		done.Error = "kernel: " + err.Error()
 	} else if _, err := i.Eval(run.Code); err != nil {
-		done.Error = rewriteImportErrors(err.Error())
+		var p interp.Panic
+		if errors.As(err, &p) {
+			done.Error = explainPanic(fmt.Sprint(p.Value))
+		} else {
+			done.Error = rewriteImportErrors(err.Error())
+		}
 	}
 	done.Truncated = w.truncated()
 	if err := c.write(done); err != nil {
