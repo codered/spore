@@ -6,6 +6,7 @@ package fs
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -97,14 +98,15 @@ const readNoteReserve = 160
 
 func (readTool) Name() string { return "fs_read" }
 func (readTool) Description() string {
-	return "Read a text file. Returns numbered lines. Use offset and limit to page through a large file."
+	return "Read a text file. Returns numbered lines. Use offset and limit to page through a large file. raw returns the exact contents instead, for a program to parse."
 }
 func (readTool) ReadOnly() bool { return true }
 func (readTool) Schema() json.RawMessage {
 	return schema(`{"type":"object","properties":{
 "path":{"type":"string","description":"File path, absolute or relative to the workspace."},
 "offset":{"type":"integer","description":"1-based first line to return."},
-"limit":{"type":"integer","description":"Maximum number of lines to return."}},
+"limit":{"type":"integer","description":"Maximum number of lines to return."},
+"raw":{"type":"boolean","description":"Return the file's exact contents: no line numbers, no paging. Fails if the file is over the output budget."}},
 "required":["path"]}`)
 }
 
@@ -113,6 +115,7 @@ func (t readTool) Call(ctx context.Context, args json.RawMessage) (string, error
 		Path   string `json:"path"`
 		Offset int    `json:"offset"`
 		Limit  int    `json:"limit"`
+		Raw    bool   `json:"raw"`
 	}
 	if err := decode(args, &a); err != nil {
 		return "", err
@@ -124,6 +127,14 @@ func (t readTool) Call(ctx context.Context, args json.RawMessage) (string, error
 	raw, err := os.ReadFile(p) //nolint:gosec // G304: p is from the file system tool and validated by policy
 	if err != nil {
 		return "", err
+	}
+	if a.Raw {
+		// A program parses this, so it gets every byte or an error: a cut
+		// or annotated file would parse wrong without anything failing.
+		if limit := tool.OutputLimit(ctx, t.maxBytes); len(raw) > limit {
+			return "", fmt.Errorf("%s is %d bytes, over the %d-byte limit for a raw read; read it in parts with offset and limit instead", a.Path, len(raw), limit)
+		}
+		return string(raw), nil
 	}
 	// A genuinely empty file (no content at all).
 	if len(raw) == 0 {
@@ -409,6 +420,9 @@ func (grepTool) Schema() json.RawMessage {
 
 const maxGrepHits = 200
 
+// binarySniff is how much of a file grep reads to decide it is binary.
+const binarySniff = 8000
+
 func (t grepTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var a struct{ Pattern, Path, Glob string }
 	if err := decode(args, &a); err != nil {
@@ -443,7 +457,14 @@ func (t grepTool) Call(ctx context.Context, args json.RawMessage) (string, error
 			return nil
 		}
 		defer func() { _ = f.Close() }()
-		sc := bufio.NewScanner(f)
+		// A NUL in the first block marks a binary file, as git and ripgrep
+		// judge it. Matches inside one are noise, and its long "lines" fail
+		// the scanner.
+		br := bufio.NewReaderSize(f, binarySniff)
+		if head, _ := br.Peek(binarySniff); bytes.IndexByte(head, 0) >= 0 {
+			return nil
+		}
+		sc := bufio.NewScanner(br)
 		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for line := 1; sc.Scan(); line++ {
 			if len(hits) >= maxGrepHits {

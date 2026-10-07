@@ -71,7 +71,12 @@ func ChildMain() int {
 	if err := i.Use(surface(ch)); err != nil {
 		done.Error = "kernel: " + err.Error()
 	} else if _, err := i.Eval(run.Code); err != nil {
-		done.Error = rewriteImportErrors(err.Error())
+		var p interp.Panic
+		if errors.As(err, &p) {
+			done.Error = explainPanic(fmt.Sprint(p.Value))
+		} else {
+			done.Error = rewriteImportErrors(err.Error())
+		}
 	}
 	done.Truncated = w.truncated()
 	if err := c.write(done); err != nil {
@@ -103,7 +108,7 @@ func surface(ch *child) interp.Exports {
 			return ch.call("web_search", args)
 		}),
 		"ReadFile": reflect.ValueOf(func(p string) (string, error) {
-			return ch.call("fs_read", map[string]any{"path": p})
+			return ch.call("fs_read", map[string]any{"path": p, "raw": true})
 		}),
 		"WriteFile": reflect.ValueOf(func(p, content string) error {
 			_, err := ch.call("fs_write", map[string]any{"path": p, "content": content})
@@ -131,6 +136,8 @@ func surface(ch *child) interp.Exports {
 		"Call": reflect.ValueOf(func(tool string, args map[string]any) (string, error) {
 			return ch.call(tool, args)
 		}),
+		"JSONGet":   reflect.ValueOf(jsonGet),
+		"JSONShape": reflect.ValueOf(jsonShape),
 		"Help": reflect.ValueOf(func(tool string) (string, error) {
 			if d, ok := ch.docs[tool]; ok {
 				return d, nil

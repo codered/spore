@@ -23,14 +23,16 @@ type Helper struct {
 var Helpers = []Helper{
 	{"func Fetch(url string) (string, error)", "GET an http(s) URL; HTML comes back as text, anything else as the raw body.", "web_fetch"},
 	{"func Search(query string, count int) (string, error)", "Web search; count 0 means the default.", "web_search"},
-	{"func ReadFile(path string) (string, error)", "Read a file, relative to the workspace or absolute.", "fs_read"},
+	{"func ReadFile(path string) (string, error)", "A file's exact contents (no line numbers), relative to the workspace or absolute.", "fs_read"},
 	{"func WriteFile(path, content string) error", "Create or replace a file.", "fs_write"},
 	{"func EditFile(path, old, new string) error", "Replace the one occurrence of old with new.", "fs_edit"},
 	{"func List(path string) (string, error)", `List a directory; "" is the workspace root.`, "fs_list"},
 	{"func Glob(pattern string) (string, error)", "Find files by glob, e.g. **/*.go.", "fs_glob"},
-	{"func Grep(pattern, glob string) (string, error)", `Search file contents by RE2 regexp; glob "" searches every file.`, "fs_grep"},
+	{"func Grep(pattern, glob string) (string, error)", `Search file contents by RE2 regexp; glob "" searches every file. One match per line, as path:line: text (line is a decimal number).`, "fs_grep"},
 	{"func Shell(command string) (string, error)", "Run a bash command in the workspace.", "shell_exec"},
 	{"func Recall(query string) (string, error)", "Search past conversations.", "recall_search"},
+	{"func JSONShape(body string) string", "Outline a JSON document: keys in order, types, sample values, array lengths. Print it before reading an unfamiliar API.", ""},
+	{"func JSONGet(body, path string) (any, error)", `The value at a path like "a.b.0.c" (-1 is the last element). A wrong path errors with the keys that exist. Numbers are float64, objects map[string]any, arrays []any.`, ""},
 	{"func Call(tool string, args map[string]any) (string, error)", "Call any tool below by name with its JSON arguments.", ""},
 	{"func Help(tool string) (string, error)", "A tool's full description and JSON schema, with what each argument means.", ""},
 }
@@ -60,11 +62,11 @@ func Reference(specs []provider.ToolSpec) string {
 	b.WriteString("Importable packages: " + strings.Join(Allowed, ", ") + ", and spore. " +
 		"Nothing else — no os, net/http or os/exec; use spore.* for files, network and shell.\n\n")
 
-	b.WriteString("The interpreter is Go 1.21 without three builtins: min, max and clear " +
-		"are undefined, so write them out, and range over an integer " +
-		"(for i := range n) is not supported; use a counted loop. When you do not know a JSON " +
-		"API's exact shape, decode into map[string]any, or print a slice of the body " +
-		"first, instead of guessing struct types.\n\n")
+	b.WriteString("The interpreter is Go 1.21: the clear builtin is undefined, so write it " +
+		"out, and range over an integer (for i := range n) is not supported; use a " +
+		"counted loop. Do not guess the struct shape of an unfamiliar JSON API: a " +
+		"wrong guess decodes to empty values without an error. Print " +
+		"spore.JSONShape(body) first, or read values with spore.JSONGet.\n\n")
 	b.WriteString("### package spore\n\n")
 	for _, h := range Helpers {
 		fmt.Fprintf(&b, "- `%s` — %s\n", h.Signature, h.Doc)

@@ -320,3 +320,49 @@ func TestFSRefusesWithoutASessionWorkspace(t *testing.T) {
 		t.Fatal("a call with no workspace on the context must be refused")
 	}
 }
+
+// A go_run program parses what spore.ReadFile returns, so it asks for the
+// file's exact bytes: line numbers made every "starts with #" or
+// `== "require ("` test fail silently, and an empty program output was the
+// only sign.
+func TestReadRawReturnsExactContent(t *testing.T) {
+	m, ws := tools(t)
+	content := "# title\n\trequire (\n  x\n"
+	run(t, m["fs_write"], ws, map[string]string{"path": "a.md", "content": content})
+	if got := run(t, m["fs_read"], ws, map[string]any{"path": "a.md", "raw": true}); got != content {
+		t.Errorf("raw read = %q, want %q", got, content)
+	}
+	run(t, m["fs_write"], ws, map[string]string{"path": "empty.txt", "content": ""})
+	if got := run(t, m["fs_read"], ws, map[string]any{"path": "empty.txt", "raw": true}); got != "" {
+		t.Errorf("raw read of an empty file = %q, want it empty", got)
+	}
+}
+
+// A program must never parse a silently cut file: over the budget, a raw
+// read fails and says how big the file is.
+func TestReadRawOverBudgetIsAnError(t *testing.T) {
+	ws := t.TempDir()
+	bigFile(t, ws, "big.txt", 400)
+	_, err := newRead(4096).Call(ctxFor(ws), json.RawMessage(`{"path":"big.txt","raw":true}`))
+	if err == nil || !strings.Contains(err.Error(), "bytes") || !strings.Contains(err.Error(), "offset") {
+		t.Errorf("err = %v, want it to give the size and point at offset/limit", err)
+	}
+}
+
+// Grep skips binary files, as git and ripgrep do: a match inside a .pyc or
+// a built binary is noise, and a long binary "line" made the scanner fail
+// with a warning the model then had to reason about.
+func TestGrepSkipsBinaryFiles(t *testing.T) {
+	m, ws := tools(t)
+	if err := os.WriteFile(filepath.Join(ws, "bin"), []byte("\x00\x01TODO in a binary\n"+strings.Repeat("x", 2<<20)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run(t, m["fs_write"], ws, map[string]string{"path": "a.go", "content": "// TODO: real one\n"})
+	got := run(t, m["fs_grep"], ws, map[string]string{"pattern": "TODO"})
+	if !strings.Contains(got, "a.go:1:") {
+		t.Errorf("the text match is missing: %q", got)
+	}
+	if strings.Contains(got, "bin") {
+		t.Errorf("a binary file was searched: %q", got)
+	}
+}

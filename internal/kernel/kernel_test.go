@@ -284,7 +284,7 @@ func TestHelpersSendTheRightCalls(t *testing.T) {
 		{`spore.Fetch("https://x.test")`, "web_fetch", `{"url":"https://x.test"}`},
 		{`spore.Search("go", 3)`, "web_search", `{"count":3,"query":"go"}`},
 		{`spore.Search("go", 0)`, "web_search", `{"query":"go"}`},
-		{`spore.ReadFile("a.txt")`, "fs_read", `{"path":"a.txt"}`},
+		{`spore.ReadFile("a.txt")`, "fs_read", `{"path":"a.txt","raw":true}`},
 		{`"", spore.WriteFile("a.txt", "hi")`, "fs_write", `{"content":"hi","path":"a.txt"}`},
 		{`"", spore.EditFile("a.txt", "x", "y")`, "fs_edit", `{"new":"y","old":"x","path":"a.txt"}`},
 		{`spore.List("")`, "fs_list", `{}`},
