@@ -6,6 +6,7 @@ package fs
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -419,6 +420,9 @@ func (grepTool) Schema() json.RawMessage {
 
 const maxGrepHits = 200
 
+// binarySniff is how much of a file grep reads to decide it is binary.
+const binarySniff = 8000
+
 func (t grepTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var a struct{ Pattern, Path, Glob string }
 	if err := decode(args, &a); err != nil {
@@ -453,7 +457,14 @@ func (t grepTool) Call(ctx context.Context, args json.RawMessage) (string, error
 			return nil
 		}
 		defer func() { _ = f.Close() }()
-		sc := bufio.NewScanner(f)
+		// A NUL in the first block marks a binary file, as git and ripgrep
+		// judge it. Matches inside one are noise, and its long "lines" fail
+		// the scanner.
+		br := bufio.NewReaderSize(f, binarySniff)
+		if head, _ := br.Peek(binarySniff); bytes.IndexByte(head, 0) >= 0 {
+			return nil
+		}
+		sc := bufio.NewScanner(br)
 		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for line := 1; sc.Scan(); line++ {
 			if len(hits) >= maxGrepHits {

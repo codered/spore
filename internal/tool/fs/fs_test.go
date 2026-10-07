@@ -348,3 +348,21 @@ func TestReadRawOverBudgetIsAnError(t *testing.T) {
 		t.Errorf("err = %v, want it to give the size and point at offset/limit", err)
 	}
 }
+
+// Grep skips binary files, as git and ripgrep do: a match inside a .pyc or
+// a built binary is noise, and a long binary "line" made the scanner fail
+// with a warning the model then had to reason about.
+func TestGrepSkipsBinaryFiles(t *testing.T) {
+	m, ws := tools(t)
+	if err := os.WriteFile(filepath.Join(ws, "bin"), []byte("\x00\x01TODO in a binary\n"+strings.Repeat("x", 2<<20)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run(t, m["fs_write"], ws, map[string]string{"path": "a.go", "content": "// TODO: real one\n"})
+	got := run(t, m["fs_grep"], ws, map[string]string{"pattern": "TODO"})
+	if !strings.Contains(got, "a.go:1:") {
+		t.Errorf("the text match is missing: %q", got)
+	}
+	if strings.Contains(got, "bin") {
+		t.Errorf("a binary file was searched: %q", got)
+	}
+}
