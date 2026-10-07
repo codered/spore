@@ -333,6 +333,7 @@ func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Eve
 		var blocks []provider.Block
 		var text string
 		var calls []provider.Block
+		invalid := map[int]string{} // call index → why its arguments were refused
 		var usage provider.Usage
 		var streamErr error
 	stream:
@@ -342,8 +343,15 @@ func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Eve
 				text += ev.Text
 				out <- Event{Type: EvText, Text: ev.Text}
 			case provider.EventToolCall:
-				calls = append(calls, *ev.Block)
-				out <- Event{Type: EvToolCall, Block: ev.Block}
+				call := *ev.Block
+				if why := invalidInput(call); why != "" {
+					// Stored, sent and shown as {}: one invalid RawMessage
+					// fails every later json.Marshal of the conversation.
+					invalid[len(calls)] = why
+					call.Input = json.RawMessage(`{}`)
+				}
+				calls = append(calls, call)
+				out <- Event{Type: EvToolCall, Block: &call}
 			case provider.EventDone:
 				if ev.Usage != nil {
 					usage = *ev.Usage
@@ -402,7 +410,7 @@ func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Eve
 			return fmt.Errorf("model called tool %q but no tools are registered", calls[0].Name)
 		}
 
-		results := a.runTools(ctx, calls, out)
+		results := a.runTools(ctx, calls, invalid, out)
 		pctx2, cancelPersist2 := persistCtx(ctx)
 		err = a.appendMessage(pctx2, sessionID, provider.RoleTool, results, "", "", provider.Usage{}, 0)
 		cancelPersist2()
@@ -415,7 +423,8 @@ func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Eve
 
 // runTools dispatches a batch. Calls run concurrently only when every call in
 // the batch is read-only; any mutating call forces strict sequential order.
-func (a *Agent) runTools(ctx context.Context, calls []provider.Block, out chan<- Event) []provider.Block {
+// A call listed in invalid is not dispatched: its result is the reason.
+func (a *Agent) runTools(ctx context.Context, calls []provider.Block, invalid map[int]string, out chan<- Event) []provider.Block {
 	allReadOnly := true
 	for _, c := range calls {
 		if !a.Tools.ReadOnly(c.Name) {
@@ -433,6 +442,13 @@ func (a *Agent) runTools(ctx context.Context, calls []provider.Block, out chan<-
 	}
 
 	results := make([]provider.Block, len(calls))
+	runAt := func(i int) {
+		if why, ok := invalid[i]; ok {
+			results[i] = provider.Block{Type: provider.BlockToolResult, ID: calls[i].ID, Content: why, IsError: true}
+			return
+		}
+		results[i] = run(calls[i])
+	}
 	if allReadOnly && len(calls) > 1 {
 		sem := make(chan struct{}, maxParallelTools)
 		var wg sync.WaitGroup
@@ -442,13 +458,13 @@ func (a *Agent) runTools(ctx context.Context, calls []provider.Block, out chan<-
 				defer wg.Done()
 				sem <- struct{}{}
 				defer func() { <-sem }()
-				results[i] = run(calls[i])
+				runAt(i)
 			}(i)
 		}
 		wg.Wait()
 	} else {
 		for i := range calls {
-			results[i] = run(calls[i])
+			runAt(i)
 		}
 	}
 
@@ -457,4 +473,22 @@ func (a *Agent) runTools(ctx context.Context, calls []provider.Block, out chan<-
 		out <- Event{Type: EvToolResult, Block: &b}
 	}
 	return results
+}
+
+// invalidInput explains why a call's arguments cannot be used, or returns ""
+// when they are a JSON object. Local models produce both kinds of failure:
+// a stream cut off by the output token limit, and plain malformed JSON.
+func invalidInput(call provider.Block) string {
+	if len(call.Input) == 0 {
+		return ""
+	}
+	var obj map[string]json.RawMessage
+	err := json.Unmarshal(call.Input, &obj)
+	if err == nil {
+		return ""
+	}
+	if !json.Valid(call.Input) && strings.Contains(err.Error(), "unexpected end of JSON input") {
+		return fmt.Sprintf("your arguments to %s were not valid JSON: they stop after %d bytes, so they were probably cut off by the output token limit. The call did not run. Send a shorter call: for go_run, a smaller program.", call.Name, len(call.Input))
+	}
+	return fmt.Sprintf("your arguments to %s were not valid JSON (%v), so the call did not run. Send the arguments as one JSON object.", call.Name, err)
 }
