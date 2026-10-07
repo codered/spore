@@ -4,6 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io"
+	"maps"
 	"os"
 	"path"
 	"reflect"
@@ -28,9 +33,43 @@ const childEnv = "SPORE_KERNEL_CHILD"
 // could reach around the symbol table.
 var Allowed = []string{
 	"bytes", "encoding/base64", "encoding/csv", "encoding/hex", "encoding/json",
-	"errors", "fmt", "html", "math", "math/rand", "net/url", "regexp", "sort",
-	"strconv", "strings", "sync", "sync/atomic", "text/tabwriter",
+	"errors", "fmt", "go/ast", "go/format", "go/parser", "go/printer",
+	"go/scanner", "go/token", "html", "math", "math/rand", "net/url", "regexp",
+	"sort", "strconv", "strings", "sync", "sync/atomic", "text/tabwriter",
 	"text/template", "time", "unicode", "unicode/utf8",
+}
+
+var errParserReadsDisk = errors.New("go_run cannot read files through go/parser: read the file with spore.ReadFile and pass its text as src")
+
+// overrides are the Allowed symbols a program gets changed, or not at all;
+// a zero Value removes one. Given a nil src, go/parser's ParseFile and
+// ParseExprFrom read the named file themselves, and ParseDir lists and
+// reads a directory: each would be a file read no policy check sees.
+// ast.Print writes to os.Stdout, which in the child goes nowhere, so it
+// writes to the program's output instead.
+func overrides(out io.Writer) map[string]map[string]reflect.Value {
+	return map[string]map[string]reflect.Value{
+		"go/parser/parser": {
+			"ParseFile": reflect.ValueOf(func(fset *token.FileSet, filename string, src any, mode parser.Mode) (*ast.File, error) {
+				if src == nil {
+					return nil, errParserReadsDisk
+				}
+				return parser.ParseFile(fset, filename, src, mode)
+			}),
+			"ParseExprFrom": reflect.ValueOf(func(fset *token.FileSet, filename string, src any, mode parser.Mode) (ast.Expr, error) {
+				if src == nil {
+					return nil, errParserReadsDisk
+				}
+				return parser.ParseExprFrom(fset, filename, src, mode)
+			}),
+			"ParseDir": {},
+		},
+		"go/ast/ast": {
+			"Print": reflect.ValueOf(func(fset *token.FileSet, x any) error {
+				return ast.Fprint(out, fset, x, ast.NotNilFilter)
+			}),
+		},
+	}
 }
 
 // IsChild reports whether this process was started by Run to execute one
@@ -68,7 +107,7 @@ func ChildMain() int {
 		Args:                 []string{"main"},
 	})
 	done := msg{Type: msgDone}
-	if err := i.Use(surface(ch)); err != nil {
+	if err := i.Use(surface(ch, w)); err != nil {
 		done.Error = "kernel: " + err.Error()
 	} else if _, err := i.Eval(run.Code); err != nil {
 		var p interp.Panic
@@ -87,14 +126,29 @@ func ChildMain() int {
 	return 0
 }
 
-// surface is the whole symbol table a program sees.
-func surface(ch *child) interp.Exports {
+// surface is the whole symbol table a program sees. out is the program's
+// output, for the overrides that print.
+func surface(ch *child, out io.Writer) interp.Exports {
 	ex := interp.Exports{}
+	over := overrides(out)
 	for _, p := range Allowed {
 		key := p + "/" + path.Base(p)
-		if syms, ok := stdlib.Symbols[key]; ok {
-			ex[key] = syms
+		syms, ok := stdlib.Symbols[key]
+		if !ok {
+			continue
 		}
+		if o, ok := over[key]; ok {
+			// stdlib.Symbols is shared by the whole process; never edit it.
+			syms = maps.Clone(syms)
+			for name, v := range o {
+				if v.IsValid() {
+					syms[name] = v
+				} else {
+					delete(syms, name)
+				}
+			}
+		}
+		ex[key] = syms
 	}
 	ex["spore/spore"] = map[string]reflect.Value{
 		"Fetch": reflect.ValueOf(func(url string) (string, error) {
