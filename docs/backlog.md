@@ -417,9 +417,9 @@ The three open questions are answered:
 local collector: before the fix, nothing was posted and the exporter logged
 the same marshal error.
 
-## go_run programs cannot parse Go
+## go_run programs cannot parse Go: fixed
 
-Open. Found during the #67 live run. Asked which functions in
+Closed. Found during the #67 live run. Asked which functions in
 `internal/kernel` are longer than 40 lines, the model's first move was a
 program importing `go/ast` and `go/parser`. Those packages are not in
 `kernel.Allowed`, so it tried shelling out to `go run` (declined) and writing
@@ -432,16 +432,22 @@ took 7 calls and up to 300 s. One run hit the test cap before answering.
 could read any file the daemon can, with no `fs_read` call for policy to
 judge.
 
-Open questions:
+The three open questions are answered
+(`docs/superpowers/specs/2026-10-07-go-run-parse-go-design.md`):
 
-1. **Wrapper or allow-list.** A `spore.ParseGo(src string)` helper (or a
-   patched `go/parser` symbol table that exposes `ParseFile` only with a
-   non-nil `src` and no `ParseDir`), or a higher-level helper such as
-   `spore.GoFuncs(src)` returning name, start and end lines? The wrapper keeps
-   the model's normal Go idioms; the helper is smaller and harder to misuse.
-2. **Does yaegi run `go/ast` well enough?** `ast.Inspect` takes a callback and
-   walks interface values. That needs a probe in the child before the
-   design commits to it, the way `min`/`max` were probed for #67.
-3. **Wider than Go?** The same gap applies to any structured text a program
-   can only read as a string. Is Go source special enough for its own helper,
-   given that code questions about this repo are the common case?
+1. **Same-name wrappers.** Programs import the real `go/ast`, `go/format`,
+   `go/parser`, `go/printer`, `go/scanner` and `go/token`. In `go/parser`,
+   `ParseFile` and `ParseExprFrom` refuse a nil `src` -- the case in which
+   they read the file themselves -- and `ParseDir` is absent. The model
+   writes the Go it would have written anyway. `ast.Print` is pointed at the
+   program's output, because `os.Stdout` goes nowhere in the child.
+2. **yaegi runs it.** A probe ran `ast.Inspect` with a type switch,
+   `ast.Walk` with an interpreted `Visitor`, `format.Node` and generics
+   against real repository source; output matched native Go exactly. The
+   probe also showed the nil-`src` read was real, and that its error echoed
+   a fragment of the file.
+3. **Go only.** No other language and no type information: `go/types`,
+   `go/importer` and `go/build` would need disk.
+
+A symbol snapshot test lists every function the six packages expose, so a
+yaegi upgrade that adds one fails until someone checks it for disk access.

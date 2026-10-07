@@ -61,6 +61,11 @@ func Reference(specs []provider.ToolSpec) string {
 		"A spore.* call that policy refuses returns an error; handle it.\n\n")
 	b.WriteString("Importable packages: " + strings.Join(Allowed, ", ") + ", and spore. " +
 		"Nothing else — no os, net/http or os/exec; use spore.* for files, network and shell.\n\n")
+	b.WriteString("go/parser parses text you pass in: read the file with spore.ReadFile " +
+		"and pass its contents as src. ParseDir is unavailable (find files with " +
+		"spore.Glob and parse each), and there is no type information (go/types is " +
+		"absent). The parser understands current Go syntax even though your program " +
+		"runs as Go 1.21.\n\n")
 
 	b.WriteString("The interpreter is Go 1.21: the clear builtin is undefined, so write it " +
 		"out, and range over an integer (for i := range n) is not supported; use a " +
