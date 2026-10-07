@@ -102,12 +102,19 @@ func callsUnresolved(f *ast.File, name string) bool {
 
 var untypedShimRE = regexp.MustCompile(`untyped (\w+) does not implement main\.` + orderedName)
 
+// parseDirRE matches yaegi's error for go/parser.ParseDir, which overrides
+// removes; the import may be aliased.
+var parseDirRE = regexp.MustCompile(`package \w+ "go/parser" has no symbol ParseDir`)
+
 // explainError makes a compile, parse or runtime error easier to act on:
-// it explains a failed inference on the supplied min or max, and quotes the
-// line the error names. src is the program as the model wrote it.
+// it explains a failed inference on the supplied min or max, a call to
+// ParseDir, which go_run does not offer, and quotes the line the error
+// names. src is the program as the model wrote it.
 func explainError(src, msg string) string {
 	msg = untypedShimRE.ReplaceAllString(msg,
 		"min and max cannot infer a type from untyped $1 constants alone here; give one argument a type, e.g. float64(1.5)")
+	msg = parseDirRE.ReplaceAllLiteralString(msg,
+		"go/parser.ParseDir is not available in go_run: list files with spore.Glob and parse each with parser.ParseFile, passing the text from spore.ReadFile")
 	return quoteLine(src, msg)
 }
 
