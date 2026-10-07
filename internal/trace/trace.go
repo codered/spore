@@ -5,6 +5,7 @@ package trace
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 
 	"github.com/codered/spore/internal/config"
@@ -47,6 +48,13 @@ const (
 var redact atomic.Bool
 
 func SetRedact(on bool) { redact.Store(on) }
+
+// text makes s safe for an OTLP string attribute. Protobuf rejects invalid
+// UTF-8, and one rejected attribute fails the whole exported batch, so bad
+// bytes become U+FFFD and the text around them survives.
+func text(k, s string) attribute.KeyValue {
+	return attribute.String(k, strings.ToValidUTF8(s, "\uFFFD"))
+}
 
 func tracer() oteltrace.Tracer { return otel.Tracer("github.com/codered/spore") }
 
@@ -108,8 +116,8 @@ func EndLLM(span Span, prompt, completion string, u provider.Usage, cost float64
 	)
 	if !redact.Load() {
 		span.SetAttributes(
-			attribute.String(attrInput, prompt),
-			attribute.String(attrOutput, completion),
+			text(attrInput, prompt),
+			text(attrOutput, completion),
 		)
 	}
 	span.End()
@@ -121,7 +129,7 @@ func StartTool(ctx context.Context, name string, args []byte) (context.Context, 
 		attribute.String(attrToolName, name),
 	}
 	if !redact.Load() {
-		kv = append(kv, attribute.String(attrToolParams, string(args)))
+		kv = append(kv, text(attrToolParams, string(args)))
 	}
 	return tracer().Start(ctx, "tool "+name, oteltrace.WithAttributes(kv...))
 }
@@ -146,7 +154,7 @@ func RecordToolResult(span Span, content string, isErr, truncated bool) {
 		attribute.Bool("spore.tool.truncated", truncated),
 	)
 	if !redact.Load() {
-		span.SetAttributes(attribute.String(attrOutput, content))
+		span.SetAttributes(text(attrOutput, content))
 	}
 }
 
@@ -160,7 +168,7 @@ func StartRetriever(ctx context.Context, backend, query string, k int) (context.
 		attribute.Int(attrRetrievalK, k),
 	}
 	if !redact.Load() {
-		kv = append(kv, attribute.String(attrInput, query))
+		kv = append(kv, text(attrInput, query))
 	}
 	return tracer().Start(ctx, "recall.search", oteltrace.WithAttributes(kv...))
 }
@@ -168,9 +176,13 @@ func StartRetriever(ctx context.Context, backend, query string, k int) (context.
 // EndRetriever records which documents came back. Ids and scores are index
 // metadata rather than content, so they survive redaction.
 func EndRetriever(span Span, ids []string, scores []float64) {
+	valid := make([]string, len(ids))
+	for i, id := range ids {
+		valid[i] = strings.ToValidUTF8(id, "�")
+	}
 	span.SetAttributes(
 		attribute.Int(attrRetrievalHits, len(ids)),
-		attribute.StringSlice("retrieval.documents.ids", ids),
+		attribute.StringSlice("retrieval.documents.ids", valid),
 		attribute.Float64Slice("retrieval.documents.scores", scores),
 	)
 	span.End()
