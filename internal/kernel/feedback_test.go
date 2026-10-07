@@ -149,7 +149,10 @@ func TestQuoteLine(t *testing.T) {
 			t.Errorf("quoteLine(%q) = %q, want it unchanged", msg, got)
 		}
 	}
-	if got := quoteLine(src, "main.go:4:2: x"); !strings.Contains(got, "| \tx = 1") {
-		t.Errorf("a main.go: prefix is not understood: %q", got)
+	// yaegi names the file _.go in some errors.
+	for _, prefix := range []string{"main.go:", "_.go:"} {
+		if got := quoteLine(src, prefix+"4:2: x"); !strings.Contains(got, "| \tx = 1") {
+			t.Errorf("a %s prefix is not understood: %q", prefix, got)
+		}
 	}
 }

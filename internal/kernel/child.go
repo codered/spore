@@ -108,7 +108,7 @@ func surface(ch *child) interp.Exports {
 			return ch.call("web_search", args)
 		}),
 		"ReadFile": reflect.ValueOf(func(p string) (string, error) {
-			return ch.call("fs_read", map[string]any{"path": p})
+			return ch.call("fs_read", map[string]any{"path": p, "raw": true})
 		}),
 		"WriteFile": reflect.ValueOf(func(p, content string) error {
 			_, err := ch.call("fs_write", map[string]any{"path": p, "content": content})

@@ -14,12 +14,12 @@ The interpreter is Go 1.21: the clear builtin is undefined, so write it out, and
 
 - `func Fetch(url string) (string, error)` — GET an http(s) URL; HTML comes back as text, anything else as the raw body.
 - `func Search(query string, count int) (string, error)` — Web search; count 0 means the default.
-- `func ReadFile(path string) (string, error)` — Read a file, relative to the workspace or absolute.
+- `func ReadFile(path string) (string, error)` — A file's exact contents (no line numbers), relative to the workspace or absolute.
 - `func WriteFile(path, content string) error` — Create or replace a file.
 - `func EditFile(path, old, new string) error` — Replace the one occurrence of old with new.
 - `func List(path string) (string, error)` — List a directory; "" is the workspace root.
 - `func Glob(pattern string) (string, error)` — Find files by glob, e.g. **/*.go.
-- `func Grep(pattern, glob string) (string, error)` — Search file contents by RE2 regexp; glob "" searches every file.
+- `func Grep(pattern, glob string) (string, error)` — Search file contents by RE2 regexp; glob "" searches every file. One match per line, as path:line: text (line is a decimal number).
 - `func Shell(command string) (string, error)` — Run a bash command in the workspace.
 - `func Recall(query string) (string, error)` — Search past conversations.
 - `func JSONShape(body string) string` — Outline a JSON document: keys in order, types, sample values, array lengths. Print it before reading an unfamiliar API.

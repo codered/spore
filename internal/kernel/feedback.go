@@ -111,7 +111,8 @@ func explainError(src, msg string) string {
 	return quoteLine(src, msg)
 }
 
-var posRE = regexp.MustCompile(`^(?:panic: )?(?:main\.go:)?(\d+):(\d+): `)
+// yaegi names the file main.go, _.go or nothing, depending on the error.
+var posRE = regexp.MustCompile(`^(?:panic: )?(?:[\w.-]*\.go:)?(\d+):(\d+): `)
 
 // quoteLine appends the source line msg's leading line:col names, with a
 // caret under the column. Small models count lines badly; a quoted line is
