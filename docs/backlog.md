@@ -383,32 +383,39 @@ one, confined to that skill's directory once symlinks are followed, with
 dotted paths refused and a 256 KiB cap. A file-only read does not mark the
 skill loaded in `/skills`. `skill_install` still writes only `SKILL.md`.
 
-## One invalid UTF-8 string drops a whole batch of traces
+## One invalid UTF-8 string drops a whole batch of traces: fixed
 
-Open. Found during the #67 live run. The daemon logged `traces export:
+Closed. Found during the #67 live run: the daemon logged `traces export:
 failed to marshal request body in protobuf: string field contains invalid
-UTF-8`. `internal/trace` puts tool arguments, tool results, prompts and
-completions into span attributes as they are (`StartTool`,
-`RecordToolResult`, `EndLLM`). The OTLP exporter refuses a string that is not
-valid UTF-8, and spans are exported in batches (`WithBatcher`), so one bad
-string fails the whole request, and every span in that batch is lost, not
-only the one that carried it.
+UTF-8`. `internal/trace` put tool arguments, tool results, prompts and
+completions into span attributes as they were, and the OTLP exporter refuses
+a string that is not valid UTF-8. Spans are exported in batches, so one bad
+string lost every span in the batch. The trigger was an `fs_grep` match in a
+binary file; `fs_read` with `raw`, `web_fetch` and shell output could do the
+same.
 
-This time it was an `fs_grep` match inside a binary file. #67 made grep skip
-binary files, but other sources remain: `fs_read` with `raw` on a binary
-file, `web_fetch` of a non-UTF-8 body, and shell output.
+The three open questions are answered:
 
-Open questions:
+1. **In the trace helpers, not at the source tools.** Every content
+   attribute goes through one function, `text`, so tools not written yet
+   are covered too. That includes `go_run`'s nested `spore.*` calls. Values
+   spore produces itself (model name, call site, policy rule) are not
+   touched.
+2. **Replace, not drop.** Bad bytes become U+FFFD and the text around them
+   survives: a shell output with one stray Latin-1 byte is still worth
+   reading. `spore.tool.result_bytes` still reports the original length.
+3. **No size cap.** The premise was wrong: a 4 MB raw read never becomes a
+   4 MB attribute, because `tool.Registry` caps every result at
+   `max_output` (30 KB by default) before tracing sees it. What is
+   unbounded is LLM input -- `EndLLM` gets the whole system prompt, and
+   compaction the whole transcript -- and that exports today without
+   failing. Capping it is a separate decision. The SDK's
+   `AttributeValueLengthLimit` would not have fixed this bug: it leaves a
+   string under the limit alone, however invalid.
 
-1. **Where to clean.** Once, in the `internal/trace` helpers
-   (`strings.ToValidUTF8`), or at the source tools? The helpers are the only
-   place that covers every source, including ones not written yet.
-2. **Replace or mark.** Replace bad bytes with U+FFFD, or drop the attribute
-   and record its byte length and a flag? A replaced binary blob is noise in
-   Phoenix either way.
-3. **Size.** Attributes are also unbounded, and a 4 MB raw read becomes one
-   attribute. Should the same change cap attribute length, as `redact`
-   already does for content?
+`TestInvalidUTF8DoesNotDropTheBatch` reproduces the original failure against a
+local collector: before the fix, nothing was posted and the exporter logged
+the same marshal error.
 
 ## go_run programs cannot parse Go
 

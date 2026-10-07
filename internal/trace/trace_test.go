@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/provider"
@@ -227,5 +229,87 @@ func TestInitEnabledAgainstLocalCollector(t *testing.T) {
 	}
 	if posts.Load() == 0 {
 		t.Error("the span never reached the collector")
+	}
+}
+
+// bad holds bytes that are not UTF-8, as a binary file or a Latin-1 shell
+// output would produce, between text that must survive.
+const bad = "before \xff\xfe after"
+
+func TestContentAttributesAreValidUTF8(t *testing.T) {
+	sr := recorder(t)
+	SetRedact(false)
+
+	ctx, turn := StartTurn(context.Background(), "sess-1", "cli")
+	_, llm := StartLLM(ctx, "chat", "m")
+	EndLLM(llm, bad, bad, provider.Usage{}, 0)
+	_, tool := StartTool(ctx, "fs_read", []byte(`{"path":"`+bad+`"}`))
+	RecordToolResult(tool, bad, false, false)
+	tool.End()
+	_, ret := StartRetriever(ctx, "fts", bad, 5)
+	EndRetriever(ret, []string{bad}, []float64{1})
+	turn.End()
+
+	checked := 0
+	for _, s := range sr.Ended() {
+		for _, kv := range s.Attributes() {
+			var vals []string
+			switch kv.Value.Type() {
+			case attribute.STRING:
+				vals = []string{kv.Value.AsString()}
+			case attribute.STRINGSLICE:
+				vals = kv.Value.AsStringSlice()
+			}
+			for _, v := range vals {
+				if !utf8.ValidString(v) {
+					t.Errorf("span %s: %s = %q is not valid UTF-8", s.Name(), kv.Key, v)
+				}
+				if strings.Contains(v, "before") {
+					checked++
+					if !strings.Contains(v, "before \uFFFD after") {
+						t.Errorf("span %s: %s = %q lost its text", s.Name(), kv.Key, v)
+					}
+				}
+			}
+		}
+	}
+	// input+output, tool params, tool output, retriever query, retriever id.
+	if checked != 6 {
+		t.Errorf("checked %d content attributes, want 6", checked)
+	}
+}
+
+func TestInvalidUTF8DoesNotDropTheBatch(t *testing.T) {
+	var posts atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			posts.Add(1)
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	shutdown, err := Init(ctx, config.TraceConfig{
+		Enabled:    true,
+		Endpoint:   srv.URL + "/v1/traces",
+		SampleRate: 1.0,
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// One clean span and one carrying a binary tool result, in one batch.
+	ctx, turn := StartTurn(ctx, "test-session", "test-client")
+	_, tool := StartTool(ctx, "fs_grep", []byte(`{}`))
+	RecordToolResult(tool, bad, false, false)
+	tool.End()
+	turn.End()
+
+	if err := shutdown(ctx); err != nil {
+		t.Errorf("shutdown: %v", err)
+	}
+	if posts.Load() == 0 {
+		t.Error("the batch never reached the collector")
 	}
 }
