@@ -443,9 +443,9 @@ The three open questions are answered
    program's output, because `os.Stdout` goes nowhere in the child.
 2. **yaegi runs it.** A probe ran `ast.Inspect` with a type switch,
    `ast.Walk` with an interpreted `Visitor`, `format.Node` and generics
-   against real repository source; output matched native Go exactly. The
-   probe also showed the nil-`src` read was real, and that its error echoed
-   a fragment of the file.
+   against real repository source, and the `ast.Inspect` output matched
+   native Go exactly. The probe also showed the nil-`src` read was real,
+   and that its error echoed a fragment of the file.
 3. **Go only.** No other language and no type information: `go/types`,
    `go/importer` and `go/build` would need disk.
 

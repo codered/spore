@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -92,7 +93,7 @@ func TestParserRefusesNilSrc(t *testing.T) {
 	_, err = parser.ParseExprFrom(fset, PATH, nil, 0)
 	fmt.Println("expr:", err)
 }`, "fmt", "go/parser", "go/token")
-	src = strings.ReplaceAll(src, "PATH", strconvQuote(path))
+	src = strings.ReplaceAll(src, "PATH", strconv.Quote(path))
 	res, err := Run(context.Background(), src, &fakeRunner{}, opts())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -104,6 +105,37 @@ func TestParserRefusesNilSrc(t *testing.T) {
 	}
 	if strings.Contains(res.Output, sentinel) {
 		t.Errorf("file content leaked into output: %q", res.Output)
+	}
+}
+
+// Only an untyped nil makes go/parser read the file. Every other empty or
+// nil-valued src must stay off the disk, whatever error it produces.
+func TestParserNeverReadsForNilValuedSrc(t *testing.T) {
+	const sentinel = "SENTINEL_kernel_must_not_read_this"
+	path := filepath.Join(t.TempDir(), "secret.go")
+	if err := os.WriteFile(path, []byte(sentinel+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := prog(`func main() {
+	fset := token.NewFileSet()
+	var a any
+	var b []byte
+	var buf *bytes.Buffer
+	for i, s := range []any{a, b, buf} {
+		_, err := parser.ParseFile(fset, PATH, s, 0)
+		fmt.Println(i, err)
+	}
+}`, "bytes", "fmt", "go/parser", "go/token")
+	src = strings.ReplaceAll(src, "PATH", strconv.Quote(path))
+	res, err := Run(context.Background(), src, &fakeRunner{}, opts())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if strings.Contains(res.Output, sentinel) {
+		t.Errorf("file content leaked: %q", res.Output)
+	}
+	if !strings.Contains(res.Output, "0 go_run cannot read files through go/parser") {
+		t.Errorf("a nil any was not refused: %q", res.Output)
 	}
 }
 
@@ -192,5 +224,3 @@ func TestGoSymbolsAreReviewed(t *testing.T) {
 		}
 	}
 }
-
-func strconvQuote(s string) string { return `"` + strings.ReplaceAll(s, `\`, `\\`) + `"` }
