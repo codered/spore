@@ -847,3 +847,24 @@ func TestMaxOutputTokensMustFitTheContextWindow(t *testing.T) {
 		}
 	}
 }
+
+// 0 has to survive Load: it is the setting for long tasks, not a missing
+// value to fill in with the default.
+func TestMaxRoundTripsDefaultsOverridesAndZero(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		want int
+	}{
+		{"", 30},
+		{"[context]\nmax_round_trips = 80\n", 80},
+		{"[context]\nmax_round_trips = 0\n", 0},
+	} {
+		if got := loadTestConfig(t, tc.body).Context.MaxRoundTrips; got != tc.want {
+			t.Errorf("%q: MaxRoundTrips = %d, want %d", tc.body, got, tc.want)
+		}
+	}
+	_, err := loadTestConfigErr(t, "[context]\nmax_round_trips = -1\n")
+	if err == nil || !strings.Contains(err.Error(), "context.max_round_trips must not be negative") {
+		t.Errorf("max_round_trips = -1: err = %v, want a negative-value error", err)
+	}
+}
