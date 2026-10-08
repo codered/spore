@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -53,9 +54,9 @@ func (a *Agent) Compact(ctx context.Context, sessionID string) (folded, before, 
 		return 0, before, before, err
 	}
 
-	// live rows are those not already folded into the summary, less notes;
-	// they line up one-for-one with snap.Messages, which Snapshot built the
-	// same way.
+	// live rows are those not already folded into the summary, less notes.
+	// They are decoded here rather than taken from snap.Messages, which can
+	// open with a restated request that is not part of the history.
 	var live []store.Message
 	for _, r := range rows {
 		if r.Seq > through && r.Role != store.RoleNote {
@@ -66,8 +67,23 @@ func (a *Agent) Compact(ctx context.Context, sessionID string) (folded, before, 
 		return 0, before, before, nil // nothing outside the protected window
 	}
 	foldCount := len(live) - a.Cfg.Context.KeepRecent
+	// A tool result must stay with the call it answers: one whose tool_use
+	// was folded away is an orphan every provider rejects.
+	for foldCount > 0 && live[foldCount].Role == string(provider.RoleTool) {
+		foldCount--
+	}
+	if foldCount == 0 {
+		return 0, before, before, nil
+	}
 	cut := live[foldCount-1].Seq
-	pending := snap.Messages[:foldCount]
+	pending := make([]provider.Message, 0, foldCount)
+	for _, r := range live[:foldCount] {
+		var blocks []provider.Block
+		if err := json.Unmarshal(r.BlocksJSON, &blocks); err != nil {
+			return 0, before, before, fmt.Errorf("decode message %d: %w", r.ID, err)
+		}
+		pending = append(pending, provider.Message{Role: provider.Role(r.Role), Blocks: blocks})
+	}
 
 	var transcript strings.Builder
 	if snap.Summary != "" {

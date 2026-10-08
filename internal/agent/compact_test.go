@@ -322,3 +322,133 @@ func TestCompactAndTurnCallTheRefineHook(t *testing.T) {
 		t.Fatalf("AfterTurn calls = %d, want 1", h.turns)
 	}
 }
+
+// seedToolTurn stores one request followed by pairs of assistant tool calls
+// and their results: the shape of a long agentic turn, which has a single
+// user message at its head and nothing but tool traffic after it.
+func seedToolTurn(t *testing.T, st *store.Store, sid, request string, pairs int) {
+	t.Helper()
+	ctx := context.Background()
+	put := func(role string, b provider.Block) {
+		raw, _ := json.Marshal([]provider.Block{b})
+		if _, err := st.AppendMessage(ctx, store.Message{SessionID: sid, Role: role, BlocksJSON: raw}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("user", provider.Block{Type: provider.BlockText, Text: request})
+	for i := 0; i < pairs; i++ {
+		id := "call" + strings.Repeat("x", i+1)
+		put("assistant", provider.Block{Type: provider.BlockToolUse, ID: id, Name: "go_run", Input: json.RawMessage(`{}`)})
+		put("tool", provider.Block{Type: provider.BlockToolResult, ID: id, Content: "ok"})
+	}
+}
+
+// Compaction mid-turn can fold the turn's only user message into the
+// summary. The summary lives in the system prompt, so the request would open
+// on an assistant message with no user message at all -- which Qwen's chat
+// template rejects outright ("No user query found in messages") and which
+// Anthropic rejects too. The folded request is restated at the head instead.
+func TestSnapshotRestatesAFoldedRequest(t *testing.T) {
+	a := newTestAgent(t)
+	ctx := context.Background()
+	sid, _ := a.Store.CreateSession(ctx, "t", "")
+	seedToolTurn(t, a.Store, sid, "review the code and write security_analysis.md", 10)
+	// Rows 1..21; fold through 5, so the live window opens on row 6, an
+	// assistant tool call.
+	if err := a.Store.SetSummary(ctx, sid, "SUMMARY", 5); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := a.Snapshot(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := snap.Messages[0]
+	if first.Role != provider.RoleUser || len(first.Blocks) != 1 ||
+		!strings.Contains(first.Blocks[0].Text, "review the code and write security_analysis.md") {
+		t.Fatalf("first message = %+v; want the folded request restated as a user message", first)
+	}
+	if got, want := len(snap.Messages), 21-5+1; got != want {
+		t.Errorf("snapshot has %d messages, want %d (live rows plus the restated request)", got, want)
+	}
+}
+
+// A live window that already opens on a user message is left alone.
+func TestSnapshotDoesNotRestateWhenALiveRequestLeads(t *testing.T) {
+	a := newTestAgent(t)
+	ctx := context.Background()
+	sid, _ := a.Store.CreateSession(ctx, "t", "")
+	seedMessages(t, a.Store, sid, 6)
+	if err := a.Store.SetSummary(ctx, sid, "SUMMARY", 3); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := a.Snapshot(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Messages) != 3 {
+		t.Fatalf("snapshot has %d messages, want 3", len(snap.Messages))
+	}
+}
+
+// The fold must not separate a tool result from the call it answers: a
+// result whose tool_use was summarised away is an orphan every provider
+// rejects. When the protected window would open on a tool row, the call
+// before it stays live too.
+func TestCompactKeepsAToolResultWithItsCall(t *testing.T) {
+	script := provider.NewScript(provider.ScriptTurn{Text: "SUMMARY: tool work"})
+	a, st := harness(t, script, nil)
+	a.Cfg.Context.KeepRecent = 3 // odd, so a plain count would cut between a pair
+	ctx := context.Background()
+	sid, _ := st.CreateSession(ctx, "t", "")
+	seedToolTurn(t, st, sid, "do the work", 10) // rows 1..21
+
+	if _, _, _, err := a.Compact(ctx, sid); err != nil {
+		t.Fatal(err)
+	}
+	_, through, err := st.Summary(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if through != 17 { // 21-3 = 18 would leave row 19, a tool result, leading
+		t.Errorf("through = %d, want 17", through)
+	}
+	snap, err := a.Snapshot(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Messages[0].Role != provider.RoleUser {
+		t.Fatalf("first message role = %q, want user", snap.Messages[0].Role)
+	}
+	if snap.Messages[1].Role != provider.RoleAssistant {
+		t.Errorf("second message role = %q, want the assistant call", snap.Messages[1].Role)
+	}
+}
+
+// A second compaction summarises live rows, never the restated request: the
+// restatement is assembled per request and is not part of the history.
+func TestCompactDoesNotFoldTheRestatement(t *testing.T) {
+	script := provider.NewScript(provider.ScriptTurn{Text: "SUMMARY: more tool work"})
+	a, st := harness(t, script, nil)
+	a.Cfg.Context.KeepRecent = 2
+	ctx := context.Background()
+	sid, _ := st.CreateSession(ctx, "t", "")
+	seedToolTurn(t, st, sid, "do the work", 10) // rows 1..21
+	if err := st.SetSummary(ctx, sid, "SUMMARY", 5); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := a.Compact(ctx, sid); err != nil {
+		t.Fatal(err)
+	}
+	_, through, err := st.Summary(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if through != 19 { // live rows 6..21, keep the last 2
+		t.Errorf("through = %d, want 19", through)
+	}
+	reqs := script.Requests()
+	transcript := reqs[0].Messages[0].Blocks[0].Text
+	if strings.Contains(transcript, "do the work") {
+		t.Errorf("compaction transcript repeats the restated request:\n%s", transcript)
+	}
+}

@@ -501,6 +501,7 @@ func (s *Server) startTurnThen(sessionID, text, client string, profile policy.Pr
 					Type:  WireError,
 					Error: "turn crashed: " + fmt.Sprint(r),
 				}
+				s.noteFailure(sessionID, end.Error)
 				s.hub.Publish(sessionID, end)
 			}
 		}()
@@ -514,10 +515,34 @@ func (s *Server) startTurnThen(sessionID, text, client string, profile policy.Pr
 			case WireTurnDone, WireError, WireStopped:
 				end = w
 			}
+			if w.Type == WireError {
+				// Before the publish: a client reloads the transcript on
+				// the error event and must find the note there.
+				s.noteFailure(sessionID, w.Error)
+			}
 			s.hub.Publish(sessionID, w)
 		}
 	}()
 	return nil
+}
+
+// noteFailure writes a failed turn into the transcript and the daemon log.
+// The error event reaches only the clients watching when it happens; without
+// the note, a session opened later shows a turn that stopped in silence. The
+// note is not published -- the watching clients have the error event -- nor
+// sent to Discord, which renders that event itself.
+func (s *Server) noteFailure(sessionID, msg string) {
+	slog.Warn("turn failed", "session", sessionID, "err", msg)
+	blocks, err := json.Marshal([]provider.Block{{Type: provider.BlockText, Text: "turn failed: " + msg}})
+	if err != nil {
+		slog.Error("encode failure note", "session", sessionID, "err", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(s.base), 5*time.Second)
+	defer cancel()
+	if _, err := s.store.AppendMessage(ctx, store.Message{SessionID: sessionID, Role: store.RoleNote, BlocksJSON: blocks}); err != nil {
+		slog.Error("record failure note", "session", sessionID, "err", err)
+	}
 }
 
 // ErrTurnRunning reports that the session already has a turn in flight. Two

@@ -196,8 +196,14 @@ func (a *Agent) Snapshot(ctx context.Context, sessionID string) (Snapshot, error
 		dir := a.Cfg.SkillsDir(policy.WorkspaceFrom(ctx))
 		snap.Skills = a.Skills.Skills(dir)
 	}
-	for _, r := range rows {
+	// request is the latest user message folded into the summary, kept in
+	// case the live window has none of its own.
+	var request *store.Message
+	for i, r := range rows {
 		if r.Seq <= through {
+			if r.Role == string(provider.RoleUser) {
+				request = &rows[i]
+			}
 			continue // folded into the summary already
 		}
 		if r.Role == store.RoleNote {
@@ -208,6 +214,20 @@ func (a *Agent) Snapshot(ctx context.Context, sessionID string) (Snapshot, error
 			return Snapshot{}, fmt.Errorf("decode message %d: %w", r.ID, err)
 		}
 		snap.Messages = append(snap.Messages, provider.Message{Role: provider.Role(r.Role), Blocks: blocks})
+	}
+
+	// Compacting mid-turn can fold the turn's only user message: a long
+	// agentic turn is one request followed by nothing but tool traffic. The
+	// summary sits in the system prompt, so the request would then open on an
+	// assistant message, which providers reject -- Qwen's chat template with
+	// "No user query found in messages". The folded request is restated
+	// verbatim at the head instead. It is assembled here and never stored.
+	if len(snap.Messages) > 0 && snap.Messages[0].Role != provider.RoleUser && request != nil {
+		var blocks []provider.Block
+		if err := json.Unmarshal(request.BlocksJSON, &blocks); err != nil {
+			return Snapshot{}, fmt.Errorf("decode message %d: %w", request.ID, err)
+		}
+		snap.Messages = append([]provider.Message{{Role: provider.RoleUser, Blocks: blocks}}, snap.Messages...)
 	}
 
 	// Drop any trailing assistant message whose blocks contain a tool_use with
