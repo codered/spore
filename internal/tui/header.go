@@ -217,7 +217,7 @@ func (m *Model) keyHints(room int) string {
 		if m.cache.State(m.selected) != daemon.SessionIdle {
 			parts = append(parts, hint("esc", "stop"))
 		}
-		parts = append(parts, hint("esc esc", "history"), hint("alt+esc", "normal"))
+		parts = append(parts, hint("esc esc", "history"), hint("ctrl+o", "normal"))
 	case modeCommand:
 		parts = []string{hint("enter", "run"), hint("tab", "complete"), hint("esc", "cancel")}
 	case modeFilter:

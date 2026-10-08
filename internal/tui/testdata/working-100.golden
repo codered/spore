@@ -21,4 +21,4 @@
 │                              │┃ │ Ask spore something…                                         │ ┃
 │● working  ◐ blocked  ○ idle  │┃ ╰──────────────────────────────────────────────────────────────╯ ┃
 ╰──────────────────────────────╯┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
- INSERT  enter send  ctrl+j newline  esc stop  esc esc history  alt+esc normal                      
+ INSERT  enter send  ctrl+j newline  esc stop  esc esc history  ctrl+o normal                       

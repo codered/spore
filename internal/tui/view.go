@@ -419,7 +419,7 @@ func helpText() string {
 		"",
 		styKey.Render("INSERT"),
 		"  enter send · ctrl+j newline · ↑↓ history · esc stop the turn (or the sub-agent)",
-		"  esc esc pick a previous prompt · alt+esc normal mode",
+		"  esc esc pick a previous prompt · ctrl+o normal mode (alt+esc too, but not on Windows)",
 		"",
 		styKey.Render("VIEWS") + "  (normal mode)",
 		"  S skills · A agents · U usage · J jobs · or :skills :agents :usage :jobs",

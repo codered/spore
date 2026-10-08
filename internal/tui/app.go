@@ -664,7 +664,8 @@ func (m *Model) keyInsert(k tea.KeyMsg) tea.Cmd {
 	switch k.String() {
 	case "esc":
 		// Esc stops the work, as in other agent CLIs; Esc twice picks a
-		// previous prompt. alt+esc is the way to NORMAL.
+		// previous prompt. ctrl+o is the way to NORMAL; alt+esc too, except on
+		// Windows, which takes alt+esc for itself.
 		now := m.opts.Now()
 		if !m.lastEsc.IsZero() && now.Sub(m.lastEsc) < doubleEscWindow {
 			m.lastEsc = time.Time{}
@@ -672,7 +673,7 @@ func (m *Model) keyInsert(k tea.KeyMsg) tea.Cmd {
 		}
 		m.lastEsc = now
 		return m.stopWork()
-	case "alt+esc":
+	case "ctrl+o", "alt+esc":
 		m.lastEsc = time.Time{}
 		m.mode = modeNormal
 		m.input.Blur()
@@ -725,7 +726,7 @@ func (m *Model) keyInsert(k tea.KeyMsg) tea.Cmd {
 func (m *Model) stopWork() tea.Cmd {
 	id := m.selected
 	if id == "" || m.cache.State(id) == daemon.SessionIdle {
-		m.flash = "esc esc: history · alt+esc: normal mode"
+		m.flash = "esc esc: history · ctrl+o: normal mode"
 		return nil
 	}
 	if m.cache.get(id).info.ParentID != "" {
