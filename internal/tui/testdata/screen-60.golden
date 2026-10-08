@@ -21,4 +21,4 @@
 ┃ │ Ask spore something…                                 │ ┃
 ┃ ╰──────────────────────────────────────────────────────╯ ┃
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
- INSERT  enter send  ctrl+j newline  alt+esc normal         
+ INSERT  enter send  ctrl+j newline  ctrl+o normal          

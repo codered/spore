@@ -150,11 +150,11 @@ func TestCardFitsANarrowPane(t *testing.T) {
 func TestDraftLineUnderTheInput(t *testing.T) {
 	m, _, _ := clockModel(t)
 	approvalOn(m, daemon.WireEvent{Tool: "shell_exec"})
-	if v := ansi.Strip(m.View()); !strings.Contains(v, "answer with alt+y/n/s/p, or alt+esc then y/n/s/p") || strings.Contains(v, "draft kept") {
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "answer with alt+y/n/s/p, or ctrl+o then y/n/s/p") || strings.Contains(v, "draft kept") {
 		t.Fatalf("empty input:\n%s", v)
 	}
 	run(m, keyMsg("h"))
-	if v := ansi.Strip(m.View()); !strings.Contains(v, "draft kept · answer with alt+y/n/s/p, or alt+esc then y/n/s/p") {
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "draft kept · answer with alt+y/n/s/p, or ctrl+o then y/n/s/p") {
 		t.Fatalf("with a draft:\n%s", v)
 	}
 	press(m, "alt+esc")
@@ -349,7 +349,7 @@ func TestInsertShowsTheAltKeys(t *testing.T) {
 	approvalOn(m, daemon.WireEvent{Tool: "shell_exec", Pattern: "shell_exec(go test*)"})
 	v := ansi.Strip(m.View())
 	for _, want := range []string{"alt+y allow once", "alt+n deny", "alt+s allow shell_exec", "alt+p allow once + propose",
-		"answer with alt+y/n/s/p, or alt+esc then y/n/s/p", "alt+y/n/s/p answer"} {
+		"answer with alt+y/n/s/p, or ctrl+o then y/n/s/p", "alt+y/n/s/p answer"} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("missing %q in INSERT:\n%s", want, v)
 		}

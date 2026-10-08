@@ -295,6 +295,8 @@ func keyMsg(k string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyDown}
 	case "ctrl+b":
 		return tea.KeyMsg{Type: tea.KeyCtrlB}
+	case "ctrl+o":
+		return tea.KeyMsg{Type: tea.KeyCtrlO}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 }
@@ -330,7 +332,7 @@ func TestAYTypedInInsertNeverAnswersAnApproval(t *testing.T) {
 	if m.input.Value() != "yes" {
 		t.Fatalf("input = %q, want the typed text", m.input.Value())
 	}
-	if !strings.Contains(m.View(), "answer with alt+y/n/s/p, or alt+esc then y/n/s/p") {
+	if !strings.Contains(m.View(), "answer with alt+y/n/s/p, or ctrl+o then y/n/s/p") {
 		t.Fatal("the overlay does not tell an INSERT-mode user how to answer")
 	}
 
@@ -362,6 +364,23 @@ func TestEscInInsertStopsTheTurnAndAltEscLeavesInsert(t *testing.T) {
 	press(m, "esc")
 	if len(fb.stopped) != 2 {
 		t.Fatalf("esc in NORMAL: stopped = %v, want a second stop", fb.stopped)
+	}
+}
+
+// Windows takes alt+esc for itself, so ctrl+o is the key the hints teach.
+func TestCtrlOLeavesInsertWithoutStopping(t *testing.T) {
+	fb := &fakeBackend{}
+	m, _, _ := clockModel(t)
+	m.be = fb
+	feed(m, wev("s1", daemon.WireTurnStarted))
+	typeText(m, "draft")
+
+	press(m, "ctrl+o")
+	if m.mode != modeNormal || len(fb.stopped) != 0 {
+		t.Fatalf("after ctrl+o: mode=%s stopped=%v, want NORMAL and nothing stopped", m.mode, fb.stopped)
+	}
+	if m.input.Value() != "draft" {
+		t.Fatalf("input = %q, want the draft kept", m.input.Value())
 	}
 }
 
