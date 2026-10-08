@@ -28,7 +28,7 @@ func TestFitHintsDropsFromTheEndButKeepsTheLast(t *testing.T) {
 
 func TestStatusHintsKeepHelpAtEveryWidth(t *testing.T) {
 	m := scene(t, 100, 24)
-	press(m, "esc")
+	press(m, "alt+esc")
 	for w := 60; w <= 200; w++ {
 		run(m, tea.WindowSizeMsg{Width: w, Height: 24})
 		line := statusLine(m)
@@ -43,7 +43,7 @@ func TestStatusHintsKeepHelpAtEveryWidth(t *testing.T) {
 
 func TestHintsHaveNoBracketsAndOfferNextBlocked(t *testing.T) {
 	m := scene(t, 200, 24)
-	press(m, "esc")
+	press(m, "alt+esc")
 	line := statusLine(m)
 	for _, want := range []string{"i type", "j/k scroll", "[ ] tools", "o expand", "n new", "b next blocked", ": cmd", "? help"} {
 		if !strings.Contains(line, want) {

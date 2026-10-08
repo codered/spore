@@ -25,6 +25,6 @@
 │                              │┃ ╭──────────────────────────────────────────────────────────────╮ ┃
 │                              │┃ │ Ask spore something…                                         │ ┃
 │                              │┃ ╰──────────────────────────────────────────────────────────────╯ ┃
-│● working  ◐ blocked  ○ idle  │┃ answer with alt+y/n/s/p, or esc then y/n/s/p                     ┃
+│● working  ◐ blocked  ○ idle  │┃ answer with alt+y/n/s/p, or alt+esc then y/n/s/p                 ┃
 ╰──────────────────────────────╯┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
- INSERT  alt+y/n/s/p answer  enter send  ctrl+j newline  esc normal                                 
+ INSERT  alt+y/n/s/p answer  enter send  ctrl+j newline  esc stop  esc esc history  alt+esc normal  

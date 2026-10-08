@@ -184,6 +184,9 @@ func (m *Model) View() string {
 	if m.mode == modeConfirm && m.confirm != nil {
 		body = placeOver(body, m.modalView(), m.width)
 	}
+	if m.mode == modeHistory {
+		body = placeOver(body, m.historyView(), m.width)
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), body, m.statusView())
 }
 
@@ -278,6 +281,25 @@ func (m *Model) modalView() string {
 	}
 	// The border and padding take six columns; keep two spare each side.
 	cw = min(cw, max(10, m.width-10))
+	return styModal.Width(cw + 4).Render(strings.Join(lines, "\n"))
+}
+
+// historyView is the picker Esc Esc opens: the prompts sent this run,
+// oldest first, one line each, scrolled to keep the cursor in view.
+func (m *Model) historyView() string {
+	cw := max(10, min(80, m.width-10))
+	lo := max(0, min(m.histCursor-historyRows/2, len(m.history)-historyRows))
+	hi := min(len(m.history), lo+historyRows)
+	lines := []string{styApprovalTitle.Render("History")}
+	for i := lo; i < hi; i++ {
+		text := strings.Join(strings.Fields(m.history[i]), " ")
+		if i == m.histCursor {
+			lines = append(lines, styAccent.Render(clip("› "+text, cw)))
+		} else {
+			lines = append(lines, styMuted.Render(clip("  "+text, cw)))
+		}
+	}
+	lines = append(lines, "", strings.Join(historyParts(), "  "))
 	return styModal.Width(cw + 4).Render(strings.Join(lines, "\n"))
 }
 
@@ -396,7 +418,8 @@ func helpText() string {
 		"  n answers the approval, not \"new session\", until it is answered",
 		"",
 		styKey.Render("INSERT"),
-		"  enter send · ctrl+j newline · ↑↓ history · esc normal mode",
+		"  enter send · ctrl+j newline · ↑↓ history · esc stop the turn (or the sub-agent)",
+		"  esc esc pick a previous prompt · alt+esc normal mode",
 		"",
 		styKey.Render("VIEWS") + "  (normal mode)",
 		"  S skills · A agents · U usage · J jobs · or :skills :agents :usage :jobs",

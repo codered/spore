@@ -26,10 +26,11 @@ const (
 	modeCommand
 	modeFilter
 	modeConfirm
+	modeHistory
 )
 
 func (m mode) String() string {
-	return [...]string{"NORMAL", "INSERT", "COMMAND", "FILTER", "CONFIRM"}[m]
+	return [...]string{"NORMAL", "INSERT", "COMMAND", "FILTER", "CONFIRM", "HISTORY"}[m]
 }
 
 // pane is which half of the chat screen NORMAL-mode keys drive.
@@ -46,6 +47,11 @@ const (
 	minWidth       = 60
 	minHeight      = 15
 	inputMaxHeight = 8
+	// doubleEscWindow is how close two Esc presses in INSERT must be to
+	// open the history picker instead of only stopping the turn.
+	doubleEscWindow = 500 * time.Millisecond
+	// historyRows caps the picker's height.
+	historyRows = 10
 	// refreshEvery is how often an open view refetches.
 	refreshEvery = 2 * time.Second
 	// frameEvery turns the working line's spinner. secondEvery redraws an
@@ -205,7 +211,11 @@ type Model struct {
 	history []string
 	histIdx int
 	draft   string
-	queued  map[string][]string
+	// lastEsc is when Esc was last pressed in INSERT; a second press
+	// within doubleEscWindow opens the history picker at histCursor.
+	lastEsc    time.Time
+	histCursor int
+	queued     map[string][]string
 
 	md      *glamour.TermRenderer
 	mdWidth int
@@ -529,6 +539,8 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 		return m.keyFilter(k)
 	case modeConfirm:
 		return m.keyConfirm(k)
+	case modeHistory:
+		return m.keyHistory(k)
 	}
 	if m.table != nil {
 		return m.keyView(k)
@@ -651,6 +663,17 @@ func (m *Model) focused() pane {
 func (m *Model) keyInsert(k tea.KeyMsg) tea.Cmd {
 	switch k.String() {
 	case "esc":
+		// Esc stops the work, as in other agent CLIs; Esc twice picks a
+		// previous prompt. alt+esc is the way to NORMAL.
+		now := m.opts.Now()
+		if !m.lastEsc.IsZero() && now.Sub(m.lastEsc) < doubleEscWindow {
+			m.lastEsc = time.Time{}
+			return m.openHistory()
+		}
+		m.lastEsc = now
+		return m.stopWork()
+	case "alt+esc":
+		m.lastEsc = time.Time{}
 		m.mode = modeNormal
 		m.input.Blur()
 		return nil
@@ -694,6 +717,59 @@ func (m *Model) keyInsert(k tea.KeyMsg) tea.Cmd {
 	m.input, cmd = m.input.Update(k)
 	m.resizeInput()
 	return cmd
+}
+
+// stopWork stops what the selected session is doing: its turn, or, for a
+// sub-agent, the sub-agent itself. Cancelling a sub-agent cannot be undone,
+// so that one still asks, and returns to INSERT either way.
+func (m *Model) stopWork() tea.Cmd {
+	id := m.selected
+	if id == "" || m.cache.State(id) == daemon.SessionIdle {
+		m.flash = "esc esc: history · alt+esc: normal mode"
+		return nil
+	}
+	if m.cache.get(id).info.ParentID != "" {
+		cmd := m.confirmCancelAgent()
+		if m.confirm != nil {
+			m.confirm.back = modeInsert
+		}
+		return cmd
+	}
+	m.flash = "stopping…"
+	return m.stop()
+}
+
+// openHistory shows the prompts sent this run, newest selected.
+func (m *Model) openHistory() tea.Cmd {
+	if len(m.history) == 0 {
+		m.flash = "no history yet"
+		return nil
+	}
+	m.histCursor = len(m.history) - 1
+	m.mode = modeHistory
+	m.input.Blur()
+	return nil
+}
+
+func (m *Model) keyHistory(k tea.KeyMsg) tea.Cmd {
+	switch k.String() {
+	case "up", "k", "ctrl+p":
+		m.histCursor = max(0, m.histCursor-1)
+		return nil
+	case "down", "j", "ctrl+n":
+		m.histCursor = min(len(m.history)-1, m.histCursor+1)
+		return nil
+	case "enter":
+		if m.histIdx == len(m.history) {
+			m.draft = m.input.Value()
+		}
+		m.histIdx = m.histCursor
+		m.setInput(m.history[m.histCursor])
+	case "esc", "alt+esc", "q":
+	default:
+		return nil
+	}
+	return m.enterInsert()
 }
 
 func (m *Model) setInput(s string) {
