@@ -245,26 +245,62 @@ func TestRunDispatchesToolsAndFeedsResultsBack(t *testing.T) {
 	}
 }
 
-func TestRunStopsAtMaxIterations(t *testing.T) {
-	ctx := context.Background()
-	turns := make([]provider.ScriptTurn, maxIterations+2)
-	for i := range turns {
+// toolLoop scripts a model that calls a tool n times and then answers.
+func toolLoop(n int) *provider.Script {
+	turns := make([]provider.ScriptTurn, n+1)
+	for i := range n {
 		turns[i] = provider.ScriptTurn{
 			ToolCalls: []provider.Block{{Type: provider.BlockToolUse, ID: "c", Name: "fs.read", Input: json.RawMessage(`{}`)}},
 		}
 	}
-	a, st := harness(t, provider.NewScript(turns...), &fakeTools{result: "x"})
+	turns[n] = provider.ScriptTurn{Text: "done"}
+	return provider.NewScript(turns...)
+}
+
+func TestRunStopsAtMaxRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	script := toolLoop(10)
+	a, st := harness(t, script, &fakeTools{result: "x"})
+	a.Cfg.Context.MaxRoundTrips = 4
 	sid, _ := st.CreateSession(ctx, "t", "")
 
 	ch, _ := a.Run(ctx, sid, "loop forever")
-	var sawError bool
+	var failed error
 	for ev := range ch {
 		if ev.Type == EvError {
-			sawError = true
+			failed = ev.Err
 		}
 	}
-	if !sawError {
-		t.Error("a runaway tool loop must end in an error event, not silence")
+	if failed == nil || !strings.Contains(failed.Error(), "context.max_round_trips") {
+		t.Fatalf("turn error = %v, want a runaway loop to fail naming context.max_round_trips", failed)
+	}
+	if n := len(script.Requests()); n != 4 {
+		t.Errorf("model was called %d times, want 4", n)
+	}
+}
+
+// With no cap, a turn runs as long as the model keeps calling tools: well
+// past the default of 30 here, ending only when the model answers.
+func TestZeroMaxRoundTripsMeansNoCap(t *testing.T) {
+	ctx := context.Background()
+	script := toolLoop(45)
+	a, st := harness(t, script, &fakeTools{result: "x"})
+	a.Cfg.Context.MaxRoundTrips = 0
+	sid, _ := st.CreateSession(ctx, "t", "")
+
+	ch, _ := a.Run(ctx, sid, "long task")
+	done := false
+	for ev := range ch {
+		if ev.Type == EvError {
+			t.Fatalf("turn failed: %v", ev.Err)
+		}
+		done = done || ev.Type == EvTurnDone
+	}
+	if !done {
+		t.Fatal("the turn did not complete")
+	}
+	if n := len(script.Requests()); n != 46 {
+		t.Errorf("model was called %d times, want 46", n)
 	}
 }
 

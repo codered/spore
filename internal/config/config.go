@@ -56,8 +56,8 @@ type SkillsConfig struct {
 	Dir string `toml:"dir"`
 }
 
-// SubagentConfig bounds a tree of agents. maxIterations bounds one agent's
-// round trips; none of it bounds a parent that keeps spawning.
+// SubagentConfig bounds a tree of agents. context.max_round_trips bounds one
+// agent's round trips; none of it bounds a parent that keeps spawning.
 type SubagentConfig struct {
 	// MaxDepth is the refusal point for nesting depth. The default 2 means a
 	// top-level session may spawn one level of children; those children may not
@@ -169,7 +169,12 @@ type ContextConfig struct {
 	// hidden reasoning the model does first. A reasoning model can spend the
 	// whole cap thinking and reply with nothing, so raise it for those.
 	MaxOutputTokens int `toml:"max_output_tokens"`
-	KeepRecent      int `toml:"keep_recent"`
+	// MaxRoundTrips caps one turn's trips to the model: each tool call the
+	// model makes costs one more. A turn that reaches it fails. 0 means no
+	// cap, for long tasks; such a turn ends only when the model stops calling
+	// tools or the turn is stopped.
+	MaxRoundTrips int `toml:"max_round_trips"`
+	KeepRecent    int `toml:"keep_recent"`
 	// FactBudget caps the estimated tokens of inlined fact bodies. Facts past
 	// the budget still appear, as one name-and-description line each, so the
 	// model always knows they exist.
@@ -522,7 +527,7 @@ func Default() *Config {
 			"Never name or speculate about the underlying model or provider that powers you.",
 		DataDir:   filepath.Join(home, ".spore"),
 		Providers: map[string]ProviderConfig{},
-		Context:   ContextConfig{MaxTokens: 180_000, MaxOutputTokens: 4096, CompactAt: 0.75, KeepRecent: 12, FactBudget: 2000, SkillBudget: 500},
+		Context:   ContextConfig{MaxTokens: 180_000, MaxOutputTokens: 4096, MaxRoundTrips: 30, CompactAt: 0.75, KeepRecent: 12, FactBudget: 2000, SkillBudget: 500},
 		Skills:    SkillsConfig{Scope: SkillsGlobal},
 		Trace:     TraceConfig{Endpoint: "http://localhost:6006/v1/traces", SampleRate: 1.0},
 		Recall:    RecallConfig{Backend: RecallSQLiteFTS},
@@ -831,6 +836,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt >= 1 {
 		return fmt.Errorf("context.compact_at must be between 0 and 1, got %v", c.Context.CompactAt)
+	}
+	if c.Context.MaxRoundTrips < 0 {
+		return fmt.Errorf("context.max_round_trips must not be negative (0 means no cap)")
 	}
 	if c.Context.MaxOutputTokens < 0 {
 		return fmt.Errorf("context.max_output_tokens must not be negative")

@@ -22,10 +22,6 @@ import (
 	sporetrace "github.com/codered/spore/internal/trace"
 )
 
-// maxIterations bounds one turn's provider round trips so a model that keeps
-// calling tools cannot spin forever.
-const maxIterations = 12
-
 // maxParallelTools bounds a read-only batch's concurrency. A model can emit
 // any number of tool calls in one message, and each may open a file or an
 // HTTP connection; without a cap one turn can exhaust descriptors or sockets.
@@ -296,7 +292,8 @@ func (a *Agent) RunSite(ctx context.Context, sessionID, input, site string) (<-c
 }
 
 func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Event) error {
-	for i := 0; i < maxIterations; i++ {
+	limit := a.Cfg.Context.MaxRoundTrips
+	for i := 0; limit == 0 || i < limit; i++ {
 		if stopped(ctx) {
 			return ErrStopped
 		}
@@ -426,7 +423,7 @@ func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Eve
 			return err
 		}
 	}
-	return fmt.Errorf("turn exceeded %d provider round trips without settling", maxIterations)
+	return fmt.Errorf("the turn used all %d round trips to the model without finishing; raise context.max_round_trips in the config (0 means no cap)", limit)
 }
 
 // runTools dispatches a batch. Calls run concurrently only when every call in
