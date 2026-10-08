@@ -144,11 +144,9 @@ func TestTheTUIDrivesARealDaemonThroughSendStreamStopAndResend(t *testing.T) {
 
 	d.typeLine("again")
 	d.until("partial")
-	d.key(tea.KeyEsc) // INSERT -> NORMAL
-	d.key(tea.KeyEsc) // stop
+	d.key(tea.KeyEsc) // stops the turn and stays in INSERT
 	d.until("stopped")
 
-	d.apply(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
 	d.typeLine("once more")
 	d.until("after the stop")
 
@@ -222,6 +220,8 @@ func (d *driver) press(k string) {
 	switch k {
 	case "esc":
 		d.key(tea.KeyEsc)
+	case "alt+esc":
+		d.apply(tea.KeyMsg{Type: tea.KeyEsc, Alt: true})
 	case "enter":
 		d.key(tea.KeyEnter)
 	default:
@@ -254,7 +254,7 @@ func TestTheTUIOpensViewsAgainstARealDaemonAndCancelsAJob(t *testing.T) {
 	d.typeLine("hello")
 	d.until("hi there")
 
-	d.press("esc")
+	d.press("alt+esc")
 	d.press("U")
 	d.until("usage(")
 	d.until("this session") // only the usage view renders this; the chat pane already shows the model
@@ -301,7 +301,7 @@ func TestTheTUIDeletesASessionOnARealDaemon(t *testing.T) {
 	go tui.Pump(ctx, be, func(msg tea.Msg) { d.msgs <- msg })
 	d.apply(<-d.msgs) // connected
 
-	d.press("esc")
+	d.press("alt+esc")
 	d.press("d")
 	d.until("also on Discord")
 	d.press("y")

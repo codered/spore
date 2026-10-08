@@ -193,7 +193,7 @@ func TestTheWorkingLineStaysOnItsRow(t *testing.T) {
 	if !strings.Contains(ansi.Strip(m.View()), "thinking") {
 		t.Fatal("following the bottom, the working line is not on screen")
 	}
-	run(m, keyMsg("esc"))
+	run(m, keyMsg("alt+esc"))
 	run(m, keyMsg("g"))
 	if v := ansi.Strip(m.View()); strings.Contains(v, "thinking") || !strings.Contains(v, "note 0") {
 		t.Fatalf("scrolled to the top, the working line is drawn anyway:\n%s", v)
@@ -216,7 +216,7 @@ func TestTheKeptTranscriptPicksUpEveryChange(t *testing.T) {
 	if !has("done-marker") {
 		t.Fatal("a result for an earlier block did not show")
 	}
-	run(m, keyMsg("esc"))
+	run(m, keyMsg("alt+esc"))
 	run(m, keyMsg("["))
 	run(m, keyMsg("o"))
 	if !has(`"cmd"`) {

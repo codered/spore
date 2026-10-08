@@ -297,7 +297,7 @@ func TestAnActionKeyOnTheWrongRowSaysWhy(t *testing.T) {
 		{Profile: "local", Decision: "allow", Source: "learned", Rule: "fs_write(path matches /ws/notes/**)"},
 	}}
 	m := newTestModel(t, fb, "s1")
-	press(m, "esc", "P", "x")
+	press(m, "alt+esc", "P", "x")
 	if m.mode == modeConfirm || len(fb.revoked) != 0 {
 		t.Fatalf("x on a baseline rule started a revoke (mode %v, revoked %v)", m.mode, fb.revoked)
 	}

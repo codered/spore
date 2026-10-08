@@ -150,14 +150,14 @@ func TestCardFitsANarrowPane(t *testing.T) {
 func TestDraftLineUnderTheInput(t *testing.T) {
 	m, _, _ := clockModel(t)
 	approvalOn(m, daemon.WireEvent{Tool: "shell_exec"})
-	if v := ansi.Strip(m.View()); !strings.Contains(v, "answer with alt+y/n/s/p, or esc then y/n/s/p") || strings.Contains(v, "draft kept") {
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "answer with alt+y/n/s/p, or alt+esc then y/n/s/p") || strings.Contains(v, "draft kept") {
 		t.Fatalf("empty input:\n%s", v)
 	}
 	run(m, keyMsg("h"))
-	if v := ansi.Strip(m.View()); !strings.Contains(v, "draft kept · answer with alt+y/n/s/p, or esc then y/n/s/p") {
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "draft kept · answer with alt+y/n/s/p, or alt+esc then y/n/s/p") {
 		t.Fatalf("with a draft:\n%s", v)
 	}
-	press(m, "esc")
+	press(m, "alt+esc")
 	if v := ansi.Strip(m.View()); strings.Contains(v, "answer with alt+y") {
 		t.Fatalf("still shown in NORMAL:\n%s", v)
 	}
@@ -166,7 +166,7 @@ func TestDraftLineUnderTheInput(t *testing.T) {
 func TestBlockedPaneSaysWaitingOnYou(t *testing.T) {
 	m := scene(t, 100, 30)
 	feed(m, daemon.WireEvent{Session: "a1b2c3", Type: daemon.WireApproval, PendingID: 6, Tool: "shell_exec", Rule: "shell_exec"})
-	press(m, "esc", "tab")
+	press(m, "alt+esc", "tab")
 	v := ansi.Strip(m.View())
 	if !strings.Contains(v, "┏━ a1b2 fix flaky test · waiting on you") {
 		t.Fatalf("chat pane not heavy with the waiting title while the sidebar has focus:\n%s", v)
@@ -189,7 +189,7 @@ func TestBlockedPaneSaysWaitingOnYou(t *testing.T) {
 func TestNoNextBlockedWhenOnlyTheSelectedWaits(t *testing.T) {
 	m, _, _ := clockModel(t)
 	approvalOn(m, daemon.WireEvent{Tool: "shell_exec"})
-	press(m, "esc")
+	press(m, "alt+esc")
 	if line := statusLine(m); strings.Contains(line, "next blocked") {
 		t.Fatalf("offered itself: %q", line)
 	}
@@ -216,7 +216,7 @@ func TestSubAgentSelectedStillShowsItsApproval(t *testing.T) {
 func TestNarrowApprovalBarKeepsTheAnswers(t *testing.T) {
 	m := scene(t, 60, 24)
 	feed(m, daemon.WireEvent{Session: "a1b2c3", Type: daemon.WireApproval, PendingID: 7, Tool: "shell_exec"})
-	press(m, "esc")
+	press(m, "alt+esc")
 	line := statusLine(m)
 	for _, want := range []string{"y once", "n deny", "s session"} {
 		if !strings.Contains(line, want) {
@@ -263,7 +263,7 @@ func TestShortPaneKeepsTheCardsKeys(t *testing.T) {
 	approvalOn(m, daemon.WireEvent{Tool: "shell_exec", Rule: "shell_exec", Origin: "7f3e99", Profile: "local",
 		Pattern: "shell_exec(command matches go test*)", Args: `{"command":"` + longCommand() + `"}`,
 		ExpiresAt: t0.Add(time.Minute).Format(time.RFC3339)})
-	press(m, "esc")
+	press(m, "alt+esc")
 	run(m, tea.WindowSizeMsg{Width: 60, Height: 15})
 	if h := lipgloss.Height(m.approvalCard(m.vp.Width, m.vp.Height)); h > m.vp.Height {
 		t.Fatalf("card is %d rows in a %d-row viewport", h, m.vp.Height)
@@ -349,12 +349,12 @@ func TestInsertShowsTheAltKeys(t *testing.T) {
 	approvalOn(m, daemon.WireEvent{Tool: "shell_exec", Pattern: "shell_exec(go test*)"})
 	v := ansi.Strip(m.View())
 	for _, want := range []string{"alt+y allow once", "alt+n deny", "alt+s allow shell_exec", "alt+p allow once + propose",
-		"answer with alt+y/n/s/p, or esc then y/n/s/p", "alt+y/n/s/p answer"} {
+		"answer with alt+y/n/s/p, or alt+esc then y/n/s/p", "alt+y/n/s/p answer"} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("missing %q in INSERT:\n%s", want, v)
 		}
 	}
-	press(m, "esc")
+	press(m, "alt+esc")
 	if v := ansi.Strip(m.View()); strings.Contains(v, "alt+y") || !strings.Contains(v, "y allow once") {
 		t.Fatalf("NORMAL should show plain keys:\n%s", v)
 	}

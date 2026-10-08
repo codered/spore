@@ -230,7 +230,7 @@ func (m *Model) draftLine() string {
 	if m.mode != modeInsert || !m.waiting() {
 		return ""
 	}
-	msg := "answer with alt+y/n/s/p, or esc then y/n/s/p"
+	msg := "answer with alt+y/n/s/p, or alt+esc then y/n/s/p"
 	if strings.TrimSpace(m.input.Value()) != "" {
 		msg = "draft kept · " + msg
 	}

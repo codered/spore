@@ -31,7 +31,7 @@ func TestTabMovesFocusBetweenTheSidebarAndTheChat(t *testing.T) {
 	if m.focused() != paneChat {
 		t.Fatal("spore chat opens to type, so the chat pane starts focused")
 	}
-	press(m, "esc")
+	press(m, "alt+esc")
 	if m.focused() != paneChat {
 		t.Fatal("leaving INSERT moved the focus off the chat")
 	}
@@ -51,7 +51,7 @@ func TestTabMovesFocusBetweenTheSidebarAndTheChat(t *testing.T) {
 
 func TestTabDoesNothingWithoutASidebar(t *testing.T) {
 	_, m := twoSessions(t)
-	press(m, "esc", "tab", "ctrl+b")
+	press(m, "alt+esc", "tab", "ctrl+b")
 	if m.focused() != paneChat {
 		t.Fatal("hiding the sidebar left the focus on it")
 	}
@@ -68,7 +68,7 @@ func TestJScrollsAFocusedChatAndMovesAFocusedSidebar(t *testing.T) {
 		sv.add(kindNotice, fmt.Sprintf("line %d", i))
 	}
 	run(m, tea.WindowSizeMsg{Width: 120, Height: 40})
-	press(m, "esc", "g", "j")
+	press(m, "alt+esc", "g", "j")
 	if m.selected != "aaaa" {
 		t.Fatalf("j in the chat changed the session to %q", m.selected)
 	}
@@ -91,7 +91,7 @@ func TestTheFocusedPaneHasTheHeavyBorder(t *testing.T) {
 	if !strings.HasPrefix(top, "╭") || !strings.Contains(top, "┏") {
 		t.Fatalf("chat focused, but the borders are %q", top)
 	}
-	press(m, "esc", "tab")
+	press(m, "alt+esc", "tab")
 	top = bodyTop(m)
 	if !strings.HasPrefix(top, "┏") || strings.Count(top, "┏") != 1 {
 		t.Fatalf("sidebar focused, but the borders are %q", top)
@@ -113,7 +113,7 @@ func TestTheHeaderIsOneRowOfTabs(t *testing.T) {
 	if m.activeTab() != "chat" {
 		t.Fatalf("active tab = %q, want chat", m.activeTab())
 	}
-	press(m, "esc", "S")
+	press(m, "alt+esc", "S")
 	if m.activeTab() != "skills" {
 		t.Fatalf("active tab = %q, want skills", m.activeTab())
 	}
@@ -147,7 +147,7 @@ func approvalModel(t *testing.T) (*fakeBackend, *Model) {
 	m := newTestModel(t, fb, "s1")
 	feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireApproval, PendingID: 7, Tool: "shell", Rule: "shell.ask",
 		Pattern: "shell:go *", Args: `{}`})
-	press(m, "esc")
+	press(m, "alt+esc")
 	return fb, m
 }
 

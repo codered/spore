@@ -86,7 +86,7 @@ func TestGoldenScreens(t *testing.T) {
 
 func TestGoldenAllSessions(t *testing.T) {
 	m := scene(t, 100, 24)
-	press(m, "esc", ":")
+	press(m, "alt+esc", ":")
 	typeText(m, "sessions all")
 	press(m, "enter")
 	golden(t, "sessions-all-100", m.View())
@@ -94,7 +94,7 @@ func TestGoldenAllSessions(t *testing.T) {
 
 func TestGoldenExpandedTool(t *testing.T) {
 	m := scene(t, 100, 30)
-	press(m, "esc", "o")
+	press(m, "alt+esc", "o")
 	golden(t, "tool-expanded-100", m.View())
 }
 
@@ -103,7 +103,7 @@ func TestGoldenApprovalOverlay(t *testing.T) {
 	feed(m, daemon.WireEvent{Session: "a1b2c3", Type: daemon.WireApproval, PendingID: 6, Tool: "fs.write",
 		Args: `{"path":"cmd/spore/tui_test.go"}`, Rule: "fs.write.ask", Pattern: "fs.write:cmd/spore/*"})
 	golden(t, "approval-insert-100", m.View())
-	press(m, "esc")
+	press(m, "alt+esc")
 	golden(t, "approval-normal-100", m.View())
 	press(m, "s")
 	golden(t, "approval-modal-100", m.View())
@@ -155,35 +155,35 @@ func viewScene(t *testing.T) (*Model, *fakeBackend) {
 
 func TestGoldenViews(t *testing.T) {
 	m, _ := viewScene(t)
-	press(m, "esc", "S")
+	press(m, "alt+esc", "S")
 	golden(t, "view-skills-100", m.View())
 	press(m, "enter")
 	golden(t, "view-skills-detail-100", m.View())
 
 	m, _ = viewScene(t)
-	press(m, "esc", "U")
+	press(m, "alt+esc", "U")
 	golden(t, "view-usage-100", m.View())
 
 	m, _ = viewScene(t)
-	press(m, "esc", "J", "x")
+	press(m, "alt+esc", "J", "x")
 	golden(t, "view-jobs-confirm-100", m.View())
 
 	m, fb := viewScene(t)
-	press(m, "esc", "S")
+	press(m, "alt+esc", "S")
 	fb.viewErr = errors.New("connection refused")
 	press(m, "ctrl+r")
 	golden(t, "view-stale-100", m.View())
 
 	m, _ = viewScene(t)
-	press(m, "esc", "C")
+	press(m, "alt+esc", "C")
 	golden(t, "view-mcp-100", m.View())
 
 	m, _ = viewScene(t)
-	press(m, "esc", "P")
+	press(m, "alt+esc", "P")
 	golden(t, "view-policy-100", m.View())
 
 	m, _ = viewScene(t)
-	press(m, "esc", "M")
+	press(m, "alt+esc", "M")
 	golden(t, "view-memory-100", m.View())
 }
 
@@ -197,7 +197,7 @@ func TestGoldenJobsFolder(t *testing.T) {
 		{ID: "j0b333", Title: "nightly backup", Workspace: "/s/j0b333", Source: "job", JobID: 2, UpdatedAt: t0.Add(time.Minute)},
 	}})
 	golden(t, "jobs-badge-100", m.View())
-	press(m, "esc", "z")
+	press(m, "alt+esc", "z")
 	golden(t, "jobs-open-100", m.View())
 }
 
@@ -221,7 +221,7 @@ func TestPlaceholderFollowsTheMode(t *testing.T) {
 	if v := ansi.Strip(m.View()); !strings.Contains(v, "Ask spore something…") || strings.Contains(v, "(i to type") {
 		t.Fatalf("INSERT placeholder wrong:\n%s", v)
 	}
-	press(m, "esc")
+	press(m, "alt+esc")
 	if v := ansi.Strip(m.View()); !strings.Contains(v, "Ask spore something…  (i to type · : for commands)") {
 		t.Fatalf("NORMAL placeholder wrong:\n%s", v)
 	}
@@ -232,13 +232,13 @@ func TestGoldenApprovalCard(t *testing.T) {
 	m := scene(t, 60, 24)
 	feed(m, daemon.WireEvent{Session: "a1b2c3", Type: daemon.WireApproval, PendingID: 7, Tool: "shell_exec",
 		Args: `{"command":"go test -race -count=50 ./internal/tui/..."}`, Rule: "shell_exec", Profile: "local", ExpiresAt: exp})
-	press(m, "esc")
+	press(m, "alt+esc")
 	golden(t, "approval-card-60", m.View())
 
 	m = scene(t, 100, 30)
 	feed(m, daemon.WireEvent{Session: "a1b2c3", Type: daemon.WireApproval, PendingID: 8, Tool: "shell_exec",
 		Args: `{"command":"go test -race -count=50 ./internal/tui/...","timeout_seconds":300}`, Rule: "shell_exec",
 		Origin: "7f3e99", Profile: "local", Pattern: "shell_exec(command matches go test*)", ExpiresAt: exp})
-	press(m, "esc")
+	press(m, "alt+esc")
 	golden(t, "approval-subagent-100", m.View())
 }
