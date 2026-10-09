@@ -101,6 +101,9 @@ func (s *Server) Store() *store.Store  { return s.store }
 func (s *Server) Guard() *policy.Guard { return s.guard }
 func (s *Server) Broker() *Broker      { return s.broker }
 
+// Models is the /model service. It is nil until AttachModels runs.
+func (s *Server) Models() *models.Service { return s.models }
+
 // Approver is the policy.Approver the guard must be built with. The daemon
 // creates it because it owns the hub the approval events travel over.
 func (s *Server) Approver() policy.Approver { return s.broker }

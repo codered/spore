@@ -1079,6 +1079,13 @@ list.
 In plain chat, `/model` prints numbered lists and `/model <operation> <number>`
 chooses.
 
+In Discord, `/model` replies with the overview and a menu per operation;
+inside a thread or DM it covers that conversation's session, elsewhere only
+the operations chosen for every session. Nothing calls the `classify`
+operation yet, so choosing a model for it has no effect today. A sub-agent
+keeps the model it was launched on, even if its parent's choice changes
+later.
+
 **Built-in tools:** `fs_read`, `fs_write`, `fs_edit`, `fs_list`, `fs_glob`,
 `fs_grep`, `shell_exec`, `web_fetch`, `web_search`, `go_run`, `memory`,
 `recall_search`, `skill_load`, `skill_install`, `agent_run`, `agent_spawn`,

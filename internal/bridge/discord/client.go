@@ -42,6 +42,8 @@ type Interaction struct {
 	ChannelID string
 	ParentID  string
 	CustomID  string // the button's identity; see approve.go
+	// Values is what a select menu was set to; empty for a button.
+	Values []string
 }
 
 // Button is one message component the bridge asks the client to render.
@@ -62,11 +64,27 @@ type Embed struct {
 	Error bool
 }
 
+// Select is a string select menu. Each takes an action row of its own.
+type Select struct {
+	CustomID    string
+	Placeholder string
+	Options     []SelectOption
+}
+
+// SelectOption is one entry of a Select; Default marks it chosen when the
+// menu is drawn.
+type SelectOption struct {
+	Label   string
+	Value   string
+	Default bool
+}
+
 // Message is everything the bridge can put on screen at once.
 type Message struct {
 	Content string
 	Embeds  []Embed
 	Buttons []Button
+	Selects []Select
 }
 
 // embedDescriptionLimit is Discord's documented per-embed description cap.
@@ -230,7 +248,9 @@ func (c *gatewayClient) interactionFrom(i *discordgo.Interaction) Interaction {
 		out.UserID = i.User.ID
 	}
 	if i.Type == discordgo.InteractionMessageComponent {
-		out.CustomID = i.MessageComponentData().CustomID
+		data := i.MessageComponentData()
+		out.CustomID = data.CustomID
+		out.Values = data.Values
 	}
 	ch, err := c.sess.State.Channel(i.ChannelID)
 	if err != nil || ch == nil {
@@ -254,7 +274,7 @@ func (c *gatewayClient) Send(ctx context.Context, channelID string, m Message) (
 	msg, err := c.sess.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
 		Content:    m.Content,
 		Embeds:     embedsFor(m.Embeds),
-		Components: componentsFor(m.Buttons),
+		Components: componentsFor(m.Buttons, m.Selects),
 	}, discordgo.WithContext(ctx))
 	if err != nil {
 		return "", fmt.Errorf("send discord message: %w", err)
@@ -270,7 +290,7 @@ func (c *gatewayClient) Send(ctx context.Context, channelID string, m Message) (
 func (c *gatewayClient) Edit(ctx context.Context, channelID, messageID string, m Message) error {
 	content := m.Content
 	embeds := embedsFor(m.Embeds)
-	comps := componentsFor(m.Buttons)
+	comps := componentsFor(m.Buttons, m.Selects)
 	_, err := c.sess.ChannelMessageEditComplex(&discordgo.MessageEdit{
 		Channel:    channelID,
 		ID:         messageID,
@@ -372,33 +392,41 @@ func embedsFor(embeds []Embed) []*discordgo.MessageEmbed {
 	return out
 }
 
-// componentsFor translates the bridge's Buttons into discordgo action rows,
-// splitting into rows of five and capping at five rows (25 buttons) per
-// Discord's layout limits. Nothing in this plan produces more than a
-// handful of buttons, so silently dropping any excess is acceptable.
-func componentsFor(buttons []Button) []discordgo.MessageComponent {
-	if len(buttons) == 0 {
-		return nil
-	}
+// componentsFor translates the bridge's selects and buttons into discordgo
+// action rows: one row per select first, then buttons in rows of five,
+// capped at Discord's five rows per message. Anything past the cap is
+// dropped; callers that need more split across messages.
+func componentsFor(buttons []Button, selects []Select) []discordgo.MessageComponent {
 	var rows []discordgo.MessageComponent
-	for i := 0; i < len(buttons) && len(rows) < maxRows; i += buttonsPerRow {
-		end := i + buttonsPerRow
-		if end > len(buttons) {
-			end = len(buttons)
+	for _, s := range selects {
+		if len(rows) == maxRows {
+			break
 		}
+		opts := make([]discordgo.SelectMenuOption, 0, len(s.Options))
+		for _, o := range s.Options {
+			opts = append(opts, discordgo.SelectMenuOption{Label: truncate(o.Label, 100), Value: o.Value, Default: o.Default})
+		}
+		rows = append(rows, discordgo.ActionsRow{Components: []discordgo.MessageComponent{discordgo.SelectMenu{
+			MenuType:    discordgo.StringSelectMenu,
+			CustomID:    s.CustomID,
+			Placeholder: truncate(s.Placeholder, 150),
+			Options:     opts,
+		}}})
+	}
+	for i := 0; i < len(buttons) && len(rows) < maxRows; i += buttonsPerRow {
+		end := min(i+buttonsPerRow, len(buttons))
 		var comps []discordgo.MessageComponent
 		for _, b := range buttons[i:end] {
 			style := discordgo.SecondaryButton
 			if b.Danger {
 				style = discordgo.DangerButton
 			}
-			comps = append(comps, discordgo.Button{
-				CustomID: b.CustomID,
-				Label:    b.Label,
-				Style:    style,
-			})
+			comps = append(comps, discordgo.Button{CustomID: b.CustomID, Label: b.Label, Style: style})
 		}
 		rows = append(rows, discordgo.ActionsRow{Components: comps})
+	}
+	if len(rows) == 0 {
+		return nil
 	}
 	return rows
 }
