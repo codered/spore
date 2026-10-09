@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/codered/spore/internal/daemon"
 	"github.com/codered/spore/internal/policy"
+	"github.com/codered/spore/internal/router"
 )
 
 // client talks to the daemon over the same HTTP API the web UI uses. Keeping
@@ -191,6 +193,43 @@ func (c *client) usage(ctx context.Context, sessionID string) (daemon.UsageJSON,
 	}
 	if err := c.do(ctx, "GET", path, nil, &out); err != nil {
 		return daemon.UsageJSON{}, err
+	}
+	return out, nil
+}
+
+// models fetches what /model shows for a session.
+func (c *client) models(ctx context.Context, sessionID string, fresh bool) (daemon.ModelsJSON, error) {
+	q := url.Values{}
+	if sessionID != "" {
+		q.Set("session", sessionID)
+	}
+	if fresh {
+		q.Set("fresh", "1")
+	}
+	path := "/api/models"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	var out daemon.ModelsJSON
+	if err := c.do(ctx, "GET", path, nil, &out); err != nil {
+		return daemon.ModelsJSON{}, err
+	}
+	return out, nil
+}
+
+// setModel chooses ref for op. chat and subagent belong to the session; the
+// other ops are daemon-wide and go to /api/routing.
+func (c *client) setModel(ctx context.Context, sessionID, op, ref string) (daemon.ModelsJSON, error) {
+	path := "/api/sessions/" + sessionID + "/model"
+	if router.IsGlobalSite(op) {
+		path = "/api/routing"
+		if sessionID != "" {
+			path += "?session=" + url.QueryEscape(sessionID)
+		}
+	}
+	var out daemon.ModelsJSON
+	if err := c.do(ctx, "PUT", path, map[string]string{"op": op, "ref": ref}, &out); err != nil {
+		return daemon.ModelsJSON{}, err
 	}
 	return out, nil
 }

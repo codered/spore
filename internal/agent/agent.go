@@ -311,6 +311,26 @@ func (a *Agent) RunSite(ctx context.Context, sessionID, input, site string) (<-c
 	return out, nil
 }
 
+// modelFor picks one round's model. A conversation's turns and a
+// sub-agent's turns run on the session's chosen model when /model or the
+// launching agent set one, otherwise on the chat route: the subagent route
+// no longer selects anything, so a child with no stored model runs on what
+// its parent would. Every other site is the router's alone. chosen reports
+// that the ref came from the session, so a failure can say so.
+func (a *Agent) modelFor(ctx context.Context, sessionID, site string) (ref string, chosen bool, err error) {
+	if site != router.SiteChat && site != router.SiteSubagent {
+		return a.Router.Model(site), false, nil
+	}
+	sess, ok, err := a.Store.Session(ctx, sessionID)
+	if err != nil {
+		return "", false, err
+	}
+	if ok && sess.ChatModel != "" {
+		return sess.ChatModel, true, nil
+	}
+	return a.Router.Model(router.SiteChat), false, nil
+}
+
 func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Event) error {
 	limit := a.Cfg.Context.MaxRoundTrips
 	for i := 0; limit == 0 || i < limit; i++ {
@@ -332,9 +352,15 @@ func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Eve
 				req.Tools = onlyKernel(req.Tools)
 			}
 		}
-		ref := a.Router.Model(site)
+		ref, chosen, err := a.modelFor(ctx, sessionID, site)
+		if err != nil {
+			return err
+		}
 		p, model, price, err := a.Registry.Resolve(ref)
 		if err != nil {
+			if chosen {
+				return fmt.Errorf("session model %q: %w — pick another with /model", ref, err)
+			}
 			return err
 		}
 		req.Model = model

@@ -141,6 +141,14 @@ func viewErr(err error) error {
 	return err
 }
 
+func (b tuiBackend) Models(ctx context.Context, id string, fresh bool) (daemon.ModelsJSON, error) {
+	return b.c.models(ctx, id, fresh)
+}
+
+func (b tuiBackend) SetModel(ctx context.Context, id, op, ref string) (daemon.ModelsJSON, error) {
+	return b.c.setModel(ctx, id, op, ref)
+}
+
 func (b tuiBackend) Skills(ctx context.Context, sessionID string) (daemon.SkillsJSON, error) {
 	var out daemon.SkillsJSON
 	err := b.c.do(ctx, "GET", "/api/sessions/"+sessionID+"/skills?body=1", nil, &out)

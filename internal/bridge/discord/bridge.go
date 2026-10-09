@@ -53,6 +53,8 @@ type Options struct {
 	// ShowCost puts USD cost in the /usage reply, as config's show_cost does
 	// on every other surface.
 	ShowCost bool
+	// Models serves /model. Nil means /model says it is not available.
+	Models ModelChooser
 	// Throttle overrides the render throttle. Zero means defaultThrottle
 	// (New substitutes it); a negative value means "flush on every event"
 	// and is what tests pass so they never wait on a clock.
@@ -74,6 +76,7 @@ type Bridge struct {
 	answer   *answerer
 	throttle time.Duration
 	showCost bool
+	models   ModelChooser
 
 	// details holds recent turns' tool transcripts for the "show details"
 	// button. It lives here, not on the renderer, because the press arrives
@@ -153,6 +156,7 @@ func New(o Options) (*Bridge, error) {
 		answer:   newAnswerer(o.Broker, o.Guard),
 		throttle: throttle,
 		showCost: o.ShowCost,
+		models:   o.Models,
 		details:  newDetails(),
 	}, nil
 }
@@ -255,6 +259,12 @@ func (b *Bridge) handleMessage(in Inbound) {
 
 	if content == "/usage" {
 		b.handleUsage(in)
+		b.settle(in) // no turn runs, so nothing else settles it; see /new
+		return
+	}
+
+	if content == "/model" {
+		b.handleModel(in)
 		b.settle(in) // no turn runs, so nothing else settles it; see /new
 		return
 	}
@@ -558,6 +568,10 @@ func (b *Bridge) handleInteraction(i Interaction) {
 	}
 	if isDetailsCustomID(i.CustomID) {
 		b.showDetails(i)
+		return
+	}
+	if isModelCustomID(i.CustomID) {
+		b.chooseModel(i)
 		return
 	}
 	sessionID, pendingID, ans, err := decodeCustomID(i.CustomID)

@@ -51,6 +51,13 @@ type Status struct {
 	Ended   time.Time `json:"ended_at,omitempty"`
 }
 
+// ModelChooser picks a child's model: the one the launching agent named, or
+// the parent session's choice. models.Service implements it; the interface
+// keeps this package free of the catalog.
+type ModelChooser interface {
+	ChildModel(ctx context.Context, parentID, requested string) (string, error)
+}
+
 type child struct {
 	cancel context.CancelFunc
 	prompt string
@@ -72,6 +79,7 @@ type Supervisor struct {
 	// sweep unable to tell a live run from an orphan.
 	detached bool
 	observer Observer
+	models   ModelChooser
 }
 
 func New(st *store.Store, cfg config.SubagentConfig) *Supervisor {
@@ -96,6 +104,29 @@ func (s *Supervisor) SetObserver(o Observer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.observer = o
+}
+
+// SetModels installs the chooser. Without one, a child runs on the chat
+// route and a requested model is refused.
+func (s *Supervisor) SetModels(m ModelChooser) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.models = m
+}
+
+// childModel resolves a child's model before anything is created, so a
+// refused model leaves no session and no run row behind.
+func (s *Supervisor) childModel(ctx context.Context, parentID, requested string) (string, error) {
+	s.mu.Lock()
+	m := s.models
+	s.mu.Unlock()
+	if m == nil {
+		if requested != "" {
+			return "", fmt.Errorf("choosing a sub-agent's model is not available here; omit model")
+		}
+		return "", nil
+	}
+	return m.ChildModel(ctx, parentID, requested)
 }
 
 func (s *Supervisor) currentObserver() Observer {
@@ -146,11 +177,16 @@ func (s *Supervisor) admit(ctx context.Context, parentID string) (int, string, e
 // workspace: inheriting the profile is what stops a sub-agent reaching
 // further than whoever launched it, and inheriting the workspace keeps its
 // filesystem calls inside the same ceiling.
-func (s *Supervisor) start(ctx context.Context, parentID, prompt string, depth int) (string, context.Context, error) {
+func (s *Supervisor) start(ctx context.Context, parentID, prompt string, depth int, model string) (string, context.Context, error) {
 	parent := policy.SessionFrom(ctx)
 	childID, err := s.store.CreateChildSession(ctx, prompt, parent.Workspace, parentID)
 	if err != nil {
 		return "", nil, err
+	}
+	if model != "" {
+		if err := s.store.SetSessionModel(ctx, childID, "chat", model); err != nil {
+			return "", nil, err
+		}
 	}
 	err = s.store.StartSubagentRun(ctx, store.SubagentRun{
 		SessionID: childID, ParentID: parentID, Prompt: prompt, Depth: depth,
@@ -186,9 +222,20 @@ func (s *Supervisor) drain(childID string, ch <-chan Event) (string, error) {
 	return text, turnErr
 }
 
-// Run launches a child and blocks until it settles.
+// Run launches a child on its parent's sub-agent model and blocks until it
+// settles.
 func (s *Supervisor) Run(ctx context.Context, parentID, prompt string) (Status, error) {
+	return s.RunModel(ctx, parentID, prompt, "")
+}
+
+// RunModel is Run with a model the launching agent names. An empty model
+// takes the parent session's choice.
+func (s *Supervisor) RunModel(ctx context.Context, parentID, prompt, model string) (Status, error) {
 	depth, root, err := s.admit(ctx, parentID)
+	if err != nil {
+		return Status{}, err
+	}
+	ref, err := s.childModel(ctx, parentID, model)
 	if err != nil {
 		return Status{}, err
 	}
@@ -199,7 +246,7 @@ func (s *Supervisor) Run(ctx context.Context, parentID, prompt string) (Status, 
 		return Status{}, fmt.Errorf("sub-agents are not available: no agent is attached")
 	}
 
-	childID, childCtx, err := s.start(ctx, parentID, prompt, depth)
+	childID, childCtx, err := s.start(ctx, parentID, prompt, depth, ref)
 	if err != nil {
 		return Status{}, err
 	}
@@ -343,6 +390,12 @@ func (s *Supervisor) AllowDetached(ok bool) {
 
 // Spawn launches a child that outlives the caller's turn and returns its id.
 func (s *Supervisor) Spawn(ctx context.Context, parentID, prompt string) (string, error) {
+	return s.SpawnModel(ctx, parentID, prompt, "")
+}
+
+// SpawnModel is Spawn with a model the launching agent names. An empty model
+// takes the parent session's choice.
+func (s *Supervisor) SpawnModel(ctx context.Context, parentID, prompt, model string) (string, error) {
 	s.mu.Lock()
 	allowed, runner := s.detached, s.runner
 	s.mu.Unlock()
@@ -356,7 +409,11 @@ func (s *Supervisor) Spawn(ctx context.Context, parentID, prompt string) (string
 	if err != nil {
 		return "", err
 	}
-	childID, childCtx, err := s.start(ctx, parentID, prompt, depth)
+	ref, err := s.childModel(ctx, parentID, model)
+	if err != nil {
+		return "", err
+	}
+	childID, childCtx, err := s.start(ctx, parentID, prompt, depth, ref)
 	if err != nil {
 		return "", err
 	}

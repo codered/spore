@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   workspace  TEXT NOT NULL DEFAULT '',
   parent_id  TEXT NOT NULL DEFAULT '',
   source     TEXT NOT NULL DEFAULT '',
+  chat_model     TEXT NOT NULL DEFAULT '',
+  subagent_model TEXT NOT NULL DEFAULT '',
   job_id     INTEGER NOT NULL DEFAULT 0,
   seen_seq   INTEGER NOT NULL DEFAULT 0,
   refined_through     INTEGER NOT NULL DEFAULT 0,

@@ -73,6 +73,9 @@ func chatTUI(ctx context.Context, cfg *config.Config, c *client, sessionID strin
 // line-oriented loop. It reports whether text was a command; true means the
 // caller must not send it as a model turn.
 func runPlainSlash(ctx context.Context, c *client, sessionID, text string, showCost bool, out io.Writer) (bool, error) {
+	if text == "/model" || strings.HasPrefix(text, "/model ") {
+		return true, runModelCommand(ctx, c, sessionID, strings.Fields(text)[1:], out)
+	}
 	switch text {
 	case "/usage":
 		u, err := c.usage(ctx, sessionID)

@@ -86,6 +86,10 @@ func (f *fakeClient) setFailNext(name string, err error) {
 func cloneMessage(m Message) Message {
 	m.Embeds = append([]Embed(nil), m.Embeds...)
 	m.Buttons = append([]Button(nil), m.Buttons...)
+	m.Selects = append([]Select(nil), m.Selects...)
+	for i := range m.Selects {
+		m.Selects[i].Options = append([]SelectOption(nil), m.Selects[i].Options...)
+	}
 	return m
 }
 

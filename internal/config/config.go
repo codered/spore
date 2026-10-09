@@ -27,19 +27,22 @@ type Config struct {
 	ShowCost  bool                      `toml:"show_cost"`
 	Providers map[string]ProviderConfig `toml:"providers"`
 	Routes    []Route                   `toml:"route"`
-	Context   ContextConfig             `toml:"context"`
-	Trace     TraceConfig               `toml:"trace"`
-	Policy    PolicyConfig              `toml:"policy"`
-	Web       WebConfig                 `toml:"web"`
-	Shell     ShellConfig               `toml:"shell"`
-	Daemon    DaemonConfig              `toml:"daemon"`
-	Bridge    BridgeConfig              `toml:"bridge"`
-	MCP       MCPConfig                 `toml:"mcp"`
-	Recall    RecallConfig              `toml:"recall"`
-	Skills    SkillsConfig              `toml:"skills"`
-	Subagents SubagentConfig            `toml:"subagents"`
-	Kernel    KernelConfig              `toml:"kernel"`
-	Refine    RefineConfig              `toml:"refine"`
+	// Routing holds what /model set for the daemon-wide call sites. It is
+	// written only inside the spore-managed routing block.
+	Routing   RoutingConfig  `toml:"routing"`
+	Context   ContextConfig  `toml:"context"`
+	Trace     TraceConfig    `toml:"trace"`
+	Policy    PolicyConfig   `toml:"policy"`
+	Web       WebConfig      `toml:"web"`
+	Shell     ShellConfig    `toml:"shell"`
+	Daemon    DaemonConfig   `toml:"daemon"`
+	Bridge    BridgeConfig   `toml:"bridge"`
+	MCP       MCPConfig      `toml:"mcp"`
+	Recall    RecallConfig   `toml:"recall"`
+	Skills    SkillsConfig   `toml:"skills"`
+	Subagents SubagentConfig `toml:"subagents"`
+	Kernel    KernelConfig   `toml:"kernel"`
+	Refine    RefineConfig   `toml:"refine"`
 }
 
 // SkillsConfig chooses where skills are read from and installed to.
@@ -160,6 +163,36 @@ func (p ProviderConfig) CacheEnabled() bool { return p.Cache == nil || *p.Cache 
 type Route struct {
 	When  string `toml:"when"`
 	Model string `toml:"model"`
+}
+
+// RoutingConfig is the [routing] table. Override maps a daemon-wide call
+// site to the model /model chose for it; it wins over every [[route]].
+type RoutingConfig struct {
+	Override map[string]string `toml:"override"`
+}
+
+// RoutingOverrideSites are the call sites [routing.override] may name. It
+// mirrors router.GlobalSites, which config cannot import.
+var RoutingOverrideSites = []string{"compaction", "title", "classify", "refinement"}
+
+// ConfiguredRefs is every model ref the file names: default_model, each
+// route's model and each override, first appearance first. A provider that
+// cannot list its models offers these.
+func (c *Config) ConfiguredRefs() []string {
+	var out []string
+	add := func(ref string) {
+		if ref != "" && !slices.Contains(out, ref) {
+			out = append(out, ref)
+		}
+	}
+	add(c.DefaultModel)
+	for _, r := range c.Routes {
+		add(r.Model)
+	}
+	for _, site := range RoutingOverrideSites {
+		add(c.Routing.Override[site])
+	}
+	return out
 }
 
 type ContextConfig struct {
@@ -832,6 +865,14 @@ func (c *Config) Validate() error {
 		}
 		if err := ValidateModelRef(r.Model); err != nil {
 			return fmt.Errorf("route %d: %w", i, err)
+		}
+	}
+	for site, ref := range c.Routing.Override {
+		if !slices.Contains(RoutingOverrideSites, site) {
+			return fmt.Errorf("routing.override.%s: /model sets only compaction, title, classify and refinement daemon-wide", site)
+		}
+		if err := ValidateModelRef(ref); err != nil {
+			return fmt.Errorf("routing.override.%s: %w", site, err)
 		}
 	}
 	if c.Context.CompactAt <= 0 || c.Context.CompactAt >= 1 {

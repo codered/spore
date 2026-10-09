@@ -177,6 +177,12 @@ func rewriteLearned(path string, edit func(*LearnedPolicy) error) error {
 		out = strings.TrimRight(body, "\n") + "\n\n" + block
 	}
 
+	return writeConfigFile(path, out)
+}
+
+// writeConfigFile replaces path with out, refusing anything that does not
+// parse. Callers hold learnMu.
+func writeConfigFile(path, out string) error {
 	// Never replace the user's config with something that will not load. This
 	// turns any future bug in this function into a refusal instead of an agent
 	// that cannot start — the user's own file is the thing at stake.
@@ -220,16 +226,21 @@ func appendUnique(list []string, v string) []string {
 // splitManaged returns the text before the managed block, the block's inner
 // body, the text after it, and whether a block was found.
 func splitManaged(body string) (before, inner, after string, found bool) {
-	i := strings.Index(body, ManagedBegin)
+	return splitBlock(body, ManagedBegin, ManagedEnd)
+}
+
+// splitBlock is splitManaged for any pair of markers.
+func splitBlock(body, begin, end string) (before, inner, after string, found bool) {
+	i := strings.Index(body, begin)
 	if i < 0 {
 		return body, "", "", false
 	}
-	rest := body[i+len(ManagedBegin):]
-	j := strings.Index(rest, ManagedEnd)
+	rest := body[i+len(begin):]
+	j := strings.Index(rest, end)
 	if j < 0 {
 		return body, "", "", false
 	}
-	return body[:i], rest[:j], rest[j+len(ManagedEnd):], true
+	return body[:i], rest[:j], rest[j+len(end):], true
 }
 
 func renderManaged(l LearnedPolicy) string {

@@ -807,7 +807,7 @@ function tickCountdowns() {
 
 // slashCommands answer in the browser instead of reaching the model. Any
 // other text starting with "/" is still sent as an ordinary message.
-const slashCommands = { "/usage": showUsage };
+const slashCommands = { "/usage": showUsage, "/model": showModels };
 
 async function send() {
   const input = el("input");
@@ -869,6 +869,112 @@ function usageReport(u) {
   out += "last 30 days, all sessions: " + d.turns + " turns, " + short(d.in) + " in, " +
     short(d.out) + " out, $" + d.cost.toFixed(2);
   return out;
+}
+
+// ---------- /model ----------
+
+// M is the open /model panel: the view the daemon last sent and the tab on
+// screen (0 is the overview; i is view.ops[i - 1]).
+const M = { sid: null, view: null, tab: 0, note: "", err: false };
+
+// modelOptions mirrors internal/modelcmd.Options, so every surface lists an
+// operation's choices in the same order: the selected model, the default,
+// then the rest by provider.
+function modelOptions(v, op) {
+  const o = v.ops.find((x) => x.op === op);
+  if (!o) return [];
+  const avail = new Set(v.groups.flatMap((g) => g.refs || []));
+  const out = [];
+  const seen = new Set();
+  const add = (ref) => {
+    if (!ref || seen.has(ref)) return;
+    seen.add(ref);
+    out.push({ ref, selected: ref === o.selected, isDefault: ref === o.default, available: avail.has(ref) });
+  };
+  add(o.selected);
+  add(o.default);
+  for (const g of v.groups) for (const r of g.refs || []) add(r);
+  return out;
+}
+
+const modelWhere = (scope) => (scope === "global" ? "every session" : "this session");
+
+async function showModels(sid) {
+  M.sid = sid;
+  M.tab = 0;
+  M.note = "";
+  M.err = false;
+  M.view = await api("GET", "/api/models?session={id}", { id: sid });
+  renderModels();
+  openOverlay("models");
+}
+
+async function refreshModels() {
+  try {
+    M.view = await api("GET", "/api/models?session={id}&fresh=1", { id: M.sid });
+    M.note = "";
+    M.err = false;
+  } catch (err) {
+    M.note = err.message;
+    M.err = true;
+  }
+  renderModels();
+}
+
+// chooseModel sends one choice. chat and subagent belong to the session;
+// the other operations are daemon-wide. The panel stays open either way.
+async function chooseModel(op, scope, ref) {
+  try {
+    M.view = scope === "global"
+      ? await api("PUT", "/api/routing?session={id}", { id: M.sid }, { op, ref })
+      : await api("PUT", "/api/sessions/{id}/model", { id: M.sid }, { op, ref });
+    const o = M.view.ops.find((x) => x.op === op);
+    if (o) {
+      M.note = op + " -> " + o.selected + " (" + modelWhere(o.scope) + ")" + (o.selected === o.default ? ", the default" : "");
+    } else {
+      M.note = op + " updated";
+    }
+    M.err = false;
+  } catch (err) {
+    M.note = err.message;
+    M.err = true;
+  }
+  renderModels();
+}
+
+function renderModels() {
+  const v = M.view;
+  const names = ["overview", ...v.ops.map((o) => o.op)];
+  el("models-tabs").replaceChildren(...names.map((name, i) => h("button", {
+    type: "button", role: "tab", class: i === M.tab ? "tab on" : "tab",
+    "aria-selected": i === M.tab ? "true" : "false", text: name,
+    onclick: () => { M.tab = i; renderModels(); },
+  })));
+  const body = el("models-body");
+  if (M.tab === 0) {
+    body.replaceChildren(h("table", { class: "keys models" }, v.ops.map((o, i) => h("tr", {
+      class: "pick", onclick: () => { M.tab = i + 1; renderModels(); },
+    },
+      h("td", { text: o.op }),
+      h("td", { text: "-> " + o.selected + (o.selected === o.default ? " *" : "") }),
+      h("td", { class: "meta", text: o.selected === o.default ? modelWhere(o.scope) : modelWhere(o.scope) + "; * " + o.default }),
+    ))));
+  } else {
+    const o = v.ops[M.tab - 1];
+    body.replaceChildren(h("div", { class: "options" }, modelOptions(v, o.op).map((opt) => h("button", {
+      type: "button", class: opt.selected ? "option on" : "option",
+      disabled: !(opt.available || opt.isDefault),
+      onclick: () => chooseModel(o.op, o.scope, opt.ref),
+    },
+      h("span", { class: "mark", text: opt.selected ? "->" : "" }),
+      h("span", { text: opt.ref + (opt.isDefault ? " *" : "") + (opt.available ? "" : " (unavailable)") }),
+    ))));
+  }
+  el("models-errors").replaceChildren(...v.groups.filter((g) => g.error).map((g) =>
+    h("div", { class: "meta", text: "! " + g.provider + ": " + g.error })));
+  const note = el("models-note");
+  note.textContent = M.note;
+  note.className = M.err ? "note error" : "note";
 }
 
 // ---------- views ----------
@@ -1275,6 +1381,7 @@ function applyKeys() {
 const SHORTCUTS = [
   ["C S A J U R", "open Chat, Skills, Agents, Jobs, Usage, Refinements"],
   [",", "settings"],
+  ["/model", "choose the model for each operation (type it in the composer)"],
   ["?", "this list"],
   ["j / k", "next / previous session"],
   ["b", "next blocked session"],
@@ -1451,6 +1558,7 @@ async function main() {
   el("banner").addEventListener("click", nextBlocked);
   el("filter").addEventListener("input", (e) => { S.filter = e.target.value; renderSidebar(); });
   el("open-settings").addEventListener("click", () => openOverlay("settings"));
+  el("models-refresh").addEventListener("click", refreshModels);
   el("set-enabled").addEventListener("click", () => { S.keys.enabled = !S.keys.enabled; saveKeys(); applyKeys(); });
   el("set-hints").addEventListener("click", () => { S.keys.hints = !S.keys.hints; saveKeys(); applyKeys(); });
   for (const o of document.querySelectorAll(".overlay")) {

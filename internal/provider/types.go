@@ -98,3 +98,10 @@ type Provider interface {
 	Name() string
 	Stream(ctx context.Context, req Request) (<-chan Event, error)
 }
+
+// Lister is a provider that can say which models it serves. /model offers
+// only what a provider lists; a provider without it offers the refs the
+// config names for it.
+type Lister interface {
+	ListModels(ctx context.Context) ([]string, error)
+}

@@ -1,6 +1,7 @@
 package router
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/codered/spore/internal/config"
@@ -67,5 +68,77 @@ func TestRouteSubagentToItsOwnModel(t *testing.T) {
 	}
 	if got := r.Model(SiteChat); got != "big" {
 		t.Errorf("Model(chat) = %q, want big -- the subagent rule must not match chat", got)
+	}
+}
+
+func TestOverrideWinsAndDefaultIgnoresIt(t *testing.T) {
+	r, err := New([]config.Route{{When: "title", Model: "a/routed"}}, "a/default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetOverride(SiteTitle, "b/picked"); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Model(SiteTitle); got != "b/picked" {
+		t.Fatalf("Model(title) = %q, want the override", got)
+	}
+	if got := r.Default(SiteTitle); got != "a/routed" {
+		t.Fatalf("Default(title) = %q, want the hand-written route", got)
+	}
+	if err := r.SetOverride(SiteTitle, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Model(SiteTitle); got != "a/routed" {
+		t.Fatalf("after clearing, Model(title) = %q, want the route", got)
+	}
+}
+
+func TestOverrideRefusesPerSessionSites(t *testing.T) {
+	r, _ := New(nil, "a/default")
+	for _, site := range []string{SiteChat, SiteSubagent, "nope"} {
+		if err := r.SetOverride(site, "b/x"); err == nil {
+			t.Errorf("SetOverride(%q) succeeded, want an error", site)
+		}
+	}
+}
+
+func TestRuleMatches(t *testing.T) {
+	r, _ := New([]config.Route{{When: "compaction|subagent", Model: "a/x"}}, "a/default")
+	if !r.RuleMatches(SiteSubagent) {
+		t.Error("RuleMatches(subagent) = false, want true")
+	}
+	if r.RuleMatches(SiteChat) {
+		t.Error("RuleMatches(chat) = true, want false")
+	}
+}
+
+func TestOverridesAreSafeConcurrently(t *testing.T) {
+	r, _ := New(nil, "a/default")
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 1000; i++ {
+			_ = r.SetOverride(SiteTitle, "b/x")
+			_ = r.SetOverride(SiteTitle, "")
+		}
+		close(done)
+	}()
+	for i := 0; i < 1000; i++ {
+		_ = r.Model(SiteTitle)
+	}
+	<-done
+}
+
+func TestSitesOrder(t *testing.T) {
+	want := []string{SiteChat, SiteCompaction, SiteTitle, SiteClassify, SiteRefinement, SiteSubagent}
+	if !slices.Equal(Sites, want) {
+		t.Fatalf("Sites = %v, want %v", Sites, want)
+	}
+	for _, s := range GlobalSites {
+		if !IsGlobalSite(s) {
+			t.Errorf("IsGlobalSite(%q) = false", s)
+		}
+	}
+	if IsGlobalSite(SiteChat) || IsGlobalSite(SiteSubagent) {
+		t.Error("chat and subagent are per-session, not global")
 	}
 }
