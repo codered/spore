@@ -57,9 +57,16 @@ type Session struct {
 	ParentID string
 	// Source is where the session was opened from: one of the Source*
 	// constants. Fixed at creation.
-	Source    string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Source string
+	// ChatModel is the model /model chose for this session's own turns, or
+	// "" for the chat route. A sub-agent's session is created with the model
+	// it was launched on, so its turns read it from here too.
+	ChatModel string
+	// SubagentModel is what this session's sub-agents run on, or "" to
+	// inherit the session's own chat model.
+	SubagentModel string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 	// JobID is the scheduled job a job run belongs to, 0 for anything else.
 	JobID int64
 	// SeenSeq is the newest message a human has opened; LastSeq is the
@@ -73,7 +80,7 @@ func (s Session) Unread() bool { return s.LastSeq > s.SeenSeq }
 
 // sessionCols is every column a full Session row is scanned from, in
 // scanSession's order.
-const sessionCols = `id, title, workspace, parent_id, source, created_at, updated_at, job_id, seen_seq,
+const sessionCols = `id, title, workspace, parent_id, source, chat_model, subagent_model, created_at, updated_at, job_id, seen_seq,
 	(SELECT coalesce(max(seq), 0) FROM messages WHERE session_id = sessions.id)`
 
 type rowScanner interface{ Scan(dest ...any) error }
@@ -81,7 +88,7 @@ type rowScanner interface{ Scan(dest ...any) error }
 func scanSession(r rowScanner) (Session, error) {
 	var sess Session
 	var created, updated string
-	if err := r.Scan(&sess.ID, &sess.Title, &sess.Workspace, &sess.ParentID, &sess.Source, &created, &updated,
+	if err := r.Scan(&sess.ID, &sess.Title, &sess.Workspace, &sess.ParentID, &sess.Source, &sess.ChatModel, &sess.SubagentModel, &created, &updated,
 		&sess.JobID, &sess.SeenSeq, &sess.LastSeq); err != nil {
 		return Session{}, err
 	}
@@ -258,6 +265,13 @@ func migrateSessions(db *sql.DB) error {
 	if !have["refine_attempted_at"] {
 		if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN refine_attempted_at TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("add sessions.refine_attempted_at: %w", err)
+		}
+	}
+	for _, col := range []string{"chat_model", "subagent_model"} {
+		if !have[col] {
+			if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN ` + col + ` TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("add sessions.%s: %w", col, err)
+			}
 		}
 	}
 	return nil
@@ -454,6 +468,33 @@ func (s *Store) CreateChildSession(ctx context.Context, title, workspace, parent
 		return "", fmt.Errorf("create child session: %w", err)
 	}
 	return id, nil
+}
+
+// SetSessionModel stores the model chosen for one of a session's own call
+// sites, "chat" or "subagent"; "" clears it. updated_at is left alone:
+// choosing a model is not activity in the conversation.
+func (s *Store) SetSessionModel(ctx context.Context, id, site, ref string) error {
+	var col string
+	switch site {
+	case "chat":
+		col = "chat_model"
+	case "subagent":
+		col = "subagent_model"
+	default:
+		return fmt.Errorf("set session model: %q is not a per-session call site", site)
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET `+col+` = ? WHERE id = ?`, ref, id)
+	if err != nil {
+		return fmt.Errorf("set session model: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set session model: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("set session model: no session %s", id)
+	}
+	return nil
 }
 
 // SessionAncestors returns the chain above id, immediate parent first and the
