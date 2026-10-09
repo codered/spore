@@ -187,6 +187,27 @@ func TestModelSelectCapsAtTwentyFiveKeepingSelectedAndDefault(t *testing.T) {
 	}
 }
 
+func TestAMaximalRefKeepsItsMarkersInTheLabel(t *testing.T) {
+	ref := "studio/" + strings.Repeat("x", 92) // 99 runes
+	v := chooserView()
+	v.Ops[0].Selected, v.Ops[0].Default = ref, ref
+	v.Groups = []models.Group{{Provider: "studio", Refs: []string{ref}}}
+	s, ok := modelSelect(v, "S1", "chat")
+	if !ok || len(s.Options) != 1 {
+		t.Fatalf("select = %+v, ok %v", s, ok)
+	}
+	label := s.Options[0].Label
+	if n := len([]rune(label)); n > 100 {
+		t.Fatalf("label is %d runes, want <= 100: %q", n, label)
+	}
+	if !strings.HasPrefix(label, "->") || !strings.HasSuffix(label, " *") {
+		t.Fatalf("label %q lost its markers", label)
+	}
+	if s.Options[0].Value != ref {
+		t.Fatalf("value = %q, want the full ref", s.Options[0].Value)
+	}
+}
+
 func TestSelectsRenderBeforeButtonsWithinFiveRows(t *testing.T) {
 	sel := Select{CustomID: "x", Placeholder: "p", Options: []SelectOption{{Label: "a", Value: "a", Default: true}}}
 	rows := componentsFor([]Button{{CustomID: "b", Label: "b"}}, []Select{sel, sel, sel, sel, sel, sel})

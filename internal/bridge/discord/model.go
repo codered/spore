@@ -101,7 +101,13 @@ func modelSelect(v models.View, sessionID, op string) (Select, bool) {
 		if !o.Choosable() || len(o.Ref) > maxSelectValue {
 			continue
 		}
-		label := o.Ref
+		// The label keeps its markers inside Discord's 100-character cap;
+		// the value still carries the whole ref.
+		shown := o.Ref
+		if len([]rune(shown)) > 94 {
+			shown = string([]rune(shown)[:93]) + "…"
+		}
+		label := shown
 		if o.Selected {
 			label = "-> " + label
 		}
