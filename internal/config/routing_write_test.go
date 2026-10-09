@@ -124,3 +124,16 @@ func TestConfiguredRefs(t *testing.T) {
 		t.Fatalf("ConfiguredRefs = %s", got)
 	}
 }
+
+func TestSetRoutingOverrideRefusesAHalfDeletedBlock(t *testing.T) {
+	body := routingBase + "\n" + RoutingBegin + "\n[routing.override]\ntitle = \"a/b\"\n"
+	p := write(t, body)
+	err := SetRoutingOverride(p, "title", "a/c")
+	if err == nil || !strings.Contains(err.Error(), "no end marker") {
+		t.Fatalf("err = %v, want a no-end-marker refusal", err)
+	}
+	got, _ := os.ReadFile(p)
+	if string(got) != body {
+		t.Fatalf("file changed:\n%s", got)
+	}
+}

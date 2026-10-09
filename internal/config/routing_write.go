@@ -47,6 +47,9 @@ func SetRoutingOverride(path, site, ref string) error {
 	if n := strings.Count(body, RoutingBegin); n > 1 {
 		return fmt.Errorf("%s contains %d spore-managed routing markers; remove all but one block by hand", path, n)
 	}
+	if strings.Count(body, RoutingBegin) == 1 && !strings.Contains(body, RoutingEnd) {
+		return fmt.Errorf("%s has a spore-managed routing begin marker with no end marker; fix the block by hand", path)
+	}
 
 	before, inner, after, found := splitBlock(body, RoutingBegin, RoutingEnd)
 	over := map[string]string{}
