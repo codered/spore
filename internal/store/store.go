@@ -474,16 +474,16 @@ func (s *Store) CreateChildSession(ctx context.Context, title, workspace, parent
 // sites, "chat" or "subagent"; "" clears it. updated_at is left alone:
 // choosing a model is not activity in the conversation.
 func (s *Store) SetSessionModel(ctx context.Context, id, site, ref string) error {
-	var col string
+	var query string
 	switch site {
 	case "chat":
-		col = "chat_model"
+		query = `UPDATE sessions SET chat_model = ? WHERE id = ?`
 	case "subagent":
-		col = "subagent_model"
+		query = `UPDATE sessions SET subagent_model = ? WHERE id = ?`
 	default:
 		return fmt.Errorf("set session model: %q is not a per-session call site", site)
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET `+col+` = ? WHERE id = ?`, ref, id)
+	res, err := s.db.ExecContext(ctx, query, ref, id)
 	if err != nil {
 		return fmt.Errorf("set session model: %w", err)
 	}
