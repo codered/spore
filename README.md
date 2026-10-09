@@ -1142,7 +1142,7 @@ file. Releases tagged `-alpha` are early builds: expect rough edges, and please
 ```bash
 # pick linux-amd64, linux-arm64, darwin-amd64 or darwin-arm64
 target=linux-amd64
-tag=v0.1.0-alpha.7   # the newest tag on the releases page
+tag=v0.1.0-alpha.8   # the newest tag on the releases page
 curl -fsSLO https://github.com/codered/spore/releases/download/$tag/spore-$target.tar.gz
 tar -xzf spore-$target.tar.gz
 install -m 0755 spore-$target/spore ~/.local/bin/spore
