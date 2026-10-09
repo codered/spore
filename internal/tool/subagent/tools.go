@@ -36,6 +36,10 @@ func (t *runTool) Schema() json.RawMessage {
 	    "prompt": {
 	      "type": "string",
 	      "description": "The complete, self-contained task for the sub-agent."
+	    },
+	    "model": {
+	      "type": "string",
+	      "description": "Optional provider/model ref to run the sub-agent on, from the models /model lists. Omit to use this session's sub-agent model, which is your own model unless the user chose another."
 	    }
 	  },
 	  "required": ["prompt"]
@@ -47,6 +51,7 @@ func (t *runTool) ReadOnly() bool { return false }
 func (t *runTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var in struct {
 		Prompt string `json:"prompt"`
+		Model  string `json:"model"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil {
 		return "", fmt.Errorf("agent_run: %w", err)
@@ -58,7 +63,7 @@ func (t *runTool) Call(ctx context.Context, args json.RawMessage) (string, error
 	if sess.ID == "" {
 		return "", fmt.Errorf("agent_run: no session on the context")
 	}
-	st, err := t.sup.Run(ctx, sess.ID, in.Prompt)
+	st, err := t.sup.RunModel(ctx, sess.ID, in.Prompt, in.Model)
 	if err != nil {
 		return "", err
 	}
@@ -84,6 +89,10 @@ func (t *spawnTool) Schema() json.RawMessage {
 	    "prompt": {
 	      "type": "string",
 	      "description": "The complete, self-contained task for the sub-agent."
+	    },
+	    "model": {
+	      "type": "string",
+	      "description": "Optional provider/model ref to run the sub-agent on, from the models /model lists. Omit to use this session's sub-agent model, which is your own model unless the user chose another."
 	    }
 	  },
 	  "required": ["prompt"]
@@ -95,6 +104,7 @@ func (t *spawnTool) ReadOnly() bool { return false }
 func (t *spawnTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var in struct {
 		Prompt string `json:"prompt"`
+		Model  string `json:"model"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil {
 		return "", fmt.Errorf("agent_spawn: %w", err)
@@ -106,7 +116,7 @@ func (t *spawnTool) Call(ctx context.Context, args json.RawMessage) (string, err
 	if sess.ID == "" {
 		return "", fmt.Errorf("agent_spawn: no session on the context")
 	}
-	id, err := t.sup.Spawn(ctx, sess.ID, in.Prompt)
+	id, err := t.sup.SpawnModel(ctx, sess.ID, in.Prompt, in.Model)
 	if err != nil {
 		return "", err
 	}
