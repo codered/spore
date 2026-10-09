@@ -929,7 +929,11 @@ async function chooseModel(op, scope, ref) {
       ? await api("PUT", "/api/routing?session={id}", { id: M.sid }, { op, ref })
       : await api("PUT", "/api/sessions/{id}/model", { id: M.sid }, { op, ref });
     const o = M.view.ops.find((x) => x.op === op);
-    M.note = op + " -> " + o.selected + " (" + modelWhere(o.scope) + ")" + (o.selected === o.default ? ", the default" : "");
+    if (o) {
+      M.note = op + " -> " + o.selected + " (" + modelWhere(o.scope) + ")" + (o.selected === o.default ? ", the default" : "");
+    } else {
+      M.note = op + " updated";
+    }
     M.err = false;
   } catch (err) {
     M.note = err.message;
