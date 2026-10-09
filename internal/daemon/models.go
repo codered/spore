@@ -50,8 +50,14 @@ func (s *Server) handleSetSessionModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in modelChoice
+	// A model choice is one op and one ref; anything larger is not a request this route serves.
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeError(w, http.StatusBadRequest, "bad body: %v", err)
+		return
+	}
+	if !router.ValidSite(in.Op) {
+		writeError(w, http.StatusBadRequest, "unknown operation %q", in.Op)
 		return
 	}
 	if in.Op != router.SiteChat && in.Op != router.SiteSubagent {
@@ -75,8 +81,14 @@ func (s *Server) handleSetRouting(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var in modelChoice
+	// A model choice is one op and one ref; anything larger is not a request this route serves.
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeError(w, http.StatusBadRequest, "bad body: %v", err)
+		return
+	}
+	if !router.ValidSite(in.Op) {
+		writeError(w, http.StatusBadRequest, "unknown operation %q", in.Op)
 		return
 	}
 	if !router.IsGlobalSite(in.Op) {

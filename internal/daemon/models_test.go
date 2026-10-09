@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -138,4 +139,34 @@ func TestModelsWithoutAServiceIsUnavailable(t *testing.T) {
 	if res.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", res.StatusCode)
 	}
+}
+
+func TestPutNamesAnUnknownOperation(t *testing.T) {
+	ts, id := modelsServer(t)
+	for _, url := range []string{ts.URL + "/api/sessions/" + id + "/model", ts.URL + "/api/routing"} {
+		res := put(t, url, map[string]string{"op": "bogus", "ref": "x/y"})
+		body := readAll(t, res)
+		if res.StatusCode != http.StatusBadRequest || !strings.Contains(body, "unknown operation") {
+			t.Errorf("PUT %s bogus op: status = %d, body = %q; want 400 naming an unknown operation", url, res.StatusCode, body)
+		}
+	}
+}
+
+func TestPutCapsTheBody(t *testing.T) {
+	ts, id := modelsServer(t)
+	res := put(t, ts.URL+"/api/sessions/"+id+"/model", map[string]string{"op": "chat", "ref": strings.Repeat("x", 70<<10)})
+	body := readAll(t, res)
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(body, "bad body") {
+		t.Fatalf("oversized body: status = %d, body = %q; want 400 bad body", res.StatusCode, body)
+	}
+}
+
+func readAll(t *testing.T, res *http.Response) string {
+	t.Helper()
+	defer res.Body.Close()
+	raw, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }
