@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/router"
@@ -44,6 +45,9 @@ type Service struct {
 	Router     *router.Router
 	Catalog    *Catalog
 	ConfigPath string
+
+	// mu serialises daemon-wide choices so the file and the router always agree.
+	mu sync.Mutex
 }
 
 // View reports every op for a session ("" for none: chat and subagent then
@@ -110,10 +114,13 @@ func (s *Service) Set(ctx context.Context, sessionID, op, ref string) (View, err
 		return View{}, fmt.Errorf("%w: %s is not available for %s", ErrInvalid, ref, op)
 	}
 	if global {
-		if err := config.SetRoutingOverride(s.ConfigPath, op, ref); err != nil {
-			return View{}, err
+		s.mu.Lock()
+		err := config.SetRoutingOverride(s.ConfigPath, op, ref)
+		if err == nil {
+			err = s.Router.SetOverride(op, ref)
 		}
-		if err := s.Router.SetOverride(op, ref); err != nil {
+		s.mu.Unlock()
+		if err != nil {
 			return View{}, err
 		}
 	} else if err := s.Store.SetSessionModel(ctx, sessionID, op, ref); err != nil {

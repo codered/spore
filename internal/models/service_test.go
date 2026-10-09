@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/codered/spore/internal/config"
@@ -179,5 +180,32 @@ func TestChildModelPrecedence(t *testing.T) {
 	_, err := f.svc.ChildModel(ctx, f.sid, "p/unknown")
 	if err == nil || !strings.Contains(err.Error(), "p/tiny") {
 		t.Fatalf("unknown explicit model: err = %v, want one listing the available refs", err)
+	}
+}
+
+func TestConcurrentGlobalSetsLeaveFileAndRouterAgreeing(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		ref := "p/tiny"
+		if i%2 == 1 {
+			ref = "p/big"
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := f.svc.Set(ctx, "", "title", ref); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	cfg, err := config.Load(f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := cfg.Routing.Override["title"], f.svc.Router.Model("title"); got != want {
+		t.Fatalf("file says %q, live router says %q", got, want)
 	}
 }
