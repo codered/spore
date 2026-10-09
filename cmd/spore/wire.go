@@ -14,6 +14,7 @@ import (
 	"github.com/codered/spore/internal/daemon"
 	mcphost "github.com/codered/spore/internal/mcp"
 	"github.com/codered/spore/internal/memory"
+	"github.com/codered/spore/internal/models"
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/provider/anthropic"
@@ -106,6 +107,7 @@ type agentParts struct {
 	mirror *mirror.Mirror
 	sup    *subagent.Supervisor
 	recall recall.Recall
+	models *models.Service
 }
 
 // buildAgent turns configuration into a wired agent. Plan 1 registers no
@@ -136,6 +138,14 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	rt, err := router.New(cfg.Routes, cfg.DefaultModel)
 	if err != nil {
 		return nil, agentParts{}, err
+	}
+	for site, ref := range cfg.Routing.Override {
+		if err := rt.SetOverride(site, ref); err != nil {
+			return nil, agentParts{}, fmt.Errorf("routing.override.%s: %w", site, err)
+		}
+	}
+	if rt.RuleMatches(router.SiteSubagent) {
+		slog.Default().Warn("a [[route]] matches \"subagent\" but no longer picks the sub-agent model: sub-agents run on their parent's model, or the one /model or agent_run chose")
 	}
 
 	// The fact cache is loaded once here; the memory tool reloads it after
@@ -188,6 +198,10 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	// receives the agent after: buildAgent constructs the registry first, so
 	// the cycle is closed by Attach rather than by construction order.
 	sup := subagent.New(st, cfg.Subagents)
+	// /model's service: the supervisor asks it for each child's model, and
+	// the daemon serves it.
+	modelSvc := &models.Service{Store: st, Router: rt, Catalog: models.NewCatalog(reg, cfg.ConfiguredRefs()), ConfigPath: cfg.Path}
+	sup.SetModels(modelSvc)
 
 	// One Refiner per daemon: the tool records the model's requests on it,
 	// the agent calls its hooks, and the daemon runs its sweeper and routes.
@@ -203,7 +217,7 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	a.Env = workspace.NewDescribers().Describe
 	a.Refine = ref
 	sup.Attach(a)
-	return a, agentParts{host: host, mirror: mir, sup: sup, recall: recallBackend}, nil
+	return a, agentParts{host: host, mirror: mir, sup: sup, recall: recallBackend, models: modelSvc}, nil
 }
 
 // buildServer wires the daemon. The ordering here is load-bearing: the guard
@@ -232,6 +246,7 @@ func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, *mcphost.
 	reloader := policy.NewReloader(cfg.Path, cfg.Policy, guard)
 	srv.Attach(a, guard)
 	srv.AttachSubagents(parts.sup)
+	srv.AttachModels(parts.models)
 	ref, ok := a.Refine.(*refine.Refiner)
 	if !ok {
 		return nil, nil, nil, fmt.Errorf("internal: agent refine hook is %T, want *refine.Refiner", a.Refine)

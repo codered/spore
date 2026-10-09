@@ -1059,6 +1059,26 @@ brave_api_key = "${BRAVE_API_KEY}"   # enables web_search
 addr = "127.0.0.1:7777"   # loopback only; a non-loopback address is rejected
 ```
 
+### Choosing models while spore runs: `/model`
+
+`/model` shows which model each operation runs on (`->`) and its default
+from `config.toml` (`*`), then the models your providers serve right now
+(each OpenAI-compatible provider is asked for `/v1/models`; Anthropic
+providers offer the refs your config names). Choices come only from that
+list.
+
+- `chat` and `subagent` are chosen **per session**. A sub-agent runs on its
+  parent's model unless the session chose a sub-agent model, or the parent
+  passed `model` to `agent_run` / `agent_spawn`. A `[[route]]` for
+  `subagent` no longer selects anything.
+- `compaction`, `title`, `classify` and `refinement` are chosen **for every
+  session**, take effect at once, and are written to a spore-managed
+  `[routing.override]` block in `config.toml`. Choosing the `*` default
+  removes the override.
+
+In plain chat, `/model` prints numbered lists and `/model <operation> <number>`
+chooses.
+
 **Built-in tools:** `fs_read`, `fs_write`, `fs_edit`, `fs_list`, `fs_glob`,
 `fs_grep`, `shell_exec`, `web_fetch`, `web_search`, `go_run`, `memory`,
 `recall_search`, `skill_load`, `skill_install`, `agent_run`, `agent_spawn`,
