@@ -12,6 +12,7 @@ import (
 
 	"github.com/codered/spore/internal/agent"
 	"github.com/codered/spore/internal/config"
+	"github.com/codered/spore/internal/models"
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/refine"
 	"github.com/codered/spore/internal/store"
@@ -56,6 +57,8 @@ type Server struct {
 	// titler names sessions from their first message. Nil means sessions
 	// are named from the message's first line instead.
 	titler Titler
+	// models serves /model. Nil means the routes answer 503.
+	models *models.Service
 	// naming holds the sessions a name is being made for, so two quick
 	// turns do not make two calls.
 	naming sync.Map
@@ -190,6 +193,9 @@ func (s *Server) buildMux() *http.ServeMux {
 	api("DELETE /api/jobs/{id}", s.handleCancelJob)
 	api("GET /api/jobs/{id}/runs", s.handleJobRuns)
 	api("GET /api/usage", s.handleUsage)
+	api("GET /api/models", s.handleModels)
+	api("PUT /api/sessions/{id}/model", s.handleSetSessionModel)
+	api("PUT /api/routing", s.handleSetRouting)
 	api("GET /api/policy", s.handlePolicy)
 	api("DELETE /api/policy/learned", s.handleRevoke)
 	api("GET /api/memory", s.handleMemory)
