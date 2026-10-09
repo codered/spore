@@ -32,6 +32,46 @@ func New(baseURL, apiKey string, hc *http.Client) *Client {
 
 func (c *Client) Name() string { return "openaicompat" }
 
+// ListModels asks the endpoint which models it serves: GET {base_url}/models
+// in the OpenAI shape, data[].id. llama-server, LiteLLM and Unsloth Studio
+// all answer it. The ids come back bare and sorted; the caller adds the
+// provider prefix. The caller's context bounds the call: the client's own
+// timeout is sized for a long completion, not a listing.
+func (c *Client) ListModels(ctx context.Context) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("list models: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+	}
+	var body struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("list models: %w", err)
+	}
+	ids := make([]string, 0, len(body.Data))
+	for _, d := range body.Data {
+		if d.ID != "" {
+			ids = append(ids, d.ID)
+		}
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
 // toWire flattens spore messages into OpenAI's shape: assistant tool calls
 // become `tool_calls`, and each tool result becomes its own `tool` message.
 func toWire(system []provider.Block, msgs []provider.Message) []map[string]any {

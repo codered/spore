@@ -2,6 +2,7 @@ package provider
 
 import (
 	"math"
+	"slices"
 	"testing"
 )
 
@@ -24,5 +25,20 @@ func TestCostDefaultsTheCacheRatesFromPriceIn(t *testing.T) {
 
 	if got, want := p.Cost(u), 13.5; math.Abs(got-want) > 1e-9 {
 		t.Errorf("Cost = %v, want %v (1.25x + 0.10x of price_in)", got, want)
+	}
+}
+
+func TestRegistryNamesAndProvider(t *testing.T) {
+	r := NewRegistry()
+	r.Register("zeta", NewScript(), ProviderPrice{})
+	r.Register("alpha", NewScript(), ProviderPrice{})
+	if got := r.Names(); !slices.Equal(got, []string{"alpha", "zeta"}) {
+		t.Fatalf("Names = %v", got)
+	}
+	if _, ok := r.Provider("alpha"); !ok {
+		t.Fatal("Provider(alpha) missing")
+	}
+	if _, ok := r.Provider("nope"); ok {
+		t.Fatal("Provider(nope) found")
 	}
 }

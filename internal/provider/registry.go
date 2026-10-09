@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -48,6 +49,26 @@ func (r *Registry) Register(name string, p Provider, price ProviderPrice) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.entries[name] = entry{p: p, price: price}
+}
+
+// Names returns the registered provider names, sorted.
+func (r *Registry) Names() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	names := make([]string, 0, len(r.entries))
+	for n := range r.entries {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// Provider returns one registered provider.
+func (r *Registry) Provider(name string) (Provider, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.entries[name]
+	return e.p, ok
 }
 
 // Resolve splits a "provider/model" ref and returns the registered provider,
