@@ -283,17 +283,12 @@ func TestLaterRunsFollowTheNotifyMode(t *testing.T) {
 			if len(notes) != want {
 				t.Fatalf("notes = %v; want %d", notes, want)
 			}
-			if tc.ok && !strings.Contains(notes[0], "— ok") {
-				t.Errorf("ok note = %s", notes[0])
+			if tc.ok && !strings.Contains(notes[0], "ok run") {
+				t.Errorf("ok note = %s; want it to carry the run's reply", notes[0])
 			}
 			if tc.failed && !strings.Contains(notes[len(notes)-1], "failed at") ||
 				tc.failed && !strings.Contains(notes[len(notes)-1], "provider timeout") {
 				t.Errorf("failure note = %s", notes[len(notes)-1])
-			}
-			for _, note := range notes {
-				if strings.Contains(note, "ok run") {
-					t.Errorf("a note carried the run's reply: %s", note)
-				}
 			}
 			delivered, _ := n.snapshot()
 			if len(delivered) != want {
@@ -323,6 +318,26 @@ func TestLaterRunsFollowTheNotifyMode(t *testing.T) {
 				t.Errorf("published %d job_note events; want %d", published, want)
 			}
 		})
+	}
+}
+
+// A reply too long for one Discord message is clipped, and the note says
+// where the rest is.
+func TestRunNoteClipsALongReply(t *testing.T) {
+	job := store.Job{ID: 7, LastRun: time.Date(2026, 10, 9, 14, 30, 0, 0, time.UTC)}
+	note := runNote(job, WireEvent{Type: WireTurnDone}, strings.Repeat("é", 5000))
+	if n := len([]rune(note)); n > 2000 {
+		t.Errorf("note is %d runes; Discord takes 2000", n)
+	}
+	if !strings.Contains(note, "Jobs folder") {
+		t.Errorf("a clipped note must point at the rest: %q", note[len(note)-80:])
+	}
+	short := runNote(job, WireEvent{Type: WireTurnDone}, "sunny, 74°F")
+	if !strings.Contains(short, "job 7 ran at 14:30 UTC") || !strings.HasSuffix(short, "sunny, 74°F") {
+		t.Errorf("short note = %q", short)
+	}
+	if empty := runNote(job, WireEvent{Type: WireTurnDone}, ""); !strings.Contains(empty, "— ok") {
+		t.Errorf("a run with no reply still says it ran: %q", empty)
 	}
 }
 

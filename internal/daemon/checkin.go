@@ -23,6 +23,10 @@ const SchedulerTag = "[spore scheduler]"
 // the model. The model quotes it briefly anyway; job_output has all of it.
 const checkInReplyLimit = 1500
 
+// noteReplyLimit bounds the reply a run's note carries, so the note fits in
+// one Discord message (2000 characters) with its header and footer.
+const noteReplyLimit = 1900
+
 // noteTimeout bounds one note's delivery, Discord included. A note is sent
 // from the end of a job run and must not hold that goroutine for long.
 const noteTimeout = 15 * time.Second
@@ -85,14 +89,22 @@ func (s *Server) afterJobRun(jobID int64, runSession string, end WireEvent) {
 	default:
 		return
 	}
-	if err := s.postNote(ctx, job.OriginSessionID, runNote(job, end)); err != nil {
+	var reply string
+	if ok {
+		if reply, err = schedule.LastReply(ctx, s.store, runSession); err != nil {
+			slog.Warn("could not read the job's reply for its note", "job", job.ID, "err", err)
+		}
+	}
+	if err := s.postNote(ctx, job.OriginSessionID, runNote(job, end, reply)); err != nil {
 		slog.Warn("could not post the job's note", "job", job.ID, "err", err)
 	}
 }
 
-// runNote is the one line a later run leaves in the origin chat. It says
-// the job ran, never what it said: that is in the Jobs folder.
-func runNote(job store.Job, end WireEvent) string {
+// runNote is what a later run leaves in the origin chat. A successful run
+// carries its reply, since a job's reply is usually the point of it (a
+// forecast, a digest); a reply too long for one Discord message is clipped
+// and the rest left in the Jobs folder. A failed run says only that it failed.
+func runNote(job store.Job, end WireEvent, reply string) string {
 	at := job.LastRun
 	if at.IsZero() {
 		at = time.Now()
@@ -100,7 +112,14 @@ func runNote(job store.Job, end WireEvent) string {
 	when := at.UTC().Format("15:04") + " UTC"
 	switch end.Type {
 	case WireTurnDone:
-		return fmt.Sprintf("⏰ job %d ran at %s — ok · it's in the Jobs folder", job.ID, when)
+		reply = strings.TrimSpace(reply)
+		if reply == "" {
+			return fmt.Sprintf("⏰ job %d ran at %s — ok · it's in the Jobs folder", job.ID, when)
+		}
+		if len([]rune(reply)) > noteReplyLimit {
+			reply = clip(reply, noteReplyLimit) + "\n\n· the rest is in the Jobs folder"
+		}
+		return fmt.Sprintf("⏰ job %d ran at %s:\n\n%s", job.ID, when, reply)
 	case WireStopped:
 		return fmt.Sprintf("⏰ job %d was stopped at %s · it's in the Jobs folder", job.ID, when)
 	default:

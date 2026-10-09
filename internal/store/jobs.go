@@ -270,6 +270,22 @@ func (s *Store) SetJobNotify(ctx context.Context, id int64, mode string) error {
 	return nil
 }
 
+// AttachJobOrigin makes sessionID the chat a job reports to, if the job has
+// none: its own was deleted, or it was made over the API. It reports whether
+// it attached. A job that already has a chat keeps it.
+func (s *Store) AttachJobOrigin(ctx context.Context, id int64, sessionID string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE jobs SET origin_session_id = ? WHERE id = ? AND origin_session_id = ''`, sessionID, id)
+	if err != nil {
+		return false, fmt.Errorf("attach job %d to %s: %w", id, sessionID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // ClaimJobCheckIn marks the job's first-run check-in as taken, reporting
 // false when it already was. It is a claim rather than a plain write so two
 // runs ending together cannot both check in.

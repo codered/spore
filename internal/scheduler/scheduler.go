@@ -121,12 +121,8 @@ func CreateJob(ctx context.Context, st *store.Store, spec, prompt, origin string
 		return store.Job{}, ErrNoFutureRun
 	}
 	if origin != "" {
-		anc, err := st.SessionAncestors(ctx, origin)
-		if err != nil {
-			return store.Job{}, fmt.Errorf("find the chat this job belongs to: %w", err)
-		}
-		if len(anc) > 0 {
-			origin = anc[len(anc)-1]
+		if origin, err = RootSession(ctx, st, origin); err != nil {
+			return store.Job{}, err
 		}
 	}
 	job := store.Job{
@@ -139,6 +135,19 @@ func CreateJob(ctx context.Context, st *store.Store, spec, prompt, origin string
 	}
 	job.ID = id
 	return job, nil
+}
+
+// RootSession is the root of the session's sub-agent tree: the chat a
+// person is reading, and so the one a job reports to.
+func RootSession(ctx context.Context, st *store.Store, sessionID string) (string, error) {
+	anc, err := st.SessionAncestors(ctx, sessionID)
+	if err != nil {
+		return "", fmt.Errorf("find the chat this job belongs to: %w", err)
+	}
+	if len(anc) > 0 {
+		return anc[len(anc)-1], nil
+	}
+	return sessionID, nil
 }
 
 // Run ticks until ctx is cancelled. It ticks once immediately, which is how
