@@ -187,6 +187,9 @@ func (m *Model) View() string {
 	if m.mode == modeHistory {
 		body = placeOver(body, m.historyView(), m.width)
 	}
+	if m.mode == modeModels && m.models != nil {
+		body = placeOver(body, m.modelsView(), m.width)
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), body, m.statusView())
 }
 
@@ -409,6 +412,7 @@ func helpText() string {
 		"  ctrl+b    toggle the sidebar           q          quit",
 		"  d         delete the session (y here, D also on Discord)   :delete all  delete every session",
 		"  z         open / close the jobs folder     enter on the folder opens / closes it; on a job, lists its runs",
+		"  :model    choose the model for each operation (also /model while typing)",
 		"",
 		styKey.Render("APPROVAL") + "  (normal mode, while one is showing)",
 		"  y allow once · n deny · s allow the tool this session · p allow once and propose the pattern for review",

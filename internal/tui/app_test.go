@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/codered/spore/internal/daemon"
+	"github.com/codered/spore/internal/models"
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/subagent"
@@ -58,6 +59,11 @@ type fakeBackend struct {
 	reconnected   []string
 	revoked       []string
 	deletedFacts  []string
+
+	modelsView daemon.ModelsJSON
+	modelsErr  error
+	modelSets  []string
+	setErr     error
 }
 
 func (f *fakeBackend) Sessions(context.Context) ([]daemon.SessionJSON, error) { return f.sessions, nil }
@@ -188,6 +194,31 @@ func (f *fakeBackend) RefineRollback(_ context.Context, id string) (string, erro
 	defer f.mu.Unlock()
 	f.rolledBack = append(f.rolledBack, id+":latest")
 	return "rolled back 1", nil
+}
+
+func (f *fakeBackend) Models(context.Context, string, bool) (daemon.ModelsJSON, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.modelsView, f.modelsErr
+}
+
+// SetModel records the choice and answers with the view as the daemon
+// would: the op now selects ref.
+func (f *fakeBackend) SetModel(_ context.Context, id, op, ref string) (daemon.ModelsJSON, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.modelSets = append(f.modelSets, id+" "+op+" "+ref)
+	if f.setErr != nil {
+		return daemon.ModelsJSON{}, f.setErr
+	}
+	ops := append([]models.Op(nil), f.modelsView.Ops...)
+	for i := range ops {
+		if ops[i].Op == op {
+			ops[i].Selected = ref
+		}
+	}
+	f.modelsView.Ops = ops
+	return f.modelsView, nil
 }
 
 func (f *fakeBackend) MCP(context.Context) ([]daemon.MCPServerJSON, error) {

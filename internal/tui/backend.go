@@ -31,4 +31,9 @@ type Backend interface {
 	Refine(ctx context.Context, id, instructions string) (string, error)
 	// RefineRollback undoes the session's most recent applied round.
 	RefineRollback(ctx context.Context, id string) (string, error)
+	// Models is what /model shows for a session; fresh relists every
+	// provider instead of using the daemon's cached listing.
+	Models(ctx context.Context, id string, fresh bool) (daemon.ModelsJSON, error)
+	// SetModel chooses ref for op and returns the updated view.
+	SetModel(ctx context.Context, id, op, ref string) (daemon.ModelsJSON, error)
 }

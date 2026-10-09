@@ -27,10 +27,11 @@ const (
 	modeFilter
 	modeConfirm
 	modeHistory
+	modeModels
 )
 
 func (m mode) String() string {
-	return [...]string{"NORMAL", "INSERT", "COMMAND", "FILTER", "CONFIRM", "HISTORY"}[m]
+	return [...]string{"NORMAL", "INSERT", "COMMAND", "FILTER", "CONFIRM", "HISTORY", "MODELS"}[m]
 }
 
 // pane is which half of the chat screen NORMAL-mode keys drive.
@@ -121,7 +122,7 @@ type Options struct {
 }
 
 // commandNames are the `:` commands, for completion.
-var commandNames = []string{"agents", "chat", "clear", "compact", "context", "delete", "jobs", "new", "q", "quit", "refine", "refinements", "sessions", "skills", "usage"}
+var commandNames = []string{"agents", "chat", "clear", "compact", "context", "delete", "jobs", "model", "new", "q", "quit", "refine", "refinements", "sessions", "skills", "usage"}
 
 // confirmState is the modal on screen. yes and alt run on the model's
 // goroutine when the key is pressed, so they may change the model before
@@ -176,8 +177,10 @@ type Model struct {
 	// ts is the joined transcript kept between frames; see transcript.
 	ts transcriptCache
 
-	help         bool
-	confirm      *confirmState
+	help    bool
+	confirm *confirmState
+	// models is the /model modal; nil when it is closed.
+	models       *modelsState
 	reconnecting bool
 	// views serves the resource views; nil when the backend cannot.
 	views Views
@@ -385,6 +388,10 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		m.cache.SetTranscript(msg.t)
 		return nil
 
+	case modelsMsg:
+		m.modelsLoaded(msg)
+		return nil
+
 	case noticeMsg:
 		kind := kindNotice
 		if msg.isErr {
@@ -541,6 +548,8 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 		return m.keyConfirm(k)
 	case modeHistory:
 		return m.keyHistory(k)
+	case modeModels:
+		return m.keyModels(k)
 	}
 	if m.table != nil {
 		return m.keyView(k)
@@ -890,6 +899,8 @@ func (m *Model) command(line string) tea.Cmd {
 		return m.confirmDelete(len(args) > 0 && args[0] == "all")
 	case "clear", "compact", "context":
 		return m.slash(name)
+	case "model":
+		return m.openModels()
 	case "refine":
 		return m.refine(args)
 	case "memory":

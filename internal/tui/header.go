@@ -224,6 +224,8 @@ func (m *Model) keyHints(room int) string {
 		parts = []string{hint("enter", "keep"), hint("esc", "clear")}
 	case modeHistory:
 		parts = historyParts()
+	case modeModels:
+		parts = modelsParts()
 	case modeConfirm:
 		if m.confirm == nil {
 			return ""
@@ -290,6 +292,11 @@ func confirmParts(c *confirmState) []string {
 // historyParts are the history picker's keys.
 func historyParts() []string {
 	return []string{hint("↑↓", "move"), hint("enter", "use"), hint("esc", "back")}
+}
+
+// modelsParts are the /model modal's keys.
+func modelsParts() []string {
+	return []string{hint("tab", "operation"), hint("↑↓", "move"), hint("enter", "choose"), hint("r", "refresh"), hint("esc", "close")}
 }
 
 // confirmKeys is the modal's answer line.
