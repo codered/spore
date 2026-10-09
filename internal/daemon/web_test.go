@@ -168,3 +168,24 @@ func TestAppJSExplainsA401(t *testing.T) {
 		t.Error("app.js must tell the user to run spore web when the daemon answers 401")
 	}
 }
+
+func TestModelPanelIsWired(t *testing.T) {
+	html, err := web.FS.ReadFile("index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{`id="models"`, `id="models-tabs"`, `id="models-body"`, `id="models-note"`, `id="models-refresh"`} {
+		if !strings.Contains(string(html), id) {
+			t.Errorf("index.html lacks %s", id)
+		}
+	}
+	js, err := web.FS.ReadFile("app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"/model": showModels`, `"/api/models?session={id}"`, `"/api/sessions/{id}/model"`, `"/api/routing?session={id}"`} {
+		if !strings.Contains(string(js), want) {
+			t.Errorf("app.js lacks %s", want)
+		}
+	}
+}

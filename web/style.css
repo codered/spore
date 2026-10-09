@@ -283,7 +283,19 @@ table.grid td.actions button { padding: 1px 8px; font-size: 12px; margin-left: 4
 .setting { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--line); }
 .setting .label { font-weight: 600; }
 .overlay .note { margin: 12px 0 4px; }
-.overlay .buttons { display: flex; justify-content: flex-end; margin-top: 12px; }
+.overlay .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.overlay .panel.wide { max-width: 720px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
+.tabs .tab { font-size: 12px; padding: 4px 10px; }
+.tabs .tab.on { background: var(--selected); border-color: var(--accent); color: var(--accent); }
+.options { display: flex; flex-direction: column; gap: 4px; }
+.options .option { display: flex; gap: 8px; text-align: left; font: 13px var(--mono); padding: 6px 10px; overflow-wrap: anywhere; }
+.options .option.on { border-color: var(--accent); }
+.options .option .mark { width: 2ch; flex: none; color: var(--accent); }
+table.models tr.pick { cursor: pointer; }
+table.models td { font: 13px var(--mono); overflow-wrap: anywhere; }
+table.models td.meta { font-family: var(--sans); color: var(--dim); }
+.note.error { color: var(--error); }
 
 .switch {
   width: 40px; height: 22px; padding: 0; border-radius: 11px; position: relative; flex: none;
