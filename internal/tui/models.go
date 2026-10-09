@@ -61,12 +61,17 @@ func (m *Model) modelsLoaded(msg modelsMsg) {
 	}
 	if msg.err != nil {
 		s.note, s.isErr = msg.err.Error(), true
+		if !s.loaded {
+			s.note += " — press r to retry"
+		}
 		return
 	}
 	s.view, s.loaded = msg.view, true
+	s.tab = min(s.tab, len(s.view.Ops)) // a refresh may have dropped the op
 	s.note, s.isErr = "", false
 	if msg.op != "" {
 		s.note = strings.TrimSpace(modelcmd.Confirm(s.view, msg.op))
+		s.cursor = 0 // the chosen model is listed first
 	}
 	s.cursor = min(s.cursor, max(0, m.modelRowCount()-1))
 }
@@ -136,6 +141,7 @@ func (m *Model) chooseModel() tea.Cmd {
 		s.note, s.isErr = o.Ref+" is not available right now", true
 		return nil
 	}
+	s.note, s.isErr = "choosing "+o.Ref+"…", false
 	be, ctx, id := m.be, m.ctx, m.selected
 	return func() tea.Msg {
 		v, err := be.SetModel(ctx, id, op, o.Ref)
@@ -168,7 +174,7 @@ func (m *Model) modelsView() string {
 		lines = append(lines, styMuted.Render("loading…"))
 	case s.tab == 0:
 		for i, l := range strings.Split(strings.TrimRight(modelcmd.Overview(s.view), "\n"), "\n") {
-			lines = append(lines, modelRow(clip(l, cw), i == s.cursor, true))
+			lines = append(lines, modelRow(clip(l, cw-2), i == s.cursor, true))
 		}
 	default:
 		opts := modelcmd.Options(s.view, s.view.Ops[s.tab-1].Op)
@@ -187,7 +193,7 @@ func (m *Model) modelsView() string {
 			if !o.Available {
 				text += " (unavailable)"
 			}
-			lines = append(lines, modelRow(clip(text, cw), i == s.cursor, o.Choosable()))
+			lines = append(lines, modelRow(clip(text, cw-2), i == s.cursor, o.Choosable()))
 		}
 	}
 	for _, g := range s.view.Groups {

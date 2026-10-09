@@ -2,12 +2,16 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/codered/spore/internal/daemon"
+	"github.com/codered/spore/internal/modelcmd"
 	"github.com/codered/spore/internal/models"
 )
 
@@ -69,6 +73,9 @@ func TestChoosingAnOptionSetsItAndStaysOpen(t *testing.T) {
 	v = ansi.Strip(m.View())
 	if !strings.Contains(v, "-> a/two") || !strings.Contains(v, "chat -> a/two (this session)") {
 		t.Fatalf("after choosing:\n%s", v)
+	}
+	if m.models.cursor != 0 {
+		t.Fatalf("cursor = %d after a choice, want 0 (the chosen model is listed first)", m.models.cursor)
 	}
 }
 
@@ -153,4 +160,87 @@ func TestTheCursorStaysOnAShorterList(t *testing.T) {
 	if m.models.cursor != 0 {
 		t.Fatalf("cursor = %d, want clamped to 0", m.models.cursor)
 	}
+}
+
+func TestLongRowsDoNotWrap(t *testing.T) {
+	long := "studio/" + strings.Repeat("x", 63)
+	v := modelsFixture()
+	v.Ops[0].Selected, v.Ops[0].Default = long, long
+	fb := &fakeBackend{modelsView: v}
+	m := newTestModel(t, fb, "s1")
+	press(m, "alt+esc", ":")
+	typeText(m, "model")
+	run(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	press(m, "enter")
+	if m.mode != modeModels {
+		t.Fatalf("mode = %s, want MODELS", m.mode)
+	}
+	lines := strings.Split(ansi.Strip(m.View()), "\n")
+	for _, l := range lines {
+		if w := lipgloss.Width(l); w > 100 {
+			t.Fatalf("line is %d wide, want <= 100: %q", w, l)
+		}
+	}
+	for i, l := range lines {
+		if strings.Contains(l, "chat") && strings.Contains(l, "->") {
+			if i+1 >= len(lines) || !strings.Contains(lines[i+1], "compaction") {
+				t.Fatalf("chat row wrapped; next line %q", lines[i+1])
+			}
+			return
+		}
+	}
+	t.Fatal("no single-line chat row in the overview")
+}
+
+func TestChoosingSaysItIsChoosing(t *testing.T) {
+	m := openModelsCmd(t, &fakeBackend{})
+	press(m, "tab") // chat
+	cmd := m.chooseModel()
+	if cmd == nil {
+		t.Fatal("choosing an option returned no command")
+	}
+	if !strings.HasPrefix(m.models.note, "choosing ") {
+		t.Fatalf("note = %q, want it to start with %q", m.models.note, "choosing ")
+	}
+}
+
+func TestARefreshWithFewerOpsDoesNotPanic(t *testing.T) {
+	m := openModelsCmd(t, &fakeBackend{})
+	press(m, "tab", "tab", "tab", "tab", "tab", "tab") // subagent, the last op
+	short := modelsFixture()
+	short.Ops = short.Ops[:2]
+	run(m, modelsMsg{view: short})
+	_ = ansi.Strip(m.View())
+	if m.models.tab > 2 {
+		t.Fatalf("tab = %d, want clamped to at most 2", m.models.tab)
+	}
+}
+
+func TestAnInitialFetchErrorSaysHowToRetry(t *testing.T) {
+	fb := &fakeBackend{modelsErr: errors.New("daemon down")}
+	m := openModelsCmd(t, fb)
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "daemon down — press r to retry") {
+		t.Fatalf("no retry hint:\n%s", v)
+	}
+}
+
+func TestALongListScrollsWithTheCursor(t *testing.T) {
+	m := openModelsCmd(t, &fakeBackend{})
+	big := modelsFixture()
+	big.Groups = []models.Group{{Provider: "a"}}
+	for i := 0; i < 30; i++ {
+		big.Groups[0].Refs = append(big.Groups[0].Refs, fmt.Sprintf("a/m%02d", i))
+	}
+	run(m, modelsMsg{view: big})
+	press(m, "tab") // chat
+	for i := 0; i < 25; i++ {
+		press(m, "j")
+	}
+	want := modelcmd.Options(big, "chat")[25].Ref
+	for _, l := range strings.Split(ansi.Strip(m.View()), "\n") {
+		if strings.Contains(l, "›") && strings.Contains(l, want) {
+			return
+		}
+	}
+	t.Fatalf("cursor row %q is not shown under the cursor:\n%s", want, ansi.Strip(m.View()))
 }
