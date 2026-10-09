@@ -298,3 +298,62 @@ func TestScheduleNotifySetsTheMode(t *testing.T) {
 		}
 	}
 }
+
+// A job whose chat was deleted reports nowhere. Setting its notify mode from
+// a chat makes that chat (the root of its tree) the one it reports to.
+func TestScheduleNotifyReattachesAnOrphanedJob(t *testing.T) {
+	tools, st := newTools(t)
+	ctx := context.Background()
+	orphan := createJob(t, tools)
+	root, _ := st.CreateSessionFrom(ctx, "chat", "", store.SourceChat)
+	child, err := st.CreateChildSession(ctx, "child", "", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callCtx := policy.WithSession(ctx, policy.Session{ID: child, Profile: policy.ProfileLocal})
+	out, err := tools["schedule_notify"].Call(callCtx, json.RawMessage(fmt.Sprintf(`{"id":%d,"mode":"each"}`, orphan)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "no chat") || !strings.Contains(out, "this chat") {
+		t.Errorf("schedule_notify = %q; want it to say runs now report here", out)
+	}
+	if j, _, _ := st.Job(ctx, orphan); j.OriginSessionID != root {
+		t.Errorf("origin = %q, want the root chat %q", j.OriginSessionID, root)
+	}
+
+	// A job that already has a chat keeps it.
+	other, _ := st.CreateSessionFrom(ctx, "other", "", store.SourceChat)
+	otherCtx := policy.WithSession(ctx, policy.Session{ID: other, Profile: policy.ProfileLocal})
+	if _, err := tools["schedule_notify"].Call(otherCtx, json.RawMessage(fmt.Sprintf(`{"id":%d,"mode":"failures"}`, orphan))); err != nil {
+		t.Fatal(err)
+	}
+	if j, _, _ := st.Job(ctx, orphan); j.OriginSessionID != root {
+		t.Errorf("origin moved to %q; want it kept as %q", j.OriginSessionID, root)
+	}
+}
+
+func TestScheduleListShowsWhereEachJobReports(t *testing.T) {
+	tools, st := newTools(t)
+	ctx := context.Background()
+	createJob(t, tools)
+	root, _ := st.CreateSessionFrom(ctx, "chat", "", store.SourceChat)
+	callCtx := policy.WithSession(ctx, policy.Session{ID: root, Profile: policy.ProfileLocal})
+	if _, err := tools["schedule_create"].Call(callCtx, json.RawMessage(`{"spec":"* * * * *","prompt":"p"}`)); err != nil {
+		t.Fatal(err)
+	}
+	out, err := tools["schedule_list"].Call(ctx, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("schedule_list = %q", out)
+	}
+	if !strings.Contains(lines[0], "reports to Jobs folder only") {
+		t.Errorf("orphaned job line = %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "reports to chat "+root) {
+		t.Errorf("attached job line = %q", lines[1])
+	}
+}

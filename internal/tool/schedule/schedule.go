@@ -79,7 +79,7 @@ type listTool struct{ st *store.Store }
 
 func (listTool) Name() string { return "schedule_list" }
 func (listTool) Description() string {
-	return "List scheduled jobs: id, state, kind, schedule, next and last run, notify mode and prompt."
+	return "List scheduled jobs: id, state, kind, schedule, next and last run, notify mode, the chat it reports to, and prompt."
 }
 func (listTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type": "object", "properties": {}}`)
@@ -104,8 +104,12 @@ func (l listTool) Call(ctx context.Context, args json.RawMessage) (string, error
 		if !j.LastRun.IsZero() {
 			last = j.LastRun.UTC().Format(time.RFC3339)
 		}
-		fmt.Fprintf(&b, "%d\t%s\t%s\t%s\tnext %s\tlast %s\tnotify %s\t%s\n",
-			j.ID, state, j.Kind, j.Spec, j.NextRun.Format(time.RFC3339), last, j.Notify, j.Prompt)
+		to := "Jobs folder only"
+		if j.OriginSessionID != "" {
+			to = "chat " + j.OriginSessionID
+		}
+		fmt.Fprintf(&b, "%d\t%s\t%s\t%s\tnext %s\tlast %s\tnotify %s\treports to %s\t%s\n",
+			j.ID, state, j.Kind, j.Spec, j.NextRun.Format(time.RFC3339), last, j.Notify, to, j.Prompt)
 	}
 	return b.String(), nil
 }
@@ -193,7 +197,8 @@ type notifyTool struct{ st *store.Store }
 func (notifyTool) Name() string { return "schedule_notify" }
 func (notifyTool) Description() string {
 	return "Set how this chat hears about a job's later runs: each, failures or none. Use it for " +
-		"the user's answer to the first-run check-in, or a later change. Runs always land in the Jobs folder."
+		"the user's answer to the first-run check-in, or a later change. A job with no chat to report to " +
+		"is attached to this one. Runs always land in the Jobs folder."
 }
 func (notifyTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
@@ -217,6 +222,21 @@ func (n notifyTool) Call(ctx context.Context, args json.RawMessage) (string, err
 	}
 	if err := n.st.SetJobNotify(ctx, in.ID, in.Mode); err != nil {
 		return "", err
+	}
+	// A job whose chat was deleted reports nowhere. Asked about it from a
+	// chat, it reports there from now on.
+	if from := policy.SessionFrom(ctx).ID; from != "" {
+		root, err := scheduler.RootSession(ctx, n.st, from)
+		if err != nil {
+			return "", err
+		}
+		attached, err := n.st.AttachJobOrigin(ctx, in.ID, root)
+		if err != nil {
+			return "", err
+		}
+		if attached {
+			return fmt.Sprintf("job %d notify set to %s; its chat was gone, so its runs now report to this chat", in.ID, in.Mode), nil
+		}
 	}
 	job, _, err := n.st.Job(ctx, in.ID)
 	if err != nil {
