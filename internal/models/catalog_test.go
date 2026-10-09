@@ -111,3 +111,23 @@ func TestListCachesUntilFreshOrExpiry(t *testing.T) {
 		t.Fatalf("calls = %d, want 3 (expired)", n)
 	}
 }
+
+func TestACancelledListingIsNotCached(t *testing.T) {
+	reg := provider.NewRegistry()
+	l := newLister("m")
+	l.delay = time.Millisecond
+	reg.Register("p", l, provider.ProviderPrice{})
+	c := NewCatalog(reg, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c.List(ctx, false)
+
+	got := c.List(context.Background(), false)
+	if len(got) != 1 || got[0].Error != "" || !slices.Equal(got[0].Refs, []string{"p/m"}) {
+		t.Fatalf("second listing = %+v, want p/m with no error", got)
+	}
+	if n := l.calls.Load(); n != 2 {
+		t.Fatalf("lister calls = %d, want 2 (the second listing was served from cache)", n)
+	}
+}

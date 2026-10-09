@@ -58,6 +58,11 @@ func (c *Catalog) List(ctx context.Context, fresh bool) []Group {
 	c.mu.Unlock()
 
 	groups := c.fetch(ctx)
+	// A listing cut short by the caller says nothing about the providers, so
+	// it must not stand in for the next 60 seconds of answers.
+	if ctx.Err() != nil {
+		return groups
+	}
 	c.mu.Lock()
 	c.cached, c.at = groups, c.now()
 	c.mu.Unlock()
