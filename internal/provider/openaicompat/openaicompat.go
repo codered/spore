@@ -108,7 +108,14 @@ func toWire(system []provider.Block, msgs []provider.Message) []map[string]any {
 		if text.Len() == 0 && len(calls) == 0 {
 			continue
 		}
-		msg := map[string]any{"role": string(m.Role), "content": text.String()}
+		role := string(m.Role)
+		if m.Role == provider.RoleTool {
+			// An OpenAI tool message carries one result and nothing else.
+			// Text riding on the results message -- the environment Assemble
+			// appends to the tail -- goes after the results as a user message.
+			role = string(provider.RoleUser)
+		}
+		msg := map[string]any{"role": role, "content": text.String()}
 		if len(calls) > 0 {
 			msg["tool_calls"] = calls
 		}

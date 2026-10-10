@@ -286,6 +286,39 @@ func TestToWireJoinsSystemBlocks(t *testing.T) {
 	}
 }
 
+// Mid-turn, Assemble appends the environment to the tail of the conversation,
+// which is the tool-results message. An OpenAI tool message carries one
+// result and nothing else, so the text must follow the results as a user
+// message. Sent as a tool message with no tool_call_id, it was rejected by a
+// strict endpoint (LiteLLM in front of Claude: "OpenAIException -
+// 'tool_call_id'"), failing every turn after its first tool call.
+func TestToWireSendsTextOnToolMessageAsUserMessage(t *testing.T) {
+	out := toWire(nil, []provider.Message{
+		{Role: provider.RoleAssistant, Blocks: []provider.Block{
+			{Type: provider.BlockToolUse, ID: "call_1", Name: "go_run", Input: json.RawMessage(`{}`)},
+		}},
+		{Role: provider.RoleTool, Blocks: []provider.Block{
+			{Type: provider.BlockToolResult, ID: "call_1", Content: "91"},
+			{Type: provider.BlockText, Text: "## Environment"},
+		}},
+	})
+
+	if len(out) != 3 {
+		t.Fatalf("got %d messages, want assistant, tool, user: %v", len(out), out)
+	}
+	if out[1]["role"] != "tool" || out[1]["tool_call_id"] != "call_1" || out[1]["content"] != "91" {
+		t.Errorf("tool message = %v, want the result with tool_call_id call_1", out[1])
+	}
+	if out[2]["role"] != "user" || out[2]["content"] != "## Environment" {
+		t.Errorf("message after the results = %v, want the text as a user message", out[2])
+	}
+	for _, m := range out {
+		if _, ok := m["tool_call_id"]; m["role"] == "tool" && !ok {
+			t.Errorf("tool message without tool_call_id: %v", m)
+		}
+	}
+}
+
 func TestToWireMarksFailedToolResults(t *testing.T) {
 	fixture, err := os.ReadFile("testdata/tool_call.sse")
 	if err != nil {
