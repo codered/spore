@@ -87,14 +87,19 @@ signals and recomputed after a session delete.
 ### 2.3 `outreach`
 
 Every message spore starts on its own: `id`, `interest_id` (nullable),
-`kind` (`proposal`, `alert`, `finding`, `followup`, `digest`), `channel`
-(`discord`, `terminal`, `terminal-fallback`), `text`, `sent_at`, `outcome`
-(`pending`, `replied`, `reacted`, `ignored`, `stop`), `resolved_at`. Only the
-governor and the reflection input read it.
+`kind` (`proposal`, `alert`, `finding`, `followup`, `digest`, `nudge`),
+`channel` (`discord`, `terminal`, `terminal-fallback`), `text`, `sent_at`,
+`outcome` (`pending`, `unanswered`, `replied`, `reacted`, `ignored`, `stop`),
+`nudge_of` (nullable: the outreach a `nudge` follows up), `drop_reason`,
+`resolved_at`. Only the governor and the reflection input read it.
 
-An outreach is `ignored` when 12 hours pass with no reply, reaction or button
-press in the companion session; `replied` when the user sends a message there
-first; `reacted` for a Discord reaction or a button press; `stop` when the
+An unanswered message is never dropped silently. When 12 hours pass with no
+reply, reaction or button press in the companion session, a `pending` outreach
+becomes `unanswered` -- not `ignored` -- and the next reflection must decide
+what to do with it (§4.6): follow it up with a `nudge`, or drop it with a
+recorded reason. It becomes `ignored` only after that decision: when its nudge
+has itself gone 24 hours unanswered, or when reflection drops it. It is
+`replied` when the user sends a message there first; `reacted` for a Discord reaction or a button press; `stop` when the
 user's reply asks spore to stop or be quieter (decided by the companion turn
 through the `companion_feedback` tool, §5.3).
 
@@ -102,7 +107,7 @@ through the `companion_feedback` tool, §5.3).
 
 A key-value table (`key` TEXT PK, `value` TEXT, `updated_at`) for the
 companion's singletons: `session_id` (the companion session, §5.1),
-`daily_budget` (§4.6), `paused_until`, `last_reflection_at`,
+`daily_budget` (§4.7), `paused_until`, `last_reflection_at`,
 `reflection_failures`.
 
 ### 2.5 `self.md`
@@ -213,7 +218,11 @@ Each tick:
    the last reflection. Changed means any of: a new `candidate`; a watch or
    research run finished; a `self.md` thread past its follow-up time; an
    outreach resolved; the first tick of the local day (the digest slot).
-2. **Resolve stale outreach:** mark `pending` rows older than 12 h `ignored`.
+2. **Resolve stale outreach:** mark `pending` rows older than 12 h
+   `unanswered`, and `pending` nudges older than 24 h `ignored` together with
+   the outreach they follow up. A newly `unanswered` row counts as a change
+   for the gate; during quiet hours it simply waits for the first tick after
+   them.
 3. **Reflect:** one LLM call on a new router site `companion` (added to
    `router.Sites` and `GlobalSites`, so `/model` can route it).
 4. **Validate and apply** (§4.3).
@@ -242,12 +251,19 @@ allowance.
 
 | field | rule |
 |---|---|
-| `action` | one of `propose`, `alert`, `finding`, `followup`, `digest`, `research`, `none` |
+| `action` | one of `propose`, `alert`, `finding`, `followup`, `digest`, `research`, `nudge`, `none` |
 | `interest` | required for `propose`, `alert`, `research`; must exist; `propose` requires state `candidate` |
 | `message` | required unless `none`/`research`; 1..1200 characters |
 | `watch` | required for `propose`; `cron` parses with the scheduler's parser and fires at most hourly; `goal` 1..500 chars |
 | `research` | for `research`: `{"question": "..."}`, 1..300 chars; interest must be `active` |
 | `self_md` | optional full replacement; must contain the four headings and fit `self_max_bytes` |
+| `nudge_of` | required for `nudge`: an outreach id in state `unanswered` that has no nudge yet |
+| `drops` | optional list of `{"outreach": id, "reason": "..."}` for `unanswered` rows reflection chooses not to follow up; reason 1..200 chars |
+
+Every `unanswered` row in the input must be either nudged in this output,
+listed in `drops`, or carried over: a row left unmentioned stays `unanswered`
+and is shown again next tick. A `digest` may fold several unanswered items into
+one message by listing them in `nudge_of` as an array.
 
 At most one outreach per tick. `none` is valid and expected to be the common
 answer. An `alert` counts against `alert_budget`; every other outreach counts
@@ -273,7 +289,25 @@ At most one research run at a time, and at most 6 per local day.
   reflection is told this is the digest slot and may batch everything worth
   saying into one `digest` message.
 
-### 4.6 The governor (cadence 3 → 2)
+### 4.6 Following up unanswered messages
+
+The user not answering is information, not a reason to forget. Reflection sees
+each `unanswered` outreach with its age and kind, and chooses:
+
+- **nudge:** a short follow-up that refers back to the original ("Did you see
+  the ZS note from this morning? It's down another 2% since."). A nudge
+  should add something -- new information, a simpler question, or an easy way
+  to say no -- rather than repeat the message.
+- **drop:** with a reason, recorded in `drop_reason`, e.g. an alert about a
+  move that has since reversed. Dropping is a decision the model writes down,
+  never a timeout.
+
+At most one nudge per outreach, so spore does not nag. A nudge counts against
+the daily budget. For a `proposal`, a dropped or nudge-ignored proposal does not
+decline the interest: it goes back to `candidate` with `cooldown_until = now +
+7d`, so it can be raised again later.
+
+### 4.7 The governor (cadence 3 → 2)
 
 State: `daily_budget` (float, persisted in a `companion_state` key-value
 table), starting at `start_budget`. On each outreach resolution:
@@ -281,7 +315,8 @@ table), starting at `start_budget`. On each outreach resolution:
 | outcome | effect |
 |---|---|
 | `replied` / `reacted` | `+0.25`, capped at `start_budget` |
-| `ignored` | `-0.5` |
+| `ignored` (after its nudge, or dropped) | `-0.5` |
+| `unanswered` | no change yet |
 | `stop` | halve |
 
 Floor: 1. At the floor spore sends at most the digest each day plus alerts from
@@ -397,6 +432,11 @@ heading of `self.md`, subject to the size cap, ledgered as `self.update`.
   `interest_update` cannot make an interest `active`.
 - Validation: every malformed reflection field; oversized `self.md`; missing
   headings; bad cron; cron firing more than hourly; bad key; unknown interest.
+- Unanswered follow-up: a pending outreach turns `unanswered` at 12 h, never
+  `ignored`; reflection output that neither nudges nor drops it leaves it
+  `unanswered`; a second nudge for the same outreach is rejected; a nudge
+  unanswered for 24 h marks both rows `ignored`; a dropped proposal returns its
+  interest to `candidate` with a 7-day cooldown.
 - Governor table test: sequences of replied/ignored/stop → expected budget,
   never below the floor nor above `start_budget`.
 - Day counting across a local midnight; tests run with a symlinked TMPDIR.
