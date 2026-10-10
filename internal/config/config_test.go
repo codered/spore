@@ -868,3 +868,67 @@ func TestMaxRoundTripsDefaultsOverridesAndZero(t *testing.T) {
 		t.Errorf("max_round_trips = -1: err = %v, want a negative-value error", err)
 	}
 }
+
+func TestCompanionDefaults(t *testing.T) {
+	cfg := loadTestConfig(t, "")
+	c := cfg.Companion
+	if c.Enabled {
+		t.Error("companion must be off by default so an upgrade sends nobody anything")
+	}
+	if c.Channel != "auto" || c.QuietHours != "22:00-08:00" || c.Timezone != "" || c.HabitDays != 3 ||
+		c.Heartbeat != "30m" || c.SelfMaxBytes != 10240 || c.StartBudget != 4 || c.AlertBudget != 3 || c.AlertsInQuietHours {
+		t.Fatalf("defaults = %+v", c)
+	}
+	if got := cfg.SelfPath(); got != filepath.Join(cfg.DataDir, "self.md") {
+		t.Fatalf("SelfPath = %q", got)
+	}
+}
+
+func TestCompanionPartialBlockKeepsOtherDefaults(t *testing.T) {
+	cfg := loadTestConfig(t, "[companion]\nenabled = true\nhabit_days = 5\ntimezone = \"America/Los_Angeles\"\n")
+	c := cfg.Companion
+	if !c.Enabled || c.HabitDays != 5 || c.SelfMaxBytes != 10240 || c.QuietHours != "22:00-08:00" {
+		t.Fatalf("companion = %+v", c)
+	}
+	loc, err := c.Location()
+	if err != nil || loc.String() != "America/Los_Angeles" {
+		t.Fatalf("Location = %v, %v", loc, err)
+	}
+}
+
+func TestCompanionEmptyTimezoneIsLocal(t *testing.T) {
+	loc, err := CompanionConfig{}.Location()
+	if err != nil || loc != time.Local {
+		t.Fatalf("Location = %v, %v; want time.Local", loc, err)
+	}
+}
+
+func TestCompanionValidation(t *testing.T) {
+	for _, body := range []string{
+		"channel = \"email\"",
+		"quiet_hours = \"22-08\"",
+		"quiet_hours = \"25:00-08:00\"",
+		"quiet_hours = \"08:00-08:00\"",
+		"timezone = \"Mars/Olympus\"",
+		"habit_days = 31",
+		"habit_days = -1",
+		"heartbeat = \"1m\"",
+		"heartbeat = \"soon\"",
+		"self_max_bytes = 512",
+		"self_max_bytes = 70000",
+		"start_budget = -1",
+		"alert_budget = -2",
+	} {
+		p := writeConfig(t, "[companion]\n"+body+"\n")
+		if _, err := Load(p); err == nil {
+			t.Errorf("Load accepted [companion] %s", body)
+		}
+	}
+}
+
+func TestParseQuietHours(t *testing.T) {
+	s, e, err := ParseQuietHours("22:00-08:30")
+	if err != nil || s != 22*60 || e != 8*60+30 {
+		t.Fatalf("ParseQuietHours = %d, %d, %v", s, e, err)
+	}
+}
