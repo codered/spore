@@ -12,6 +12,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/codered/spore/internal/companion"
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/memory"
 	"github.com/codered/spore/internal/provider"
@@ -27,6 +28,8 @@ const (
 	TriggerCompaction Trigger = "compaction"
 	TriggerIdle       Trigger = "idle"
 	TriggerModel      Trigger = "model"
+	// TriggerTool marks a write a tool made directly, such as self_note.
+	TriggerTool Trigger = "tool"
 	// TriggerApproval marks a policy proposal written from an approval
 	// answer, not by a round.
 	TriggerApproval Trigger = store.RefineTriggerApproval
@@ -39,6 +42,8 @@ const (
 	KindFactDelete   = "fact.delete"
 	KindNotesAppend  = "notes.append"
 	KindNotesReplace = "notes.replace"
+	// KindSelfUpdate is written by UpdateSelf, never by a planner edit.
+	KindSelfUpdate = store.KindSelfUpdate
 )
 
 // Policy kinds are written only by the guard, never by a round.
@@ -69,6 +74,10 @@ type Refiner struct {
 	// reloader; it returns config.ErrNotLearned for a rule the block no
 	// longer holds. Nil makes rolling back a policy row fail.
 	RevokePolicy func(decision, rule string) error
+	// Signals records the recurring interests a round reports. Nil, or a
+	// recorder whose companion is off, means the planner is not asked for
+	// any. Set before any round runs; never changed after.
+	Signals *companion.Recorder
 
 	// ctx is what background rounds run under; Close cancels it.
 	ctx    context.Context

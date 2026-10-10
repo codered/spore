@@ -36,6 +36,8 @@ usage:
   spore recall reindex         rebuild the index from SQLite and fact files
   spore recall setup           provision the vector store and backfill it
   spore recall teardown        stop the vector store and return to keyword search
+  spore companion status       report whether the companion is on and what it tracks
+  spore companion interests    list the interests it has noticed, with their evidence
   spore trace setup            provision the phoenix collector and turn tracing on
   spore trace status           report trace configuration and collector health
   spore trace teardown         stop the collector and turn tracing off
@@ -173,6 +175,8 @@ func dispatch(ctx context.Context, cfg *config.Config, args []string) error {
 		return cmdMCPList(ctx, cfg)
 	case "recall":
 		return cmdRecall(ctx, cfg, args[1:])
+	case "companion":
+		return cmdCompanion(ctx, cfg, args[1:])
 	case "trace":
 		return cmdTrace(ctx, cfg, args[1:])
 	case "web":

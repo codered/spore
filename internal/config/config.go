@@ -29,20 +29,21 @@ type Config struct {
 	Routes    []Route                   `toml:"route"`
 	// Routing holds what /model set for the daemon-wide call sites. It is
 	// written only inside the spore-managed routing block.
-	Routing   RoutingConfig  `toml:"routing"`
-	Context   ContextConfig  `toml:"context"`
-	Trace     TraceConfig    `toml:"trace"`
-	Policy    PolicyConfig   `toml:"policy"`
-	Web       WebConfig      `toml:"web"`
-	Shell     ShellConfig    `toml:"shell"`
-	Daemon    DaemonConfig   `toml:"daemon"`
-	Bridge    BridgeConfig   `toml:"bridge"`
-	MCP       MCPConfig      `toml:"mcp"`
-	Recall    RecallConfig   `toml:"recall"`
-	Skills    SkillsConfig   `toml:"skills"`
-	Subagents SubagentConfig `toml:"subagents"`
-	Kernel    KernelConfig   `toml:"kernel"`
-	Refine    RefineConfig   `toml:"refine"`
+	Routing   RoutingConfig   `toml:"routing"`
+	Context   ContextConfig   `toml:"context"`
+	Trace     TraceConfig     `toml:"trace"`
+	Policy    PolicyConfig    `toml:"policy"`
+	Web       WebConfig       `toml:"web"`
+	Shell     ShellConfig     `toml:"shell"`
+	Daemon    DaemonConfig    `toml:"daemon"`
+	Bridge    BridgeConfig    `toml:"bridge"`
+	MCP       MCPConfig       `toml:"mcp"`
+	Recall    RecallConfig    `toml:"recall"`
+	Skills    SkillsConfig    `toml:"skills"`
+	Subagents SubagentConfig  `toml:"subagents"`
+	Kernel    KernelConfig    `toml:"kernel"`
+	Refine    RefineConfig    `toml:"refine"`
+	Companion CompanionConfig `toml:"companion"`
 }
 
 // SkillsConfig chooses where skills are read from and installed to.
@@ -92,6 +93,74 @@ type RefineConfig struct {
 
 // On reports whether the automatic triggers run. Unset is true.
 func (r RefineConfig) On() bool { return r.Enabled == nil || *r.Enabled }
+
+// CompanionConfig drives the companion: spore noticing the user's recurring
+// interests, keeping its own self.md, and (later) reaching out unprompted.
+// Enabled defaults to false so an upgrade starts messaging nobody.
+type CompanionConfig struct {
+	Enabled bool `toml:"enabled"`
+	// Channel is where unprompted messages go: auto, discord or terminal.
+	Channel string `toml:"channel"`
+	// QuietHours is "HH:MM-HH:MM" local time; it may wrap midnight.
+	QuietHours string `toml:"quiet_hours"`
+	// Timezone is an IANA name. Empty means the daemon host's zone. It
+	// decides what a "day" is when counting how often an interest came up.
+	Timezone string `toml:"timezone"`
+	// HabitDays is how many distinct local days an interest must come up on
+	// before it is a candidate habit.
+	HabitDays int `toml:"habit_days"`
+	// Heartbeat is a Go duration: how often the companion reflects.
+	Heartbeat string `toml:"heartbeat"`
+	// SelfMaxBytes caps self.md.
+	SelfMaxBytes int `toml:"self_max_bytes"`
+	// StartBudget is unprompted messages per day before engagement adjusts
+	// it; AlertBudget is a separate daily allowance for watch alerts.
+	StartBudget        int  `toml:"start_budget"`
+	AlertBudget        int  `toml:"alert_budget"`
+	AlertsInQuietHours bool `toml:"alerts_in_quiet_hours"`
+}
+
+// Companion channels.
+const (
+	CompanionChannelAuto     = "auto"
+	CompanionChannelDiscord  = "discord"
+	CompanionChannelTerminal = "terminal"
+)
+
+// Location is the zone days are counted in. Empty means the host's zone.
+func (c CompanionConfig) Location() (*time.Location, error) {
+	if c.Timezone == "" {
+		return time.Local, nil
+	}
+	return time.LoadLocation(c.Timezone)
+}
+
+// ParseQuietHours reads "HH:MM-HH:MM" into minutes after midnight. Start and
+// end may wrap midnight but may not be equal: that would mean always or
+// never, and neither is what anyone writing a range means.
+func ParseQuietHours(s string) (startMin, endMin int, err error) {
+	from, to, ok := strings.Cut(s, "-")
+	if !ok {
+		return 0, 0, fmt.Errorf("quiet_hours %q must be HH:MM-HH:MM", s)
+	}
+	clock := func(v string) (int, error) {
+		t, err := time.Parse("15:04", strings.TrimSpace(v))
+		if err != nil {
+			return 0, fmt.Errorf("quiet_hours %q must be HH:MM-HH:MM", s)
+		}
+		return t.Hour()*60 + t.Minute(), nil
+	}
+	if startMin, err = clock(from); err != nil {
+		return 0, 0, err
+	}
+	if endMin, err = clock(to); err != nil {
+		return 0, 0, err
+	}
+	if startMin == endMin {
+		return 0, 0, fmt.Errorf("quiet_hours %q starts and ends at the same time", s)
+	}
+	return startMin, endMin, nil
+}
 
 // Skills scope names.
 const (
@@ -569,7 +638,7 @@ func Default() *Config {
 			Default:         "ask",
 			ApprovalTimeout: "5m",
 			MaxOutput:       30_000,
-			Allow:           []string{"fs_read", "fs_list", "fs_glob", "fs_grep", "web_*", "schedule_list", "job_output", "schedule_notify", "recall_search", "skill_load", "refine"},
+			Allow:           []string{"fs_read", "fs_list", "fs_glob", "fs_grep", "web_*", "schedule_list", "job_output", "schedule_notify", "recall_search", "skill_load", "refine", "self_note"},
 			Ask:             []string{"fs_write", "fs_edit", "shell_exec", "schedule_create", "schedule_cancel", "mcp__*", "memory", "skill_install", "agent_note"},
 			// The remote profile denies MCP outright: a Discord user is not
 			// the operator who declared the server, and an MCP server is
@@ -581,7 +650,7 @@ func Default() *Config {
 			// deliberately NOT part of baselineDeny, which is reserved for the
 			// rules no approval may ever talk past.
 			Profiles: map[string]ProfilePolicy{
-				"remote": {Deny: []string{"mcp__*", "memory", "skill_install", "agent_note"}},
+				"remote": {Deny: []string{"mcp__*", "memory", "skill_install", "agent_note", "self_note"}},
 			},
 		},
 		Web:       WebConfig{SearchProvider: "brave", UserAgent: "spore/0.1"},
@@ -591,6 +660,34 @@ func Default() *Config {
 		Kernel: KernelConfig{Mode: KernelModeCode, TimeoutSeconds: 60, MaxTimeoutSeconds: 300,
 			CeilingSeconds: 1800, HelperMaxBytes: 4 << 20},
 		Refine: RefineConfig{IdleMinutes: 10, MaxEdits: 5},
+		Companion: CompanionConfig{Channel: CompanionChannelAuto, QuietHours: "22:00-08:00", HabitDays: 3,
+			Heartbeat: "30m", SelfMaxBytes: 10240, StartBudget: 4, AlertBudget: 3},
+	}
+}
+
+// fillCompanionDefaults replaces each zero field with its default. A
+// negative value is left for Validate to reject.
+func fillCompanionDefaults(c *CompanionConfig, d CompanionConfig) {
+	if c.Channel == "" {
+		c.Channel = d.Channel
+	}
+	if c.QuietHours == "" {
+		c.QuietHours = d.QuietHours
+	}
+	if c.HabitDays == 0 {
+		c.HabitDays = d.HabitDays
+	}
+	if c.Heartbeat == "" {
+		c.Heartbeat = d.Heartbeat
+	}
+	if c.SelfMaxBytes == 0 {
+		c.SelfMaxBytes = d.SelfMaxBytes
+	}
+	if c.StartBudget == 0 {
+		c.StartBudget = d.StartBudget
+	}
+	if c.AlertBudget == 0 {
+		c.AlertBudget = d.AlertBudget
 	}
 }
 
@@ -831,6 +928,9 @@ func Load(path string) (*Config, error) {
 	if cfg.Refine.MaxEdits == 0 {
 		cfg.Refine.MaxEdits = 5
 	}
+	// Zero means "not set in the file", as for [refine]: a [companion] block
+	// that only sets enabled keeps every other default.
+	fillCompanionDefaults(&cfg.Companion, d.Companion)
 	if err := validateDiscord(cfg.Bridge.Discord); err != nil {
 		return nil, err
 	}
@@ -942,6 +1042,40 @@ func (c *Config) Validate() error {
 	if c.Refine.IdleMinutes < 0 || c.Refine.MaxEdits < 0 {
 		return fmt.Errorf("refine: idle_minutes and max_edits must not be negative")
 	}
+	if err := c.Companion.validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c CompanionConfig) validate() error {
+	switch c.Channel {
+	case CompanionChannelAuto, CompanionChannelDiscord, CompanionChannelTerminal:
+	default:
+		return fmt.Errorf("companion.channel must be auto, discord or terminal, got %q", c.Channel)
+	}
+	if _, _, err := ParseQuietHours(c.QuietHours); err != nil {
+		return fmt.Errorf("companion.%w", err)
+	}
+	if _, err := c.Location(); err != nil {
+		return fmt.Errorf("companion.timezone %q: %w", c.Timezone, err)
+	}
+	if c.HabitDays < 1 || c.HabitDays > 30 {
+		return fmt.Errorf("companion.habit_days must be 1..30, got %d", c.HabitDays)
+	}
+	hb, err := time.ParseDuration(c.Heartbeat)
+	if err != nil {
+		return fmt.Errorf("companion.heartbeat %q: %w", c.Heartbeat, err)
+	}
+	if hb < 5*time.Minute {
+		return fmt.Errorf("companion.heartbeat must be at least 5m, got %s", c.Heartbeat)
+	}
+	if c.SelfMaxBytes < 1024 || c.SelfMaxBytes > 65536 {
+		return fmt.Errorf("companion.self_max_bytes must be 1024..65536, got %d", c.SelfMaxBytes)
+	}
+	if c.StartBudget < 1 || c.AlertBudget < 1 {
+		return fmt.Errorf("companion.start_budget and alert_budget must be at least 1")
+	}
 	return nil
 }
 
@@ -965,6 +1099,10 @@ func (c *Config) MemoryDir() string { return filepath.Join(c.DataDir, "memory") 
 // SoulPath is the global personality file. It sits beside the other data
 // files because it is the user's, not any one workspace's.
 func (c *Config) SoulPath() string { return filepath.Join(c.DataDir, "soul.md") }
+
+// SelfPath is spore's own journal. Unlike soul.md it is spore's to write,
+// through self_note; the user may still edit it by hand.
+func (c *Config) SelfPath() string { return filepath.Join(c.DataDir, "self.md") }
 
 // AgentPath is the standing instructions for one workspace, and is empty when
 // the session has none.

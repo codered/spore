@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 
+	"github.com/codered/spore/internal/companion"
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/router"
 	"github.com/codered/spore/internal/store"
@@ -31,6 +33,7 @@ type Result struct {
 	Stale    []store.Refinement
 	Failed   []store.Refinement
 	Dropped  []string
+	Signals  int
 	Note     string
 }
 
@@ -109,10 +112,22 @@ func (r *Refiner) Round(ctx context.Context, sessionID string, trig Trigger, ins
 	if err != nil {
 		return Result{}, err
 	}
-	p, err := r.plan(ctx, Input{
+	in := Input{
 		Transcript: transcript, Facts: snap.facts, Notes: snap.notes,
 		NotesPath: snap.notesPath, Instructions: instructions,
-	})
+	}
+	asked := r.Signals != nil && r.Signals.Enabled() && companion.Trusted(sess)
+	if asked {
+		known, err := r.Signals.Known(ctx)
+		if err != nil {
+			// A store fault costs the signals, not the round's edits.
+			slog.Warn("refinement could not read known interests; skipping signals", "session", sessionID, "error", err)
+			asked = false
+		} else {
+			in.AskSignals, in.Interests = true, known
+		}
+	}
+	p, err := r.plan(ctx, in)
 	if err != nil {
 		return Result{}, err
 	}
@@ -121,11 +136,33 @@ func (r *Refiner) Round(ctx context.Context, sessionID string, trig Trigger, ins
 	}
 	res := Result{RoundID: newRoundID(), Reviewed: len(pending)}
 	r.apply(ctx, sess, trig, snap, p.Edits, &res)
+	r.recordSignals(ctx, sess, p, asked, &res)
 	if err := r.Store.SetRefinedThrough(ctx, sessionID, upto); err != nil {
 		return res, err
 	}
 	res.Note = res.summary()
 	return res, r.writeNote(ctx, sessionID, res.Note, p)
+}
+
+// recordSignals hands the planner's signals to the companion. It does nothing
+// unless this round asked for signals, so a job, sub-agent or companion-off
+// round reports nothing about them. Failures are logged and dropped: the edits
+// already applied, and a lost sighting costs one count, not the round.
+func (r *Refiner) recordSignals(ctx context.Context, sess store.Session, p Plan, asked bool, res *Result) {
+	if !asked {
+		return
+	}
+	for i := 0; i < p.BadSignals; i++ {
+		res.Dropped = append(res.Dropped, "signal: not an object")
+	}
+	// Record runs even with no signals: the sweep fades interests the user
+	// stopped mentioning, and this round did ask.
+	rec, err := r.Signals.Record(ctx, sess, p.Signals)
+	if err != nil {
+		slog.Warn("refinement could not record interest signals", "session", sess.ID, "error", err)
+	}
+	res.Signals = rec.Recorded
+	res.Dropped = append(res.Dropped, rec.Dropped...)
 }
 
 func shortTarget(row store.Refinement) string {
@@ -148,6 +185,13 @@ func (res Result) summary() string {
 	var parts []string
 	if n := len(res.Applied); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d applied (%s)", n, list(res.Applied)))
+	}
+	if n := res.Signals; n > 0 {
+		word := "signals"
+		if n == 1 {
+			word = "signal"
+		}
+		parts = append(parts, fmt.Sprintf("%d interest %s", n, word))
 	}
 	if n := len(res.Proposed); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d proposed (%s) — review in :refinements", n, list(res.Proposed)))

@@ -791,6 +791,23 @@ workspace = "`+dir+`"
 	}
 }
 
+// TestSelfNoteIsNotLearnable checks that PatternFor never returns a pattern
+// scope for self_note. Its arguments are deliberately path-shaped here, so the
+// result depends on nonLearnable and not on the argument shape: self.md shapes
+// every later prompt, so each write is approved on its own.
+func TestSelfNoteIsNotLearnable(t *testing.T) {
+	pattern, learnable := PatternFor(Call{
+		Tool: "self_note",
+		Args: json.RawMessage(`{"path":"/tmp/foo","text":"x"}`),
+	}, "/ws")
+	if learnable {
+		t.Fatal("self_note must never offer a pattern scope, even with a path-shaped argument")
+	}
+	if pattern != "" {
+		t.Fatalf("expected empty pattern for self_note, got %q", pattern)
+	}
+}
+
 // realTempDir is a temp directory with symlinks resolved, because Resolve
 // follows them: on macOS t.TempDir sits under a symlinked /var, and a
 // pattern compared against the unresolved name would never match.

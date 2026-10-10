@@ -284,6 +284,12 @@ func (r *Refiner) pathFor(row store.Refinement) (string, error) {
 	if strings.HasPrefix(row.Kind, "fact.") {
 		return memory.Path(r.Facts.Dir(), row.Target)
 	}
+	if row.Kind == KindSelfUpdate {
+		if row.Target != r.Cfg.SelfPath() {
+			return "", fmt.Errorf("refinement %d has an unexpected self.md target %q", row.ID, row.Target)
+		}
+		return row.Target, nil
+	}
 	if !filepath.IsAbs(row.Target) || filepath.Base(row.Target) != "agent.md" || filepath.Base(filepath.Dir(row.Target)) != ".spore" {
 		return "", fmt.Errorf("refinement %d has an unexpected notes target %q", row.ID, row.Target)
 	}

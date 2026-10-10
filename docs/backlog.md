@@ -451,3 +451,24 @@ The three open questions are answered
 
 A symbol snapshot test lists every function the six packages expose, so a
 yaegi upgrade that adds one fails until someone checks it for disk access.
+
+## Companion: enhancements left out of the first design
+
+Enhancement, not scheduled. The companion
+(`docs/superpowers/specs/2026-10-10-companion-design.md`) learns only from
+spore's own chats and speaks only in text. Three things were deliberately left
+out of it:
+
+1. **Sources outside spore's chats.** Browser history, email and calendar would
+   give it far more signal about the user's habits than chat alone. Open
+   questions: which connector per source, whether each source's signals carry
+   their own trust level, and how a signal from an email (third-party text)
+   is kept from steering proposals the way tool results are kept out of the
+   recall index.
+2. **Voice.** Speaking proposals and alerts aloud, and taking spoken replies.
+   Open questions: which surface plays audio (the daemon host, the phone via
+   Discord voice notes, a TUI hook), and local or hosted speech models.
+3. **Mood or emotion simulation.** An internal state that colours spore's tone
+   over time. Open questions: whether it is wanted at all once `self.md` and
+   initiative exist, how it stays subordinate to `soul.md`, and how the user
+   sees and resets it.

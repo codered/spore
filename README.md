@@ -1089,7 +1089,29 @@ later.
 **Built-in tools:** `fs_read`, `fs_write`, `fs_edit`, `fs_list`, `fs_glob`,
 `fs_grep`, `shell_exec`, `web_fetch`, `web_search`, `go_run`, `memory`,
 `recall_search`, `skill_load`, `skill_install`, `agent_run`, `agent_spawn`,
-`agent_result`, `schedule_*`, `refine`, plus every tool from your MCP servers.
+`agent_result`, `agent_note`, `schedule_*`, `refine`, `self_note` (companion only),
+plus every tool from your MCP servers.
+
+### Companion (preview)
+
+Off by default. When on, spore notices what you keep coming back to (a stock you
+check, a topic you return to) and keeps its own notes in `~/.spore/self.md`.
+In this release it only observes; it does not message you yet.
+
+```toml
+[companion]
+enabled = true
+timezone = "America/Los_Angeles"   # days are counted in this zone; empty = this machine's
+habit_days = 3                     # distinct days before something counts as a habit
+self_max_bytes = 10240
+```
+
+`spore companion status` and `spore companion interests` show what it has
+noticed. If your config has its own `[policy] allow` list, add `self_note` to it
+or spore will ask before each note. If it has its own `[policy.profile.remote]`
+deny list, add `self_note` there too, so a remote chat cannot write into spore's
+notes. `/refine rollback` undoes the session's most recent change, and a `self_note`
+counts as one, so rolling back right after a note removes the note.
 
 ## 🖥️ CLI
 
@@ -1102,6 +1124,8 @@ spore session show <id>             print a transcript
 spore session delete <id>... | --all [--discord] [--yes]
 spore policy check <tool> [json]    show the decision a call would get
 spore mcp list                      connect to MCP servers and list their tools
+spore companion status              whether the companion is on, its timezone, and how full self.md is
+spore companion interests           what it has noticed, with days seen and state
 spore recall search|status|reindex|setup|teardown
 spore trace setup|status|teardown
 

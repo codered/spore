@@ -707,3 +707,40 @@ func TestAgentSectionStillTitlesAnUntitledFile(t *testing.T) {
 		t.Fatalf("an untitled file got no heading:\n%s", got)
 	}
 }
+
+func TestSelfNotesSitUnderTheSoulWithDemotedHeadings(t *testing.T) {
+	snap := Snapshot{
+		System:    "you are spore",
+		Soul:      "warm and dry",
+		SelfNotes: "## Threads with you\n\n- ZS earnings on the 20th\n",
+		Facts:     nil,
+	}
+	sys := systemText(Assemble(snap, config.Default().Context).System)
+	soul := strings.Index(sys, "## Who you are")
+	own := strings.Index(sys, "## Your own notes")
+	thread := strings.Index(sys, "### Threads with you")
+	if soul < 0 || own < soul || thread < own {
+		t.Fatalf("order wrong (soul %d, own %d, thread %d):\n%s", soul, own, thread, sys)
+	}
+	if !strings.Contains(sys, `"Who you are" wins`) {
+		t.Fatal("the precedence line is missing")
+	}
+}
+
+func TestNoSelfNotesNoSection(t *testing.T) {
+	sys := systemText(Assemble(Snapshot{System: "you are spore"}, config.Default().Context).System)
+	if strings.Contains(sys, "Your own notes") {
+		t.Fatal("an empty self.md rendered a section")
+	}
+}
+
+func TestSelfSectionNamesSelfMdOnlyWhenCompanionIsOn(t *testing.T) {
+	cfg := config.Default()
+	if strings.Contains(selfSection(cfg, ""), "self.md") {
+		t.Fatal("companion off, but the file list names self.md")
+	}
+	cfg.Companion.Enabled = true
+	if !strings.Contains(selfSection(cfg, ""), cfg.SelfPath()) {
+		t.Fatal("companion on, but the file list does not name self.md")
+	}
+}
