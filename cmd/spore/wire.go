@@ -58,7 +58,7 @@ func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recall
 	tools = append(tools, schedule.New(st)...)
 	tools = append(tools, mem.NewRecallSearch(recallBackend), mem.NewMemory(facts, st))
 	tools = append(tools, skill.New(cfg, skillsCache)...)
-	tools = append(tools, personatool.New(cfg)...)
+	tools = append(tools, personatool.New(cfg, ref)...)
 	tools = append(tools, refinetool.New(ref))
 	tools = append(tools, subagenttool.New(sup)...)
 	// go_run's helper calls go back through the guard built below, which

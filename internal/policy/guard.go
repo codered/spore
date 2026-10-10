@@ -348,6 +348,9 @@ var nonLearnable = map[string]bool{
 	// agent_note for the same reason one step down: a standing instruction
 	// written once shapes every later turn in that workspace.
 	"agent_note": true,
+	// self_note: spore's own notes ride in every later prompt, so each write
+	// is judged on its own.
+	"self_note": true,
 }
 
 // PatternFor proposes the rule an "allow once and propose this pattern for review" answer would
