@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -347,6 +348,9 @@ type WebConfig struct {
 	SearchProvider string `toml:"search_provider"`
 	BraveAPIKey    string `toml:"brave_api_key"`
 	UserAgent      string `toml:"user_agent"`
+	// AllowPrivateHosts disables the SSRF guard in web_fetch, permitting
+	// fetches to loopback, RFC1918, and link-local addresses. Off by default.
+	AllowPrivateHosts bool `toml:"allow_private_hosts"`
 }
 
 type ShellConfig struct {
@@ -1044,6 +1048,21 @@ func (c *Config) Validate() error {
 	}
 	if err := c.Companion.validate(); err != nil {
 		return err
+	}
+	// SEC-003: if tracing is enabled and the endpoint is not loopback, force
+	// redaction on to prevent conversation content being exported unredacted.
+	if c.Trace.Enabled && !c.Trace.Redact && c.Trace.Endpoint != "" {
+		u, uerr := url.Parse(c.Trace.Endpoint)
+		if uerr == nil {
+			host := u.Hostname()
+			ip := net.ParseIP(host)
+			isLoopback := (ip != nil && ip.IsLoopback()) || host == "localhost"
+			if !isLoopback {
+				c.Trace.Redact = true
+				slog.Default().Warn("trace.endpoint is not loopback and redact is unset; forcing redact=true to protect conversation content",
+					"endpoint", c.Trace.Endpoint)
+			}
+		}
 	}
 	return nil
 }

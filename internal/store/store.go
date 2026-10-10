@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -314,11 +315,38 @@ func migrateMessages(db *sql.DB) error {
 	return nil
 }
 
+// ensurePrivate creates the database file at 0600 when it is missing and
+// narrows it, and any WAL sidecars, to 0600 when it is not.
+func ensurePrivate(path string) error {
+	f, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE, 0o600) //nolint:gosec // G304: path is the configured database
+	if err != nil {
+		return fmt.Errorf("create database: %w", err)
+	}
+	_ = f.Close()
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("chmod database: %w", err)
+	}
+	for _, suf := range []string{"-wal", "-shm"} {
+		if err := os.Chmod(path+suf, 0o600); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("chmod database%s: %w", suf, err)
+		}
+	}
+	return nil
+}
+
 func Open(path string) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("create data dir: %w", err)
 		}
+	}
+	// The database holds every conversation, so it is 0600 like the config
+	// file. Creating it here, before SQLite does at the process umask, leaves
+	// no window where it is readable by others; the chmod tightens a database
+	// an older spore created at 0644. SQLite gives the -wal and -shm files the
+	// database's own mode, but ones left over from an older run keep theirs.
+	if err := ensurePrivate(path); err != nil {
+		return nil, err
 	}
 	db, err := sql.Open("sqlite3", path+"?_busy_timeout=5000&_foreign_keys=on")
 	if err != nil {

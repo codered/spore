@@ -268,6 +268,8 @@ table.grid td.actions button { padding: 1px 8px; font-size: 12px; margin-left: 4
 .detail h3 { margin: 0 0 8px; font: 600 13px var(--mono); }
 .detail .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .empty { color: var(--dim); padding: 20px 0; }
+.nav-empty { padding: 8px 12px; }
+body.signin { display: block; height: auto; font-family: system-ui; padding: 2rem; }
 
 /* ---------- overlays ---------- */
 

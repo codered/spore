@@ -211,7 +211,7 @@ func (s *Server) buildMux() *http.ServeMux {
 }
 
 func (s *Server) Handler() http.Handler {
-	return s.checkHost(s.buildMux())
+	return s.checkHost(secureHeaders(s.buildMux()))
 }
 
 // Run serves until ctx is cancelled, then drains with a short grace period.

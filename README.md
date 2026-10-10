@@ -1178,6 +1178,9 @@ it is designed so that a prompt injection cannot do more than you allowed:
   no memory writes, no skill installs, and recall limited to its own session;
 - code runs in a child process that can act only through policy-checked calls;
 - MCP servers do not inherit your environment or your provider keys;
+- **Note:** configuring an MCP server runs it as a child process with your full
+  user privileges. spore constrains what the model may ask it to do, not what
+  the server binary itself can do — only install MCP servers you trust.
 - skills and memory facts, which shape every later prompt, always require a
   human to approve them.
 

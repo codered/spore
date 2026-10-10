@@ -932,3 +932,27 @@ func TestParseQuietHours(t *testing.T) {
 		t.Fatalf("ParseQuietHours = %d, %d, %v", s, e, err)
 	}
 }
+
+func TestValidateTraceForceRedact(t *testing.T) {
+	// A non-loopback trace endpoint with redact=false should have redact forced on.
+	p := writeConfig(t, "[trace]\nenabled = true\nendpoint = \"http://remote.example.com/v1/traces\"\nredact = false\n")
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Trace.Redact {
+		t.Error("Validate did not force redact=true for a non-loopback trace endpoint")
+	}
+}
+
+func TestValidateTraceLoopbackKeepsRedactFalse(t *testing.T) {
+	// A loopback endpoint with redact=false should stay false — no forced override.
+	p := writeConfig(t, "[trace]\nenabled = true\nendpoint = \"http://localhost:6006/v1/traces\"\nredact = false\n")
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Trace.Redact {
+		t.Error("Validate incorrectly forced redact=true for a loopback trace endpoint")
+	}
+}
