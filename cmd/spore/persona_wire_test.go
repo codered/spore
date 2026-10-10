@@ -130,3 +130,40 @@ func TestBuildToolsRegistersAgentNote(t *testing.T) {
 		t.Fatal("agent_note is not registered, so the model can never call it")
 	}
 }
+
+// self.md reaches the prompt only while the companion is on: turning it off
+// must leave the prompt exactly as it was, even with the file on disk.
+func TestBuildAgentWiresSelfMdOnlyWhenCompanionIsOn(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		dir := t.TempDir()
+		ws := t.TempDir()
+		cfg := config.Default()
+		cfg.DataDir = dir
+		cfg.DefaultModel = "anthropic/claude-opus-5"
+		cfg.Providers = map[string]config.ProviderConfig{"anthropic": {Kind: "anthropic", APIKey: "sk-x"}}
+		cfg.Companion.Enabled = on
+		if err := os.WriteFile(cfg.SelfPath(), []byte("SELF-MARKER"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		u := buildAgentAt(t, cfg)
+		sid, err := u.st.CreateSession(context.Background(), "", ws)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := policy.WithSession(context.Background(), policy.Session{ID: sid, Workspace: ws})
+		snap, err := u.a.Snapshot(ctx, sid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(snap.SelfNotes, "SELF-MARKER"); got != on {
+			t.Errorf("companion %v: SelfNotes has the marker = %v", on, got)
+		}
+		hasTool := false
+		for _, s := range u.a.Tools.Specs() {
+			hasTool = hasTool || s.Name == "self_note"
+		}
+		if hasTool != on {
+			t.Errorf("companion %v: self_note registered = %v", on, hasTool)
+		}
+	}
+}

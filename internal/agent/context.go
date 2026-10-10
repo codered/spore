@@ -34,6 +34,9 @@ type Snapshot struct {
 	Soul    string
 	Agent   string
 	Summary string
+	// SelfNotes is self.md: spore's own notes, written with self_note. Empty
+	// when the companion is off or the file is absent.
+	SelfNotes string
 	// Kernel is the go_run section: the spore package and every tool a
 	// program can reach. Empty outside code mode. It is a pure function of
 	// the tool set, so it rides in the cached prefix.
@@ -83,7 +86,7 @@ func SnapshotBreakdown(snap Snapshot, cfg config.ContextConfig) Breakdown {
 		msgTotal += messageTokens(m)
 	}
 	return Breakdown{
-		System:      EstimateTokens(snap.System) + EstimateTokens(snap.Kernel),
+		System:      EstimateTokens(snap.System) + EstimateTokens(snap.Kernel) + EstimateTokens(selfNotesSection(snap.SelfNotes)),
 		Environment: EstimateTokens(snap.Environment),
 		Facts:       EstimateTokens(factsSection(snap.Facts, cfg.FactBudget)),
 		Skills:      EstimateTokens(skillsSection(snap.Skills, cfg.SkillBudget)),
@@ -197,6 +200,9 @@ func selfSection(cfg *config.Config, workspace string) string {
 	// soul.md is the one file here spore only reads, so the line says what to
 	// do instead of writing it.
 	fmt.Fprintf(&b, "- Your personality: %s -- how you speak and what you value. It is the user's, and you cannot write it: when they want you to behave differently everywhere, tell them this path and what to add.\n", cfg.SoulPath())
+	if cfg.Companion.Enabled {
+		fmt.Fprintf(&b, "- Your own notes: %s -- yours, not the user's: what you are curious about, open threads with them, how they like to be talked to, opinions you have formed. Add a line with self_note.\n", cfg.SelfPath())
+	}
 	// A rootless session has no agent.md. Naming a path that cannot exist
 	// would invite the model to describe writing one.
 	if p := cfg.AgentPath(workspace); p != "" {
@@ -225,6 +231,25 @@ func selfSection(cfg *config.Config, workspace string) string {
 // directly under the system prompt, which is the operational half of the
 // same thing.
 func soulSection(body string) string { return titled(body, "## Who you are") }
+
+// selfNotesSection renders self.md directly under soul.md. The file's own
+// "## " headings are demoted one level so they read as parts of this
+// section, and the opening line settles who wins a conflict: the user's
+// soul.md, always.
+func selfNotesSection(body string) string {
+	if strings.TrimSpace(body) == "" {
+		return ""
+	}
+	lines := strings.Split(strings.Trim(body, "\n"), "\n")
+	for i, l := range lines {
+		if strings.HasPrefix(l, "## ") {
+			lines[i] = "#" + l
+		}
+	}
+	return "\n\n## Your own notes\n\nThese are your own notes. " +
+		"Where they conflict with \"Who you are\", \"Who you are\" wins.\n\n" +
+		strings.Join(lines, "\n") + "\n"
+}
 
 // agentSection renders agent.md. It goes last in the stable prefix: it is the
 // most situational thing in it, so it sits closest to the conversation it
@@ -269,6 +294,7 @@ func Assemble(snap Snapshot, cfg config.ContextConfig) provider.Request {
 	}
 	add(snap.System)
 	add(soulSection(snap.Soul))
+	add(selfNotesSection(snap.SelfNotes))
 	add(snap.Self)
 	add(skillsSection(snap.Skills, cfg.SkillBudget))
 	add(snap.Kernel)

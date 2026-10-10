@@ -171,6 +171,13 @@ func (a *Agent) Snapshot(ctx context.Context, sessionID string) (Snapshot, error
 	} else {
 		snap.Soul = body
 	}
+	if a.Cfg.Companion.Enabled {
+		if body, err := persona.Load(a.Cfg.SelfPath()); err != nil {
+			slog.Warn("read self.md", "path", a.Cfg.SelfPath(), "err", err)
+		} else {
+			snap.SelfNotes = body
+		}
+	}
 	agentPath := a.Cfg.AgentPath(policy.WorkspaceFrom(ctx))
 	if body, err := persona.Load(agentPath); err != nil {
 		slog.Warn("read agent.md", "path", agentPath, "err", err)
