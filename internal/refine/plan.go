@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/codered/spore/internal/companion"
 	"github.com/codered/spore/internal/memory"
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/router"
+	"github.com/codered/spore/internal/store"
 	sporetrace "github.com/codered/spore/internal/trace"
 )
 
@@ -34,18 +36,40 @@ type Input struct {
 	Notes        string
 	NotesPath    string
 	Instructions string
+	// AskSignals adds the signals section to the prompt; Interests are the
+	// keys already tracked, shown so the planner reuses them.
+	AskSignals bool
+	Interests  []store.Interest
 }
 
 // Plan is the planner's answer plus what it cost.
 type Plan struct {
-	Edits []Edit
-	Model string // the model ref, as chat turns record it
-	Usage provider.Usage
-	Cost  float64
+	Edits      []Edit
+	Signals    []companion.Signal
+	BadSignals int    // entries in "signals" that were not even objects
+	Model      string // the model ref, as chat turns record it
+	Usage      provider.Usage
+	Cost       float64
 }
 
-func plannerPrompt(maxEdits int) string {
-	return fmt.Sprintf(`You maintain the long-term memory of an AI assistant called spore. You are shown one conversation between the user and spore, the memory facts spore currently has, and the project notes for the workspace the conversation ran in.
+// signalsPrompt is appended to the planner prompt only when signals are asked for.
+const signalsPrompt = `
+
+Also report the user's recurring interests this conversation shows, as "signals" beside "edits":
+{"edits": [ ... ], "signals": [ ... ]}
+
+A signal is something the user keeps coming back to -- a stock or coin they check, a topic, a person, a place, a project -- not a one-off fact. Record one per interest the user themselves raised in this conversation. What spore brought up on its own does not count.
+
+Signal shape:
+{"key":"stock:zs","label":"Zscaler (ZS) share price","kind":"asked|mentioned|acted"}
+
+- key is kind:name, kind one of stock, crypto, topic, person, place, project; name lowercase letters, digits, dot, underscore or hyphen, at most 48.
+- Reuse a key from "Interests already being tracked" when it is the same interest.
+- asked: the user asked about it; mentioned: they brought it up; acted: they did something about it.
+- At most 10. An empty list is a good answer.`
+
+func plannerPrompt(maxEdits int, signals bool) string {
+	p := fmt.Sprintf(`You maintain the long-term memory of an AI assistant called spore. You are shown one conversation between the user and spore, the memory facts spore currently has, and the project notes for the workspace the conversation ran in.
 
 Propose at most %d small edits that would make spore behave better in future conversations:
 - a correction the user gave, or a lasting preference they stated, that is not already recorded;
@@ -70,6 +94,10 @@ Edit shapes:
 {"kind":"fact.delete","name":"existing-name","rationale":"..."}
 {"kind":"notes.append","text":"one-line order","rationale":"..."}
 {"kind":"notes.replace","text":"the whole new project notes file","rationale":"..."}`, maxEdits)
+	if signals {
+		p += signalsPrompt
+	}
+	return p
 }
 
 func renderInput(in Input) string {
@@ -93,6 +121,15 @@ func renderInput(in Input) string {
 		b.WriteString(in.Notes)
 		b.WriteString("\n")
 	}
+	if in.AskSignals {
+		b.WriteString("\n## Interests already being tracked\n\n")
+		if len(in.Interests) == 0 {
+			b.WriteString("(none)\n")
+		}
+		for _, it := range in.Interests {
+			fmt.Fprintf(&b, "- %s: %s\n", it.Key, it.Label)
+		}
+	}
 	if s := strings.TrimSpace(in.Instructions); s != "" {
 		b.WriteString("\n## Focus\n\n")
 		b.WriteString(s)
@@ -101,25 +138,49 @@ func renderInput(in Input) string {
 	return b.String()
 }
 
-// ParseEdits reads the planner's reply. It tolerates prose or a code fence
+// ParseReply reads the planner's reply. It tolerates prose or a code fence
 // around the object, but a reply with no complete object is an error: a
 // truncated answer must fail the round, not read as "nothing to change".
-func ParseEdits(text string) ([]Edit, error) {
+// Signals never cost the edits: a "signals" value that is not an array counts
+// as one bad signal, and each array entry is decoded on its own so a malformed
+// one costs only itself. bad counts the entries that were not signal objects.
+func ParseReply(text string) (edits []Edit, signals []companion.Signal, bad int, err error) {
 	start := strings.Index(text, "{")
 	end := strings.LastIndex(text, "}")
 	if start < 0 || end < start {
-		return nil, fmt.Errorf("refiner reply has no JSON object (truncated or off-format): %.200q", text)
+		return nil, nil, 0, fmt.Errorf("refiner reply has no JSON object (truncated or off-format): %.200q", text)
 	}
 	var out struct {
-		Edits *[]Edit `json:"edits"`
+		Edits   *[]Edit         `json:"edits"`
+		Signals json.RawMessage `json:"signals"`
 	}
 	if err := json.Unmarshal([]byte(text[start:end+1]), &out); err != nil {
-		return nil, fmt.Errorf("refiner reply is not valid JSON (truncated or off-format): %w", err)
+		return nil, nil, 0, fmt.Errorf("refiner reply is not valid JSON (truncated or off-format): %w", err)
 	}
 	if out.Edits == nil {
-		return nil, fmt.Errorf("refiner reply has no \"edits\" field: %.200q", text)
+		return nil, nil, 0, fmt.Errorf("refiner reply has no \"edits\" field: %.200q", text)
 	}
-	return *out.Edits, nil
+	if n := strings.TrimSpace(string(out.Signals)); n != "" && n != "null" {
+		var items []json.RawMessage
+		if err := json.Unmarshal(out.Signals, &items); err != nil {
+			bad++
+		}
+		for _, raw := range items {
+			var s companion.Signal
+			if err := json.Unmarshal(raw, &s); err != nil {
+				bad++
+				continue
+			}
+			signals = append(signals, s)
+		}
+	}
+	return *out.Edits, signals, bad, nil
+}
+
+// ParseEdits is ParseReply without the signals.
+func ParseEdits(text string) ([]Edit, error) {
+	edits, _, _, err := ParseReply(text)
+	return edits, err
 }
 
 // plan makes the planner call on the refinement site.
@@ -133,7 +194,7 @@ func (r *Refiner) plan(ctx context.Context, in Input) (Plan, error) {
 	_, span := sporetrace.StartLLM(ctx, router.SiteRefinement, ref)
 	ch, err := p.Stream(ctx, provider.Request{
 		Model:     model,
-		System:    []provider.Block{{Type: provider.BlockText, Text: plannerPrompt(r.Cfg.Refine.MaxEdits)}},
+		System:    []provider.Block{{Type: provider.BlockText, Text: plannerPrompt(r.Cfg.Refine.MaxEdits, in.AskSignals)}},
 		MaxTokens: plannerMaxTokens,
 		Messages: []provider.Message{{
 			Role:   provider.RoleUser,
@@ -161,7 +222,7 @@ func (r *Refiner) plan(ctx context.Context, in Input) (Plan, error) {
 			return Plan{}, ev.Err
 		}
 	}
-	edits, err := ParseEdits(text)
+	edits, signals, bad, err := ParseReply(text)
 	if err != nil {
 		span.RecordError(err)
 		span.End()
@@ -169,5 +230,5 @@ func (r *Refiner) plan(ctx context.Context, in Input) (Plan, error) {
 	}
 	cost := price.Cost(usage)
 	sporetrace.EndLLM(span, user, text, usage, cost)
-	return Plan{Edits: edits, Model: ref, Usage: usage, Cost: cost}, nil
+	return Plan{Edits: edits, Signals: signals, BadSignals: bad, Model: ref, Usage: usage, Cost: cost}, nil
 }
