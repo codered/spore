@@ -22,11 +22,12 @@ import (
 // sidebar on them, and refinement trusts only SourceChat: a round over any
 // other source proposes its edits instead of applying them.
 const (
-	SourceChat     = "chat"
-	SourceDiscord  = "discord"
-	SourceJob      = "job"
-	SourceSubagent = "subagent"
-	SourceUnknown  = "unknown"
+	SourceChat      = "chat"
+	SourceDiscord   = "discord"
+	SourceJob       = "job"
+	SourceSubagent  = "subagent"
+	SourceCompanion = "companion"
+	SourceUnknown   = "unknown"
 )
 
 // RoleNote is a message spore writes into a chat for the person reading it,

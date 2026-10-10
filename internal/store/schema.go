@@ -231,4 +231,33 @@ CREATE TABLE IF NOT EXISTS refinements (
 CREATE INDEX IF NOT EXISTS idx_refinements_status ON refinements(status, id);
 CREATE INDEX IF NOT EXISTS idx_refinements_round ON refinements(round_id, id);
 CREATE INDEX IF NOT EXISTS idx_refinements_session ON refinements(session_id, status, id);
+
+-- interests is what the companion believes the user cares about. Day counts
+-- and first/last sightings are not stored: they are derived from
+-- interest_signals on every read, so deleting a session corrects them.
+CREATE TABLE IF NOT EXISTS interests (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  key            TEXT NOT NULL UNIQUE,
+  label          TEXT NOT NULL,
+  state          TEXT NOT NULL DEFAULT 'observing',
+  watch_job_id   INTEGER,
+  cooldown_until TEXT NOT NULL DEFAULT '',
+  declined_at    TEXT NOT NULL DEFAULT '',
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
+
+-- interest_signals is the evidence: one row per sighting in a session. day is
+-- the local calendar date in companion.timezone, fixed when the row is
+-- written, because "seen on three days" means the user's days.
+CREATE TABLE IF NOT EXISTS interest_signals (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  interest_id INTEGER NOT NULL REFERENCES interests(id) ON DELETE CASCADE,
+  session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  kind        TEXT NOT NULL,
+  day         TEXT NOT NULL,
+  seen_at     TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_interest_signals_interest ON interest_signals(interest_id, day);
 `
