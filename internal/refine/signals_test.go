@@ -2,6 +2,7 @@ package refine
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -139,5 +140,35 @@ func TestRoundWithCompanionOffDoesNotAskForSignals(t *testing.T) {
 	req := f.script.Requests()[0]
 	if strings.Contains(req.System[0].Text, `"signals"`) || strings.Contains(req.Messages[0].Blocks[0].Text, "Interests already") {
 		t.Fatal("companion off, but the planner prompt changed")
+	}
+}
+
+func TestRoundKeepsEditsWhenKnownFails(t *testing.T) {
+	f := newFix(t, store.SourceChat,
+		`{"edits":[{"kind":"fact.create","name":"likes-tea","type":"user","description":"tea","body":"Likes tea.","rationale":"user said so"}],"signals":[{"key":"topic:tea","label":"Tea","kind":"asked"}]}`)
+	rec := withSignals(f)
+	// A recorder whose store is closed: every Known call fails.
+	broken, err := store.Open(filepath.Join(t.TempDir(), "broken.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := broken.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rec.Store = broken
+	f.say(t, "user", text("I like tea"))
+	res, err := f.r.Round(context.Background(), f.sid, TriggerManual, "", 0)
+	if err != nil {
+		t.Fatalf("a Known failure aborted the round: %v", err)
+	}
+	if len(res.Applied) != 1 {
+		t.Fatalf("applied=%d, want the valid edit to land", len(res.Applied))
+	}
+	if res.Signals != 0 {
+		t.Fatalf("signals=%d, want none recorded when Known failed", res.Signals)
+	}
+	req := f.script.Requests()[0]
+	if strings.Contains(req.System[0].Text, `"signals"`) || strings.Contains(req.Messages[0].Blocks[0].Text, "Interests already") {
+		t.Fatal("Known failed, but the planner prompt still has a signals section")
 	}
 }

@@ -57,10 +57,12 @@ func (selfNote) Description() string {
 }
 
 func (selfNote) Schema() json.RawMessage {
+	// The enum is the headings AppendSelfNote accepts, so the two cannot drift.
+	enum, _ := json.Marshal(companion.SelfHeadings)
 	return json.RawMessage(`{
 	  "type": "object",
 	  "properties": {
-	    "heading": {"type": "string", "enum": ["What I'm curious about", "Threads with you", "How you like to be talked to", "Opinions I've formed"]},
+	    "heading": {"type": "string", "enum": ` + string(enum) + `},
 	    "text": {"type": "string", "description": "One line, in your own voice."}
 	  },
 	  "required": ["heading", "text"]

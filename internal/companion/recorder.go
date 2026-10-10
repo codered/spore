@@ -45,14 +45,18 @@ type RecordResult struct {
 
 // Record validates and stores one round's signals for a session, then sweeps
 // interest states. Validation failures are reported in Dropped, never as an
-// error: a bad signal must not cost the round its edits.
+// error: a bad signal must not cost the round its edits. The sweep runs even
+// when no signal is valid, so an interest the user stopped mentioning still
+// fades.
 func (r *Recorder) Record(ctx context.Context, sess store.Session, signals []Signal) (RecordResult, error) {
 	var res RecordResult
-	if !r.Enabled() || len(signals) == 0 {
+	if !r.Enabled() {
 		return res, nil
 	}
 	if !Trusted(sess) {
-		res.Dropped = append(res.Dropped, fmt.Sprintf("signals: a %s session's signals do not count", sess.Source))
+		if len(signals) > 0 {
+			res.Dropped = append(res.Dropped, fmt.Sprintf("signals: a %s session's signals do not count", sess.Source))
+		}
 		return res, nil
 	}
 	loc, err := r.Cfg.Companion.Location()

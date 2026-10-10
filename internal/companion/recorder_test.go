@@ -232,3 +232,23 @@ func TestKnownOmitsRetired(t *testing.T) {
 		t.Fatalf("Known = %+v, %v", got, err)
 	}
 }
+
+func TestRecordWithNoSignalsStillSweeps(t *testing.T) {
+	ctx := context.Background()
+	f := newRFix(t)
+	sess := f.session(t, store.SourceChat)
+	f.now = pacific(t, "2026-09-01 09:00")
+	if _, err := f.r.Record(ctx, sess, []Signal{zs}); err != nil {
+		t.Fatal(err)
+	}
+	// The user stops mentioning ZS. A round that asked for signals and got
+	// none must still fade the interest.
+	f.now = pacific(t, "2026-10-10 09:00")
+	if _, err := f.r.Record(ctx, sess, nil); err != nil {
+		t.Fatal(err)
+	}
+	in, _, _ := f.st.InterestByKey(ctx, "stock:zs")
+	if in.State != store.InterestRetired {
+		t.Fatalf("state = %s, want retired after 39 quiet days with zero signals", in.State)
+	}
+}

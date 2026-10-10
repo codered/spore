@@ -120,9 +120,12 @@ func (r *Refiner) Round(ctx context.Context, sessionID string, trig Trigger, ins
 	if asked {
 		known, err := r.Signals.Known(ctx)
 		if err != nil {
-			return Result{}, err
+			// A store fault costs the signals, not the round's edits.
+			slog.Warn("refinement could not read known interests; skipping signals", "session", sessionID, "error", err)
+			asked = false
+		} else {
+			in.AskSignals, in.Interests = true, known
 		}
-		in.AskSignals, in.Interests = true, known
 	}
 	p, err := r.plan(ctx, in)
 	if err != nil {
@@ -152,9 +155,8 @@ func (r *Refiner) recordSignals(ctx context.Context, sess store.Session, p Plan,
 	for i := 0; i < p.BadSignals; i++ {
 		res.Dropped = append(res.Dropped, "signal: not an object")
 	}
-	if len(p.Signals) == 0 {
-		return
-	}
+	// Record runs even with no signals: the sweep fades interests the user
+	// stopped mentioning, and this round did ask.
 	rec, err := r.Signals.Record(ctx, sess, p.Signals)
 	if err != nil {
 		slog.Warn("refinement could not record interest signals", "session", sess.ID, "error", err)

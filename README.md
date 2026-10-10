@@ -1089,7 +1089,8 @@ later.
 **Built-in tools:** `fs_read`, `fs_write`, `fs_edit`, `fs_list`, `fs_glob`,
 `fs_grep`, `shell_exec`, `web_fetch`, `web_search`, `go_run`, `memory`,
 `recall_search`, `skill_load`, `skill_install`, `agent_run`, `agent_spawn`,
-`agent_result`, `schedule_*`, `refine`, plus every tool from your MCP servers.
+`agent_result`, `agent_note`, `schedule_*`, `refine`, `self_note` (companion only),
+plus every tool from your MCP servers.
 
 ### Companion (preview)
 
@@ -1109,7 +1110,8 @@ self_max_bytes = 10240
 noticed. If your config has its own `[policy] allow` list, add `self_note` to it
 or spore will ask before each note. If it has its own `[policy.profile.remote]`
 deny list, add `self_note` there too, so a remote chat cannot write into spore's
-notes.
+notes. `/refine rollback` undoes the session's most recent change, and a `self_note`
+counts as one, so rolling back right after a note removes the note.
 
 ## 🖥️ CLI
 

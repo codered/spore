@@ -483,9 +483,7 @@ Recorded in `docs/backlog.md` as enhancements:
 
 - Day counts are derived from `interest_signals.day` on every read; there is
   no recompute step after a session delete.
-- `Sweep` runs after each `Record`. Until PR 2's heartbeat exists, a candidate
-  whose evidence shrank (a deleted session) is demoted only on the next
-  recorded signal; `spore companion interests` always shows live counts.
-- `self.md` counts toward the `System` figure in `/context`.
+- `Sweep` runs on every refinement round that asked for signals, even when none were valid; fading and demotion happen then. PR 2's heartbeat will sweep on its own schedule.
+- `DaysSeen` counts every sighting ever recorded, with no window, so a retired interest revived by one new sighting can become a candidate at once. PR 2 decides whether proposals need recent evidence.
 - `## ` headings inside `self.md` are demoted to `### ` when rendered under `## Your own notes`, so the user's file cannot open a new top-level prompt section.
 - `/context` counts `self.md` in its `System` figure; it does not count `soul.md` or `agent.md` (a pre-existing gap, left alone).

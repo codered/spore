@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codered/spore/internal/companion"
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/refine"
@@ -165,6 +166,22 @@ func TestSelfNoteAppendsUnderItsHeading(t *testing.T) {
 	}
 	if !strings.Contains(out, "Threads with you") {
 		t.Fatalf("result %q does not say where it went", out)
+	}
+}
+
+func TestSelfNoteSchemaEnumIsSelfHeadings(t *testing.T) {
+	var schema struct {
+		Properties struct {
+			Heading struct {
+				Enum []string `json:"enum"`
+			} `json:"heading"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(newSelfNote(config.Default(), &fakeSelf{}).Schema(), &schema); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(schema.Properties.Heading.Enum, "|") != strings.Join(companion.SelfHeadings, "|") {
+		t.Fatalf("enum = %q, want %q", schema.Properties.Heading.Enum, companion.SelfHeadings)
 	}
 }
 
