@@ -6,10 +6,12 @@ import (
 	"fmt"
 	stdhtml "html"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/codered/spore/internal/tool"
 	"golang.org/x/net/html"
@@ -19,6 +21,87 @@ type fetchTool struct {
 	hc        *http.Client
 	userAgent string
 	maxBytes  int
+}
+
+// extraPrivateNets are non-public ranges net.IP has no predicate for:
+// carrier-grade NAT, which Tailscale also hands out, and "this network".
+var extraPrivateNets = []*net.IPNet{mustCIDR("100.64.0.0/10"), mustCIDR("0.0.0.0/8")}
+
+func mustCIDR(s string) *net.IPNet {
+	_, n, err := net.ParseCIDR(s)
+	if err != nil {
+		panic(err)
+	}
+	return n
+}
+
+// isPrivateIP reports whether ip is loopback, private, link-local (which
+// covers the 169.254.169.254 cloud-metadata address) or otherwise not on the
+// public internet. Used to keep web_fetch off the LAN and the machine itself.
+func isPrivateIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	for _, n := range extraPrivateNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// guardedDialer refuses to connect to a private address. It resolves the
+// host once and dials the addresses it checked, never the name: dialing the
+// name would resolve it a second time, and a DNS-rebinding server can answer
+// that second lookup with 127.0.0.1. Every connection passes through here,
+// so each redirect hop is checked too.
+type guardedDialer struct {
+	lookup func(ctx context.Context, host string) ([]net.IPAddr, error)
+	dial   func(ctx context.Context, network, addr string) (net.Conn, error)
+}
+
+func (g guardedDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := g.lookup(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("web_fetch: %s has no addresses", host)
+	}
+	// Refuse if any address is private, not only the first: the dial below
+	// falls through to later addresses when an earlier one fails.
+	for _, ip := range ips {
+		if isPrivateIP(ip.IP) {
+			return nil, fmt.Errorf("web_fetch: refusing %s: it resolves to the private address %s (set [web] allow_private_hosts to allow)", host, ip.IP)
+		}
+	}
+	var firstErr error
+	for _, ip := range ips {
+		c, err := g.dial(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+		if err == nil {
+			return c, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return nil, firstErr
+}
+
+// guardedTransport is http.DefaultTransport with the private-address check
+// on every dial. It does not use a proxy: a proxy resolves and connects to
+// the target itself, out of reach of the check.
+func guardedTransport() *http.Transport {
+	d := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.Proxy = nil
+	t.DialContext = guardedDialer{lookup: net.DefaultResolver.LookupIPAddr, dial: d.DialContext}.DialContext
+	return t
 }
 
 // checkRedirect re-validates the scheme on every hop. Go's transport already
@@ -35,9 +118,15 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 	return nil
 }
 
-func NewFetchTool(hc *http.Client, userAgent string, maxBytes int) tool.Tool {
+// NewFetchTool builds the web_fetch tool. Unless allowPrivate is set, a
+// client with no transport of its own gets guardedTransport, which refuses
+// loopback, LAN, link-local and cloud-metadata addresses.
+func NewFetchTool(hc *http.Client, userAgent string, maxBytes int, allowPrivate bool) tool.Tool {
 	if hc == nil {
-		hc = http.DefaultClient
+		hc = &http.Client{Timeout: 30 * time.Second}
+	}
+	if !allowPrivate && hc.Transport == nil {
+		hc.Transport = guardedTransport()
 	}
 	if hc.CheckRedirect == nil {
 		hc.CheckRedirect = checkRedirect

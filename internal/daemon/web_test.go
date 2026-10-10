@@ -189,3 +189,23 @@ func TestModelPanelIsWired(t *testing.T) {
 		}
 	}
 }
+
+func TestSecureHeaders(t *testing.T) {
+	h := bareServer(t).Handler()
+	for _, path := range []string{"/", "/static/app.js", "/static/style.css"} {
+		req := httptest.NewRequest("GET", "http://127.0.0.1:7777"+path, nil)
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		res := rec.Result()
+		if got := res.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("%s: X-Content-Type-Options = %q, want nosniff", path, got)
+		}
+		if got := res.Header.Get("Content-Security-Policy"); !strings.Contains(got, "default-src") {
+			t.Errorf("%s: Content-Security-Policy = %q, want it to contain default-src", path, got)
+		}
+		if got := res.Header.Get("X-Frame-Options"); got != "DENY" {
+			t.Errorf("%s: X-Frame-Options = %q, want DENY", path, got)
+		}
+	}
+}

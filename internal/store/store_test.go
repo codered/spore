@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -1054,4 +1055,59 @@ func TestPendingCallsGainPattern(t *testing.T) {
 	if err != nil || !found || p.Pattern != "" {
 		t.Errorf("old row = %+v %v %v, want found with no pattern", p, found, err)
 	}
+}
+
+func TestStoreFilePermissions(t *testing.T) {
+	old := syscall.Umask(0o022)
+	defer syscall.Umask(old)
+
+	perm := func(t *testing.T, path string) os.FileMode {
+		t.Helper()
+		fi, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		return fi.Mode().Perm()
+	}
+
+	t.Run("new database", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "spore.db")
+		s, err := Open(path)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer s.Close()
+		if got := perm(t, path); got != 0o600 {
+			t.Errorf("spore.db permissions = %04o, want 0600", got)
+		}
+	})
+
+	// A database an older spore created at the umask is narrowed on open.
+	t.Run("existing 0644 database", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "spore.db")
+		s, err := Open(path)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		_ = s.Close()
+		// An empty WAL is valid; it stands in for one left by an older run.
+		if err := os.WriteFile(path+"-wal", nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range []string{path, path + "-wal"} {
+			if err := os.Chmod(p, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		s, err = Open(path)
+		if err != nil {
+			t.Fatalf("reopen: %v", err)
+		}
+		defer s.Close()
+		for _, p := range []string{path, path + "-wal"} {
+			if got := perm(t, p); got != 0o600 {
+				t.Errorf("%s permissions = %04o, want 0600", filepath.Base(p), got)
+			}
+		}
+	})
 }

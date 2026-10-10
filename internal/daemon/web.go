@@ -19,7 +19,22 @@ var indexTemplate = template.Must(template.ParseFS(web.FS, "index.html"))
 // signInPage is what a browser without the cookie sees: the UI would only
 // fail on every request.
 const signInPage = `<!doctype html><meta charset="utf-8"><title>spore</title>` +
-	`<body style="font-family:system-ui;padding:2rem"><p>Run <code>spore web</code> in a terminal to open the UI signed in.</p></body>`
+	`<link rel="stylesheet" href="/static/style.css"><body class="signin"><p>Run <code>spore web</code> in a terminal to open the UI signed in.</p></body>`
+
+// secureHeaders sets defence-in-depth HTTP security headers on every
+// response served by the web UI. It is a second barrier: the UI is safe by
+// construction today, but a future rendering regression that interpolates
+// model text as HTML would execute with no barrier without these.
+func secureHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy",
+			"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'")
+		next.ServeHTTP(w, r)
+	})
+}
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// ServeMux's "/" pattern matches everything unmatched; only the root is

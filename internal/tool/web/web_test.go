@@ -3,6 +3,8 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -102,7 +104,7 @@ func TestFetchConvertsHTMLToText(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tl := NewFetchTool(srv.Client(), "spore-test", 1<<20)
+	tl := NewFetchTool(srv.Client(), "spore-test", 1<<20, true)
 	args, _ := json.Marshal(map[string]string{"url": srv.URL})
 	out, err := tl.Call(context.Background(), args)
 	if err != nil {
@@ -121,7 +123,7 @@ func TestFetchConvertsHTMLToText(t *testing.T) {
 }
 
 func TestFetchRejectsNonHTTPSchemes(t *testing.T) {
-	tl := NewFetchTool(http.DefaultClient, "spore-test", 1<<20)
+	tl := NewFetchTool(http.DefaultClient, "spore-test", 1<<20, false)
 	for _, u := range []string{"file:///etc/passwd", "ftp://x/y", "notaurl"} {
 		args, _ := json.Marshal(map[string]string{"url": u})
 		if _, err := tl.Call(context.Background(), args); err == nil {
@@ -135,7 +137,7 @@ func TestFetchReportsHTTPErrors(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
-	tl := NewFetchTool(srv.Client(), "spore-test", 1<<20)
+	tl := NewFetchTool(srv.Client(), "spore-test", 1<<20, true)
 	args, _ := json.Marshal(map[string]string{"url": srv.URL})
 	if _, err := tl.Call(context.Background(), args); err == nil {
 		t.Fatal("web_fetch swallowed a 404")
@@ -168,7 +170,7 @@ func TestFetchRefusesARedirectAwayFromHTTP(t *testing.T) {
 		w.WriteHeader(http.StatusFound)
 	}))
 	defer srv.Close()
-	tl := NewFetchTool(srv.Client(), "spore-test", 1<<20)
+	tl := NewFetchTool(srv.Client(), "spore-test", 1<<20, true)
 	args, _ := json.Marshal(map[string]string{"url": srv.URL})
 	out, err := tl.Call(context.Background(), args)
 	if err == nil {
@@ -202,7 +204,7 @@ func TestFetchBodyLimitFollowsTheContext(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tl := NewFetchTool(srv.Client(), "spore-test", 100)
+	tl := NewFetchTool(srv.Client(), "spore-test", 100, true)
 	args, _ := json.Marshal(map[string]string{"url": srv.URL})
 	out, err := tl.Call(context.Background(), args)
 	if err != nil {
@@ -217,5 +219,166 @@ func TestFetchBodyLimitFollowsTheContext(t *testing.T) {
 	}
 	if len(out) != 5000 {
 		t.Errorf("with a 10000-byte context limit the whole body arrives: got %d bytes, want 5000", len(out))
+	}
+}
+
+func TestFetchBlocksLoopback(t *testing.T) {
+	// Start a server so we have a live loopback port to target.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("secret"))
+	}))
+	defer srv.Close()
+
+	tl := NewFetchTool(nil, "spore-test", 1<<20, false)
+	args, _ := json.Marshal(map[string]string{"url": srv.URL})
+	_, err := tl.Call(context.Background(), args)
+	if err == nil {
+		t.Fatal("web_fetch did not block loopback address")
+	}
+	if !strings.Contains(err.Error(), "private") && !strings.Contains(err.Error(), "loopback") && !strings.Contains(err.Error(), "refusing") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestFetchBlocksRFC1918(t *testing.T) {
+	tl := NewFetchTool(nil, "spore-test", 1<<20, false)
+	for _, u := range []string{"http://10.0.0.1/", "http://192.168.1.1/", "http://172.16.0.1/"} {
+		args, _ := json.Marshal(map[string]string{"url": u})
+		_, err := tl.Call(context.Background(), args)
+		if err == nil {
+			t.Errorf("web_fetch did not block private address %s", u)
+		}
+	}
+}
+
+func TestFetchAllowsPrivateWhenConfigured(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	tl := NewFetchTool(srv.Client(), "spore-test", 1<<20, true)
+	args, _ := json.Marshal(map[string]string{"url": srv.URL})
+	out, err := tl.Call(context.Background(), args)
+	if err != nil {
+		t.Fatalf("web_fetch with allowPrivate=true rejected loopback server: %v", err)
+	}
+	if !strings.Contains(out, "ok") {
+		t.Errorf("unexpected output: %q", out)
+	}
+}
+
+func TestIsPrivateIP(t *testing.T) {
+	for _, c := range []struct {
+		ip   string
+		want bool
+	}{
+		{"127.0.0.1", true},
+		{"10.1.2.3", true},
+		{"172.16.0.1", true},
+		{"192.168.1.1", true},
+		{"169.254.169.254", true}, // cloud metadata
+		{"100.100.100.100", true}, // carrier-grade NAT / Tailscale
+		{"0.0.0.0", true},
+		{"::1", true},
+		{"fd00::1", true},
+		{"fe80::1", true},
+		{"::ffff:127.0.0.1", true}, // IPv4-mapped loopback
+		{"93.184.216.34", false},
+		{"2606:4700::1111", false},
+	} {
+		if got := isPrivateIP(net.ParseIP(c.ip)); got != c.want {
+			t.Errorf("isPrivateIP(%s) = %v, want %v", c.ip, got, c.want)
+		}
+	}
+}
+
+// The guard must dial the address it checked. Dialing the name would make
+// the transport resolve it again, and a rebinding server answers that second
+// lookup with a private address.
+func TestGuardedDialerDialsTheCheckedAddress(t *testing.T) {
+	lookups := 0
+	var dialed string
+	g := guardedDialer{
+		lookup: func(_ context.Context, host string) ([]net.IPAddr, error) {
+			lookups++
+			if lookups > 1 {
+				return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+			}
+			return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+		},
+		dial: func(_ context.Context, _, addr string) (net.Conn, error) {
+			dialed = addr
+			return nil, errors.New("test: no network")
+		},
+	}
+	_, _ = g.DialContext(context.Background(), "tcp", "rebind.test:80")
+	if lookups != 1 {
+		t.Errorf("host resolved %d times, want 1", lookups)
+	}
+	if dialed != "93.184.216.34:80" {
+		t.Errorf("dialed %q, want the checked address 93.184.216.34:80", dialed)
+	}
+}
+
+func TestGuardedDialerRefusesAnyPrivateAddress(t *testing.T) {
+	g := guardedDialer{
+		lookup: func(context.Context, string) ([]net.IPAddr, error) {
+			return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}, {IP: net.ParseIP("10.0.0.1")}}, nil
+		},
+		dial: func(context.Context, string, string) (net.Conn, error) {
+			t.Fatal("dialed despite a private address in the answer")
+			return nil, nil
+		},
+	}
+	if _, err := g.DialContext(context.Background(), "tcp", "mixed.test:80"); err == nil {
+		t.Fatal("a host with one private address was allowed")
+	}
+}
+
+// A public site that redirects to a private address must be refused at the
+// redirect hop. The fake resolver gives public.test a public address and the
+// fake dialer routes every connection to the local test server.
+func TestFetchRefusesRedirectToPrivate(t *testing.T) {
+	var target string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host == "public.test" && r.URL.Path == "/hop" {
+			http.Redirect(w, r, target, http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("reached " + r.Host))
+	}))
+	defer srv.Close()
+	target = srv.URL + "/secret"
+	srvAddr := srv.Listener.Addr().String()
+
+	var d net.Dialer
+	g := guardedDialer{
+		lookup: func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			if host == "public.test" {
+				return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+			}
+			return net.DefaultResolver.LookupIPAddr(ctx, host)
+		},
+		dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return d.DialContext(ctx, network, srvAddr)
+		},
+	}
+	hc := &http.Client{Transport: &http.Transport{DialContext: g.DialContext}}
+	tl := NewFetchTool(hc, "spore-test", 1<<20, false)
+
+	// The wiring itself works: a public page with no redirect is fetched.
+	args, _ := json.Marshal(map[string]string{"url": "http://public.test/page"})
+	if out, err := tl.Call(context.Background(), args); err != nil || !strings.Contains(out, "reached public.test") {
+		t.Fatalf("plain fetch through the fake resolver = %q, %v", out, err)
+	}
+
+	args, _ = json.Marshal(map[string]string{"url": "http://public.test/hop"})
+	out, err := tl.Call(context.Background(), args)
+	if err == nil {
+		t.Fatalf("redirect to %s was followed: %q", target, out)
+	}
+	if !strings.Contains(err.Error(), "private address") {
+		t.Errorf("error = %v, want the private-address refusal", err)
 	}
 }

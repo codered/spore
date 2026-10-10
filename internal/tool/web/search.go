@@ -136,7 +136,10 @@ func (s searchTool) Call(ctx context.Context, args json.RawMessage) (string, err
 // no key is configured, so the model is never offered a tool that must fail.
 func New(cfg config.WebConfig, maxBytes int) []tool.Tool {
 	hc := &http.Client{Timeout: 30 * time.Second}
-	tools := []tool.Tool{NewFetchTool(hc, cfg.UserAgent, maxBytes)}
+	// web_fetch gets a client of its own: NewFetchTool installs the
+	// private-address guard on it, which the search API has no need of.
+	fetchClient := &http.Client{Timeout: 30 * time.Second}
+	tools := []tool.Tool{NewFetchTool(fetchClient, cfg.UserAgent, maxBytes, cfg.AllowPrivateHosts)}
 	if cfg.SearchProvider == "brave" && cfg.BraveAPIKey != "" {
 		tools = append(tools, NewSearchTool(NewBrave(cfg.BraveAPIKey, hc)))
 	}

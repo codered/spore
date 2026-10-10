@@ -50,6 +50,8 @@ function h(tag, attrs, ...kids) {
     if (k === "class") n.className = v;
     else if (k === "text") n.textContent = v;
     else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    // Through the CSSOM: the CSP's style-src blocks a style attribute.
+    else if (k === "style") n.style.cssText = v;
     else n.setAttribute(k, v === true ? "" : v);
   }
   for (const kid of kids.flat()) {
@@ -432,7 +434,7 @@ function renderSidebar() {
     for (const r of list) row(r, 0);
   }
   if (!S.order.length) {
-    nav.appendChild(h("div", { class: "empty", style: "padding:8px 12px", text: q ? "no session matches" : "no sessions yet" }));
+    nav.appendChild(h("div", { class: "empty nav-empty", text: q ? "no session matches" : "no sessions yet" }));
   }
 
   const blocked = all.filter((r) => stateOf(r) === "blocked").length;
