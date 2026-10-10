@@ -23,8 +23,11 @@ const (
 // a human answers "propose this pattern"; Accept applies them through the
 // policy reloader. Target and After both hold the rule text.
 const (
-	KindPolicyAllow       = "policy.allow"
-	KindPolicyDeny        = "policy.deny"
+	KindPolicyAllow = "policy.allow"
+	KindPolicyDeny  = "policy.deny"
+	// KindSelfUpdate is a write to self.md: spore's own notes. Target is the
+	// file's absolute path; Before and After are whole-file contents.
+	KindSelfUpdate        = "self.update"
 	RefineTriggerApproval = "approval"
 )
 

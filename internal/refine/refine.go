@@ -28,6 +28,8 @@ const (
 	TriggerCompaction Trigger = "compaction"
 	TriggerIdle       Trigger = "idle"
 	TriggerModel      Trigger = "model"
+	// TriggerTool marks a write a tool made directly, such as self_note.
+	TriggerTool Trigger = "tool"
 	// TriggerApproval marks a policy proposal written from an approval
 	// answer, not by a round.
 	TriggerApproval Trigger = store.RefineTriggerApproval
@@ -40,6 +42,8 @@ const (
 	KindFactDelete   = "fact.delete"
 	KindNotesAppend  = "notes.append"
 	KindNotesReplace = "notes.replace"
+	// KindSelfUpdate is written by UpdateSelf, never by a planner edit.
+	KindSelfUpdate = store.KindSelfUpdate
 )
 
 // Policy kinds are written only by the guard, never by a round.
