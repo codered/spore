@@ -10,6 +10,7 @@ import (
 
 	"github.com/codered/spore/internal/agent"
 	"github.com/codered/spore/internal/bridge/discord"
+	"github.com/codered/spore/internal/companion"
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/daemon"
 	mcphost "github.com/codered/spore/internal/mcp"
@@ -206,6 +207,9 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	// One Refiner per daemon: the tool records the model's requests on it,
 	// the agent calls its hooks, and the daemon runs its sweeper and routes.
 	ref := refine.New(st, reg, rt, cfg, facts)
+	// The recorder is always attached; it does nothing while the companion
+	// is off, so turning it on in config.toml needs no other wiring.
+	ref.Signals = companion.NewRecorder(st, cfg)
 
 	tools, host, err := buildTools(cfg, st, facts, recallBackend, skillsCache, sup, approver, ref)
 	if err != nil {
