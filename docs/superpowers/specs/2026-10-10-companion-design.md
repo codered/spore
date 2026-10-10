@@ -55,12 +55,13 @@ What spore believes the user cares about.
 | `key` | TEXT UNIQUE | normalized handle, e.g. `stock:zs`, `topic:daughter-reading` |
 | `label` | TEXT | human text, e.g. "Zscaler (ZS) share price" |
 | `state` | TEXT | `observing`, `candidate`, `proposed`, `active`, `declined`, `retired` |
-| `first_seen` | TEXT | RFC 3339 |
-| `last_seen` | TEXT | RFC 3339 |
-| `days_seen` | INTEGER | distinct local days with at least one signal |
 | `watch_job_id` | INTEGER NULL | the scheduler job, once a watch is approved |
 | `cooldown_until` | TEXT | set by "Not now"; no proposal before this time |
 | `declined_at` | TEXT | set by "Never" |
+
+`days_seen`, `first_seen` and `last_seen` are not columns. They are derived
+from `interest_signals` on every read (`COUNT(DISTINCT day)`, `MIN`/`MAX` of
+`seen_at`), so deleting a session corrects them with no recompute step.
 
 State transitions:
 
@@ -79,10 +80,11 @@ retired   --(new signal)--> observing
 ### 2.2 `interest_signals`
 
 One row per sighting: `id`, `interest_id` (FK, cascade), `session_id` (FK to
-`sessions`, ON DELETE CASCADE), `seen_at`, `kind` (`asked`, `mentioned`,
-`acted`). This is the evidence a proposal cites ("you asked about ZS on Oct 3,
+`sessions`, ON DELETE CASCADE), `seen_at`, `day` (the local calendar date of
+`seen_at` in `companion.timezone`, fixed when the row is written), `kind`
+(`asked`, `mentioned`, `acted`). This is the evidence a proposal cites ("you asked about ZS on Oct 3,
 6, 8 and 10"). `days_seen`, `first_seen` and `last_seen` are derived from
-signals and recomputed after a session delete.
+signals at read time (§2.1).
 
 ### 2.3 `outreach`
 
@@ -146,7 +148,8 @@ refiner, under its existing trust rules.
 [companion]
 enabled = false               # off until the user turns it on
 channel = "auto"              # auto | discord | terminal
-quiet_hours = "22:00-08:00"   # local time, from location/timezone config
+quiet_hours = "22:00-08:00"   # local time in `timezone`
+timezone = ""                 # IANA name, e.g. "America/Los_Angeles"; empty = the daemon host's zone
 habit_days = 3
 heartbeat = "30m"
 self_max_bytes = 10240
@@ -157,7 +160,8 @@ alerts_in_quiet_hours = false
 
 `enabled` defaults to `false` so an upgrade does not start messaging anyone.
 Validation: `channel` from the closed set; `quiet_hours` parses as `HH:MM-HH:MM`
-(may wrap midnight); `habit_days` 1..30; `heartbeat` >= 5m;
+(may wrap midnight, start != end); `timezone` loads with
+`time.LoadLocation`; `habit_days` 1..30; `heartbeat` >= 5m;
 `self_max_bytes` 1024..65536; budgets >= 1.
 
 ## 3. Observing
@@ -194,7 +198,7 @@ ZS and the interest would feed itself.
 
 ### 3.3 Counting days
 
-`days_seen` counts distinct calendar days in the user's configured timezone.
+`days_seen` counts distinct calendar days in `companion.timezone`.
 Several sightings on one day count once. When `days_seen` reaches
 `habit_days` and the state is `observing` (and `cooldown_until` has passed),
 the state becomes `candidate`. Nothing is sent at this point.
@@ -401,6 +405,11 @@ wants a denied tool says so in its reply; the next reflection may turn that
 into a proposal. `self_note(heading, text)` appends one bullet under a
 heading of `self.md`, subject to the size cap, ledgered as `self.update`.
 
+`self_note` is registered only when `companion.enabled` is true. In the
+default policy it is allowed for the `local` profile and denied for `remote`
+(the same reasoning as `memory`: a Discord injection must not plant text that
+rides in every later prompt), and it is non-learnable.
+
 ### 5.5 Managing it
 
 - CLI: `spore companion status | interests | outreach | pause [duration] |
@@ -450,10 +459,12 @@ heading of `self.md`, subject to the size cap, ledgered as `self.update`.
 One spec, three PRs, each usable on its own:
 
 1. **Observe + self.** Tables, `[companion]` config, signals from refinement,
-   `self.md` in the prompt with the ledger kind, `self_note`, the `companion`
-   profile, `spore companion interests|status`. Spore starts learning and says
-   nothing.
-2. **Heartbeat + outreach.** Router site, reflection, governor, channels, the
+   `self.md` in the prompt with the ledger kind, `self_note`,
+   `spore companion interests|status`. Spore starts learning and says
+   nothing. With `enabled = false` nothing changes: no signals, no
+   `self_note`, no `self.md` section.
+2. **Heartbeat + outreach.** The `companion` policy profile (it has no user
+   until watch jobs and research runs exist), router site, reflection, governor, channels, the
    companion session, proposals with buttons, watch creation,
    `interest_update`, `companion_feedback`, pause/resume, `/companion`.
 3. **Research + digest.** Research runs, findings, the digest slot,
