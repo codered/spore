@@ -478,3 +478,14 @@ Recorded in `docs/backlog.md` as enhancements:
   calendar);
 - voice;
 - mood or emotion simulation.
+
+## As built — PR 1
+
+- Day counts are derived from `interest_signals.day` on every read; there is
+  no recompute step after a session delete.
+- `Sweep` runs after each `Record`. Until PR 2's heartbeat exists, a candidate
+  whose evidence shrank (a deleted session) is demoted only on the next
+  recorded signal; `spore companion interests` always shows live counts.
+- `self.md` counts toward the `System` figure in `/context`.
+- `## ` headings inside `self.md` are demoted to `### ` when rendered under `## Your own notes`, so the user's file cannot open a new top-level prompt section.
+- `/context` counts `self.md` in its `System` figure; it does not count `soul.md` or `agent.md` (a pre-existing gap, left alone).
