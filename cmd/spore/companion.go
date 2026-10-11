@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,10 +23,13 @@ import (
 // so the answer is posted where the proposal was.
 func cmdCompanion(ctx context.Context, cfg *config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: spore companion status | interests | outreach | pause [duration] | resume | answer <id> yes|not-now|never | interests undecline <key>")
+		return fmt.Errorf("usage: spore companion status | interests | outreach | pause [duration] | resume | answer <id> yes|not-now|never | interests undecline <key> | check [--promote <key>] [--force]")
 	}
-	if args[0] == "answer" {
+	switch args[0] {
+	case "answer":
 		return companionAnswer(ctx, cfg, args[1:])
+	case "check":
+		return companionCheck(ctx, cfg, args[1:])
 	}
 	st, err := store.Open(cfg.DBPath())
 	if err != nil {
@@ -179,6 +183,39 @@ func companionAnswer(ctx context.Context, cfg *config.Config, args []string) err
 		return err
 	}
 	fmt.Println(out.Message)
+	return nil
+}
+
+// companionCheck runs one heartbeat in the daemon now, skipping pause, quiet
+// hours and the unchanged-state skip, and prints what it did. --promote
+// makes an observing interest a candidate first; --force also tells the
+// model it must propose it. What it sends is real: Yes starts a watch.
+func companionCheck(ctx context.Context, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("companion check", flag.ContinueOnError)
+	promote := fs.String("promote", "", "make this observing interest a candidate first")
+	force := fs.Bool("force", false, "tell the model it must propose the --promote interest")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("usage: spore companion check [--promote <key>] [--force]")
+	}
+	if *force && *promote == "" {
+		return fmt.Errorf("--force needs --promote <key>")
+	}
+	c, err := ensureDaemon(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	var out struct {
+		Result string `json:"result"`
+	}
+	if err := c.doSlow(ctx, http.MethodPost, "/api/companion/check", map[string]any{"promote": *promote, "force": *force}, &out); err != nil {
+		return err
+	}
+	fmt.Println(out.Result)
 	return nil
 }
 

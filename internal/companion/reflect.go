@@ -68,6 +68,9 @@ type View struct {
 	Nudged     map[int64]bool
 	// BudgetLeft is how many more messages may start today.
 	BudgetLeft int
+	// Force names an interest the operator's check requires a proposal
+	// for; empty on every heartbeat tick.
+	Force string
 }
 
 // Interest finds a shown interest by key.
@@ -300,6 +303,9 @@ func RenderInput(v View) string {
 			note = " (already nudged: drop it or leave it)"
 		}
 		fmt.Fprintf(&b, "- #%d %s, sent %dh ago%s: %q\n", o.ID, o.Kind, int(v.Now.Sub(o.SentAt).Hours()), note, clip(o.Text, 300))
+	}
+	if v.Force != "" {
+		fmt.Fprintf(&b, "\n## Operator check\nThis is a verification run started by the user: answer with action \"propose\" for interest %s, whatever its evidence.\n", v.Force)
 	}
 	return b.String()
 }

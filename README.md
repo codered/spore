@@ -1147,6 +1147,18 @@ session in the TUI and web UI, and `spore companion answer <id> yes`
 answers a proposal. `spore companion status`, `outreach`, `pause` and
 `resume` show and steer it.
 
+To see it work without waiting three days, run one heartbeat now:
+
+```sh
+spore companion check                                  # reflect now, ignoring pause and quiet hours
+spore companion check --promote topic:subagents        # treat an observed interest as a habit first
+spore companion check --promote topic:subagents --force  # and tell the model it must propose it
+```
+
+`spore companion interests` lists the keys. A check spends from the day's
+message budget like any other message, and what it sends is real: pressing
+Yes starts a watch job.
+
 Turning the companion off (`enabled = false`) stops new messages, but watches
 you already approved keep running as ordinary jobs. Cancel them in the Jobs
 folder.

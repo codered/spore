@@ -203,6 +203,7 @@ func (s *Server) buildMux() *http.ServeMux {
 	api("GET /api/jobs", s.handleListJobs)
 	api("POST /api/companion/proposals/{id}", s.handleAnswerProposal)
 	api("GET /api/companion/status", s.handleCompanionStatus)
+	api("POST /api/companion/check", s.handleCompanionCheck)
 	api("POST /api/jobs", s.handleCreateJob)
 	api("DELETE /api/jobs/{id}", s.handleCancelJob)
 	api("GET /api/jobs/{id}/runs", s.handleJobRuns)
