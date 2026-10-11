@@ -1049,7 +1049,7 @@ model = "ollama/qwen3:8b"
 
 [context]
 max_tokens        = 180000  # context window; compaction runs at compact_at of it
-max_output_tokens = 4096    # one reply, hidden reasoning included; raise for reasoning models
+max_output_tokens = 4096    # one reply or summary, hidden reasoning included; raise for reasoning models
 max_round_trips   = 30      # model calls per turn (one per tool round); 0 = no cap
 
 [web]

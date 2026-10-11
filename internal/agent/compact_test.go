@@ -452,3 +452,58 @@ func TestCompactDoesNotFoldTheRestatement(t *testing.T) {
 		t.Errorf("compaction transcript repeats the restated request:\n%s", transcript)
 	}
 }
+
+// Compaction gets the chat reply cap. A fixed 1024 was too small for a model
+// that reasons first: Qwen3 spent all of it thinking and wrote no summary.
+func TestCompactionUsesTheConfiguredOutputLimit(t *testing.T) {
+	ctx := context.Background()
+	script := provider.NewScript(provider.ScriptTurn{Text: "SUMMARY: ok"})
+	a, st := harness(t, script, nil)
+	a.Cfg.Context.MaxTokens = 2000
+	a.Cfg.Context.CompactAt = 0.5
+	a.Cfg.Context.KeepRecent = 2
+	a.Cfg.Context.MaxOutputTokens = 32000
+
+	sid, _ := st.CreateSession(ctx, "t", "")
+	seedMessages(t, st, sid, 12)
+	if err := a.MaybeCompact(ctx, sid); err != nil {
+		t.Fatalf("MaybeCompact: %v", err)
+	}
+	reqs := script.Requests()
+	if len(reqs) != 1 || reqs[0].MaxTokens != 32000 {
+		t.Fatalf("compaction requests = %d, max_tokens = %v; want one at 32000", len(reqs), reqs)
+	}
+}
+
+// An empty summary because the output limit ran out says so, and names the
+// two remedies, rather than the bare "empty summary" that hid the cause.
+func TestCompactionNamesAnExhaustedOutputLimit(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		hit  bool
+		want string
+	}{
+		{"limit hit", true, "used its whole 1024-token output limit"},
+		{"limit not hit", false, "compaction produced an empty summary"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			script := provider.NewScript(provider.ScriptTurn{Text: "", HitMaxTokens: c.hit})
+			a, st := harness(t, script, nil)
+			a.Cfg.Context.MaxTokens = 2000
+			a.Cfg.Context.CompactAt = 0.5
+			a.Cfg.Context.KeepRecent = 2
+			a.Cfg.Context.MaxOutputTokens = 1024
+
+			sid, _ := st.CreateSession(ctx, "t", "")
+			seedMessages(t, st, sid, 12)
+			err := a.MaybeCompact(ctx, sid)
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("MaybeCompact error = %v, want it to contain %q", err, c.want)
+			}
+			if c.hit && !strings.Contains(err.Error(), "max_output_tokens") {
+				t.Errorf("error %q does not name the setting to raise", err)
+			}
+		})
+	}
+}

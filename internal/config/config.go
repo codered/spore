@@ -268,9 +268,10 @@ func (c *Config) ConfiguredRefs() []string {
 type ContextConfig struct {
 	MaxTokens int     `toml:"max_tokens"`
 	CompactAt float64 `toml:"compact_at"`
-	// MaxOutputTokens caps one model reply: its text, its tool calls and any
-	// hidden reasoning the model does first. A reasoning model can spend the
-	// whole cap thinking and reply with nothing, so raise it for those.
+	// MaxOutputTokens caps one model reply, a chat reply or a compaction
+	// summary: its text, its tool calls and any hidden reasoning the model
+	// does first. A reasoning model can spend the whole cap thinking and
+	// reply with nothing, so raise it for those.
 	MaxOutputTokens int `toml:"max_output_tokens"`
 	// MaxRoundTrips caps one turn's trips to the model: each tool call the
 	// model makes costs one more. A turn that reaches it fails. 0 means no
