@@ -1113,6 +1113,36 @@ deny list, add `self_note` there too, so a remote chat cannot write into spore's
 notes. `/refine rollback` undoes the session's most recent change, and a `self_note`
 counts as one, so rolling back right after a note removes the note.
 
+With `enabled = true` the companion also reaches out. Every `heartbeat`
+(30m by default) it looks at habits it has seen on `habit_days` days in
+the last month and at messages you have not answered. Now and then it
+offers to watch one, with Yes / Not now / Never buttons. It nudges an
+unanswered message at most once, and sends fewer messages when you do not
+answer. Only Yes starts a watch. A watch is a scheduled job that runs with
+read-only tools and posts every run where the proposal was.
+
+On Discord it uses a thread of its own in a channel you name, which can be
+a private channel just for you:
+
+```toml
+[companion]
+enabled = true
+
+[companion.discord]
+mode       = "thread"            # or "dm"
+channel_id = "123456789012345678"
+user_ids   = ["your user id"]    # who may talk there; defaults to bridge.discord.user_ids
+```
+
+Without a channel id, the companion's messages appear in its own `spore`
+session in the TUI and web UI, and `spore companion answer <id> yes`
+answers a proposal. `spore companion status`, `outreach`, `pause` and
+`resume` show and steer it.
+
+If your `[policy.profile.remote]` lists its own `allow` rules, add
+`"interest_update"` and `"companion_feedback"` there so the companion
+thread can use them without asking.
+
 ## 🖥️ CLI
 
 ```text

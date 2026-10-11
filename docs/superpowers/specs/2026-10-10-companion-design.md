@@ -529,3 +529,28 @@ sections above, these win.
   `habit_days`, for promotion to `candidate` and for demotion back to
   `observing`. The all-time count is still what `spore companion interests`
   shows.
+
+## As built — PR 2a
+
+- Each outreach is written into the companion session as a
+  scheduler-tagged user cue followed by the message as an assistant reply.
+  A session may never open on an assistant message (Qwen rejects it), and
+  the cue tells the model which outreach the user is answering.
+- Delivery holds the companion session's turn slot while it appends. While
+  the user is mid-turn there, the tick reports "companion session busy" and
+  tries again next tick. That does not count as a failed reflection.
+- Reflection is skipped unless something is eligible (a candidate out of
+  cooldown, or an unanswered message) and the state's fingerprint changed
+  since the last successful reflection: local day, candidate evidence and
+  cooldown, unanswered rows and nudges, and the week's outcomes.
+- A nudge left pending for 24 h marks itself and its original `ignored`
+  and steps the governor down once, not twice.
+- `companion_feedback`: `more` +1, `less` −1, `stop` halves and pauses
+  outreach for 7 days, all clamped to 1..`start_budget`. It does not set any
+  outreach's outcome to `stop`.
+- The first heartbeat waits one minute after start, so the Discord bridge
+  has connected.
+- An active interest whose watch job is cancelled or deleted retires on
+  the next sweep.
+- Known gap: a proposal the user answers in text but never presses stays
+  `proposed`. PR 3's follow-ups are the place to raise it again.
