@@ -1135,10 +1135,21 @@ channel_id = "123456789012345678"
 user_ids   = ["your user id"]    # who may talk there; defaults to bridge.discord.user_ids
 ```
 
+Every companion user must also be in `bridge.discord.user_ids`. Thread mode
+needs the bridge's `guild_id`. DM mode needs `allow_dms = true`, and it takes
+over that user's existing DM conversation with spore.
+
+With `channel = "auto"` (the default), the companion uses Discord only when
+`[companion.discord]` is complete, and otherwise uses the terminal.
+
 Without a channel id, the companion's messages appear in its own `spore`
 session in the TUI and web UI, and `spore companion answer <id> yes`
 answers a proposal. `spore companion status`, `outreach`, `pause` and
 `resume` show and steer it.
+
+Turning the companion off (`enabled = false`) stops new messages, but watches
+you already approved keep running as ordinary jobs. Cancel them in the Jobs
+folder.
 
 If your `[policy.profile.remote]` lists its own `allow` rules, add
 `"interest_update"` and `"companion_feedback"` there so the companion
