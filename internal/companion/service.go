@@ -125,6 +125,14 @@ func (s *Service) startWatch(ctx context.Context, in store.Interest, o store.Out
 	if err != nil {
 		return "", err
 	}
+	if origin == "" {
+		return "", fmt.Errorf("%w: the companion conversation is gone; wait for its next message", ErrNotProposal)
+	}
+	if _, found, err := s.Store.Session(ctx, origin); err != nil {
+		return "", err
+	} else if !found {
+		return "", fmt.Errorf("%w: the companion conversation is gone; wait for its next message", ErrNotProposal)
+	}
 	jobID, err := s.Store.CreateJob(ctx, store.Job{
 		Kind: sched.Kind(), Spec: strings.TrimSpace(w.Cron), Prompt: WatchPrompt(in.Label, w.Goal), Enabled: true,
 		NextRun: next, OriginSessionID: origin, Notify: store.NotifyEach, CheckedIn: true,

@@ -126,6 +126,37 @@ func TestEnsureSessionRecreatesAndReattachesWatches(t *testing.T) {
 	}
 }
 
+// Deleting the companion session through the API must not leave its watches
+// reporting nowhere: the delete re-opens the session and re-points them.
+func TestDeletingTheCompanionSessionReattachesWatches(t *testing.T) {
+	ctx := context.Background()
+	s, ts := newTestServer(t)
+	s.AttachCompanion(companion.NewService(s.store, s.cfg))
+	d := s.CompanionDeliverer()
+	old, err := d.EnsureSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID, _ := s.store.CreateJob(ctx, store.Job{Kind: "cron", Spec: "0 14 * * *", Prompt: "w", Enabled: true,
+		NextRun: time.Now().Add(time.Hour), OriginSessionID: old, Notify: store.NotifyEach, CheckedIn: true, Profile: "companion"})
+	in, _ := s.store.TouchInterest(ctx, "stock:zs", "ZS")
+	_, _ = s.store.SetInterestState(ctx, in.ID, store.InterestObserving, store.InterestProposed)
+	_, _ = s.store.ActivateInterest(ctx, in.ID, jobID)
+
+	res := postJSON(t, ts.URL+"/api/sessions/delete", map[string][]string{"ids": {old}})
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("delete status = %d", res.StatusCode)
+	}
+	j, _, _ := s.store.Job(ctx, jobID)
+	if j.OriginSessionID == "" || j.OriginSessionID == old {
+		t.Fatalf("watch origin = %q after deleting the companion session %q; want a new session", j.OriginSessionID, old)
+	}
+	if sid, _, _ := s.store.CompanionState(ctx, companion.StateSessionID); sid != j.OriginSessionID {
+		t.Fatalf("companion_state.session_id = %q, want %q", sid, j.OriginSessionID)
+	}
+}
+
 // seedProposal makes a proposed interest and its pending proposal, delivered
 // into the companion session.
 func seedProposal(t *testing.T, s *Server) int64 {

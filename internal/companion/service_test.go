@@ -95,6 +95,21 @@ func TestAnswerProposalTwiceCreatesOneJob(t *testing.T) {
 	}
 }
 
+func TestYesRefusesWhenTheCompanionSessionIsGone(t *testing.T) {
+	ctx := context.Background()
+	fx := newService(t)
+	_, id := fx.proposal(t, "stock:zs")
+	if _, err := fx.st.DeleteSessions(ctx, []string{fx.sid}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fx.svc.AnswerProposal(ctx, id, companion.ChoiceYes); !errors.Is(err, companion.ErrNotProposal) {
+		t.Fatalf("yes with the session gone = %v, want ErrNotProposal", err)
+	}
+	if jobs, _ := fx.st.ListJobs(ctx); len(jobs) != 0 {
+		t.Fatalf("jobs = %d, want 0: a watch with no session would report nowhere", len(jobs))
+	}
+}
+
 func TestAnswerProposalNotNowAndNever(t *testing.T) {
 	ctx := context.Background()
 	fx := newService(t)
