@@ -163,6 +163,16 @@ func TestCompanionAdmission(t *testing.T) {
 	if off.AdmitMessage(Inbound{UserID: "U", GuildID: "G", ChannelID: "T", ParentID: "CC"}) {
 		t.Error("without the companion, its channel admits nobody")
 	}
+	// The companion channel is also a bridge channel: its threads still admit
+	// only the companion users, not every bridge user.
+	both := NewAdmitter(config.DiscordConfig{GuildID: "G", ChannelIDs: []string{"C1", "CC"}, UserIDs: []string{"U", "V"}}).
+		WithCompanion("CC", []string{"U"})
+	if both.AdmitMessage(Inbound{UserID: "V", GuildID: "G", ChannelID: "T", ParentID: "CC"}) {
+		t.Error("a bridge user who is not a companion user was admitted in a companion thread")
+	}
+	if !both.AdmitMessage(Inbound{UserID: "U", GuildID: "G", ChannelID: "T", ParentID: "CC"}) {
+		t.Error("a companion user was not admitted in a companion thread")
+	}
 }
 
 func TestProposalButtonPressReachesTheCompanion(t *testing.T) {

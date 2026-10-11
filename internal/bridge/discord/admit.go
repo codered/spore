@@ -102,12 +102,13 @@ func (a Admitter) admit(userID, guildID, channelID, parentID string) bool {
 	if parentID != "" {
 		key = parentID
 	}
-	if _, ok := a.channels[key]; ok {
-		return true
-	}
+	// The companion rule wins over channel_ids for a thread under the
+	// companion channel: even if that channel is also a bridge channel, its
+	// threads admit only the companion users, never every bridge user.
 	if a.companionChannel != "" && parentID == a.companionChannel {
 		_, ok := a.companionUsers[userID]
 		return ok
 	}
-	return false
+	_, ok := a.channels[key]
+	return ok
 }
