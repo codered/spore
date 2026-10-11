@@ -260,3 +260,15 @@ func TestSidebarPaneEndsInTheLegend(t *testing.T) {
 		t.Fatalf("row above the border = %q", lines[len(lines)-2])
 	}
 }
+
+// The companion session is where spore reaches out unprompted; it must not
+// hide behind "show all" like a job or a bridge session.
+func TestTheDefaultFilterShowsTheCompanionSession(t *testing.T) {
+	c := seed(
+		daemon.SessionJSON{ID: "c1", Title: "chat", Workspace: "/a", Source: "chat"},
+		daemon.SessionJSON{ID: "sp", Title: "spore", Workspace: "/s", Source: "companion"},
+	)
+	if got := strings.Join(ids(c.rows(false, "", "")), " "); !strings.Contains(got, "sp@0") {
+		t.Fatalf("default rows = %q, want the idle companion session", got)
+	}
+}

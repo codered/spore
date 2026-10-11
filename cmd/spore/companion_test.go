@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codered/spore/internal/companion"
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/store"
 )
@@ -79,5 +80,68 @@ func TestCompanionInterestsEmpty(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "no interests recorded yet") {
 		t.Fatalf("out = %q", out.String())
+	}
+}
+
+func TestCompanionStatusShowsTheHeartbeat(t *testing.T) {
+	ctx := context.Background()
+	cfg, st := companionFixture(t)
+	_ = st.SetCompanionState(ctx, companion.StateFailures, "3")
+	_ = st.SetCompanionState(ctx, companion.StateLastResult, "failed: provider down")
+	_ = companion.SetPausedUntil(ctx, st, time.Now().Add(time.Hour))
+	var out bytes.Buffer
+	if err := companionStatus(ctx, &out, cfg, st); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"channel:   terminal", "paused until", "budget:   ", "0 of 4 sent today", "failed: provider down", "warning: the last 3 reflections failed"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("status missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestCompanionOutreachLists(t *testing.T) {
+	ctx := context.Background()
+	_, st := companionFixture(t)
+	_, _ = st.AddOutreach(ctx, store.Outreach{Kind: store.OutreachProposal, Channel: store.OutreachChannelDiscord,
+		Text: "You've checked ZS three days running.", SentAt: time.Now().Add(-time.Hour)})
+	var out bytes.Buffer
+	if err := companionOutreach(ctx, &out, st, time.UTC); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "ID") || !strings.Contains(lines[1], "proposal") ||
+		!strings.Contains(lines[1], "pending") || !strings.Contains(lines[1], "checked ZS") {
+		t.Fatalf("outreach =\n%s", out.String())
+	}
+}
+
+func TestCompanionPauseResumeUndecline(t *testing.T) {
+	ctx := context.Background()
+	cfg, st := companionFixture(t)
+	var out bytes.Buffer
+	if err := companionCommand(ctx, &out, cfg, st, []string{"pause", "2h"}); err != nil {
+		t.Fatal(err)
+	}
+	if until, _ := companion.PausedUntil(ctx, st); time.Until(until) < 119*time.Minute {
+		t.Fatalf("paused until %v", until)
+	}
+	if err := companionCommand(ctx, &out, cfg, st, []string{"resume"}); err != nil {
+		t.Fatal(err)
+	}
+	if until, _ := companion.PausedUntil(ctx, st); !until.IsZero() {
+		t.Fatalf("still paused until %v", until)
+	}
+	in, _ := st.TouchInterest(ctx, "stock:zs", "ZS")
+	_, _ = st.SetInterestState(ctx, in.ID, store.InterestObserving, store.InterestProposed)
+	_, _ = st.DeclineInterest(ctx, in.ID)
+	if err := companionCommand(ctx, &out, cfg, st, []string{"interests", "undecline", "stock:zs"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := st.InterestByKey(ctx, "stock:zs"); got.State != store.InterestObserving {
+		t.Fatalf("state = %s", got.State)
+	}
+	if err := companionCommand(ctx, &out, cfg, st, []string{"pause", "soon"}); err == nil {
+		t.Fatal("a bad duration must be refused")
 	}
 }

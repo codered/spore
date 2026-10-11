@@ -33,6 +33,8 @@ const (
 	// TriggerApproval marks a policy proposal written from an approval
 	// answer, not by a round.
 	TriggerApproval Trigger = store.RefineTriggerApproval
+	// TriggerHeartbeat marks a self.md rewrite the companion's reflection made.
+	TriggerHeartbeat Trigger = "heartbeat"
 )
 
 // Edit kinds: the closed vocabulary the planner may use.

@@ -36,8 +36,12 @@ usage:
   spore recall reindex         rebuild the index from SQLite and fact files
   spore recall setup           provision the vector store and backfill it
   spore recall teardown        stop the vector store and return to keyword search
-  spore companion status       report whether the companion is on and what it tracks
+  spore companion status       report whether the companion is on, its budget and last reflection
   spore companion interests    list the interests it has noticed, with their evidence
+  spore companion outreach     list the messages it started in the last 7 days
+  spore companion pause [dur]  hold its messages (default 24h); resume ends a pause
+  spore companion answer <id> yes|not-now|never
+                               answer a proposal from the terminal
   spore trace setup            provision the phoenix collector and turn tracing on
   spore trace status           report trace configuration and collector health
   spore trace teardown         stop the collector and turn tracing off

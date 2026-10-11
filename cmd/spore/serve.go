@@ -155,6 +155,29 @@ func cmdServe(ctx context.Context, cfg *config.Config, st *store.Store, args []s
 	sched := scheduler.New(st, srv, nil)
 	go func() { _ = sched.Run(ctx, time.Duration(cfg.Daemon.TickSeconds)*time.Second) }()
 
+	if hb := srv.Heartbeat(); hb != nil {
+		if bridge != nil && cfg.CompanionChannel() == config.CompanionChannelDiscord {
+			srv.SetCompanionChannel(bridge.CompanionChannel(cfg.Companion.Discord))
+		}
+		every, err := time.ParseDuration(cfg.Companion.Heartbeat)
+		if err != nil {
+			return fmt.Errorf("companion.heartbeat: %w", err) // Load already rejected this; belt and braces
+		}
+		go func() {
+			// The bridge connects in the background; a first beat at startup
+			// would find it not yet open and fall back to the terminal.
+			select {
+			case <-time.After(time.Minute):
+			case <-ctx.Done():
+				return
+			}
+			hb.Run(ctx, every)
+		}()
+		if !detach {
+			fmt.Printf("companion on (channel %s, heartbeat %s)\n", cfg.CompanionChannel(), every)
+		}
+	}
+
 	if ref := srv.Refiner(); ref != nil {
 		defer ref.Close()
 		go ref.RunSweeper(ctx, time.Duration(cfg.Daemon.TickSeconds)*time.Second, srv.TurnRunning)

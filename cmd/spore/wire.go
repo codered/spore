@@ -31,6 +31,7 @@ import (
 	"github.com/codered/spore/internal/subagent"
 	"github.com/codered/spore/internal/title"
 	"github.com/codered/spore/internal/tool"
+	"github.com/codered/spore/internal/tool/companiontool"
 	"github.com/codered/spore/internal/tool/fs"
 	"github.com/codered/spore/internal/tool/gorun"
 	"github.com/codered/spore/internal/tool/mem"
@@ -50,7 +51,7 @@ import (
 // caller — serve supervises it, and everything else closes it. The fact
 // cache is built by the caller (buildAgent needs it for Agent.Facts too) and
 // passed in here just to register the two memory tools around it.
-func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recallBackend recall.Recall, skillsCache *skillfiles.Caches, sup *subagent.Supervisor, approver policy.Approver, ref *refine.Refiner) (*policy.Guard, *mcphost.Host, error) {
+func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recallBackend recall.Recall, skillsCache *skillfiles.Caches, sup *subagent.Supervisor, approver policy.Approver, ref *refine.Refiner, comp *companion.Service) (*policy.Guard, *mcphost.Host, error) {
 	reg := tool.NewRegistry(cfg.Policy.MaxOutput)
 	tools := fs.New(cfg.Policy.MaxOutput)
 	tools = append(tools, shell.New(
@@ -61,6 +62,10 @@ func buildTools(cfg *config.Config, st *store.Store, facts *memory.Cache, recall
 	tools = append(tools, skill.New(cfg, skillsCache)...)
 	tools = append(tools, personatool.New(cfg, ref)...)
 	tools = append(tools, refinetool.New(ref))
+	// A nil *companion.Service must not reach New as a non-nil interface.
+	if comp != nil {
+		tools = append(tools, companiontool.New(cfg, comp)...)
+	}
 	tools = append(tools, subagenttool.New(sup)...)
 	// go_run's helper calls go back through the guard built below, which
 	// wraps this very registry; Bind closes that cycle once the guard exists.
@@ -109,6 +114,9 @@ type agentParts struct {
 	sup    *subagent.Supervisor
 	recall recall.Recall
 	models *models.Service
+	// companion backs the companion's tools, the proposal route and the
+	// reply hook. It is nil while the companion is off.
+	companion *companion.Service
 }
 
 // buildAgent turns configuration into a wired agent. Plan 1 registers no
@@ -210,8 +218,14 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	// The recorder is always attached; it does nothing while the companion
 	// is off, so turning it on in config.toml needs no other wiring.
 	ref.Signals = companion.NewRecorder(st, cfg)
+	// The companion's service backs its tools, the proposal route and the
+	// reply hook. It exists only while the companion is on.
+	var comp *companion.Service
+	if cfg.Companion.Enabled {
+		comp = companion.NewService(st, cfg)
+	}
 
-	tools, host, err := buildTools(cfg, st, facts, recallBackend, skillsCache, sup, approver, ref)
+	tools, host, err := buildTools(cfg, st, facts, recallBackend, skillsCache, sup, approver, ref, comp)
 	if err != nil {
 		return nil, agentParts{}, err
 	}
@@ -221,7 +235,7 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	a.Env = workspace.NewDescribers().Describe
 	a.Refine = ref
 	sup.Attach(a)
-	return a, agentParts{host: host, mirror: mir, sup: sup, recall: recallBackend, models: modelSvc}, nil
+	return a, agentParts{host: host, mirror: mir, sup: sup, recall: recallBackend, models: modelSvc, companion: comp}, nil
 }
 
 // buildServer wires the daemon. The ordering here is load-bearing: the guard
@@ -259,6 +273,21 @@ func buildServer(cfg *config.Config, st *store.Store) (*daemon.Server, *mcphost.
 	ref.ApplyPolicy = func(d, rule string) error { return reloader.Learn(policy.Decision(d), rule) } // set before any accept can run
 	ref.RevokePolicy = func(d, rule string) error { return reloader.Unlearn(policy.Decision(d), rule) }
 	srv.AttachRefiner(ref)
+	if parts.companion != nil {
+		srv.AttachCompanion(parts.companion)
+		srv.AttachHeartbeat(&companion.Heartbeat{
+			Store: st, Cfg: cfg, Recorder: ref.Signals,
+			Reflector: companion.LLMReflector{Registry: ref.Registry, Router: ref.Router,
+				MaxTokens: max(cfg.Context.MaxOutputTokens, 4096)},
+			Deliverer: srv.CompanionDeliverer(),
+			WriteSelf: func(ctx context.Context, sid, body string) error {
+				_, err := ref.UpdateSelf(ctx, sid, refine.TriggerHeartbeat, "heartbeat rewrite of self.md",
+					func(string) (string, error) { return body, nil })
+				return err
+			},
+			Now: time.Now,
+		})
+	}
 	// Sessions are named on the router's title site, from the same registry
 	// and rules every other call uses.
 	srv.AttachTitler(title.New(ref.Registry, ref.Router))
@@ -285,7 +314,10 @@ func buildBridge(cfg *config.Config, srv *daemon.Server) (*discord.Bridge, error
 	opts := discord.Options{
 		Cfg: d, Client: client, Turns: srv, Sessions: srv,
 		Store: srv.Store(), Broker: srv.Broker(), Guard: srv.Guard(),
-		ShowCost: cfg.ShowCost,
+		ShowCost:    cfg.ShowCost,
+		Companion:   cfg.Companion.Discord,
+		CompanionOn: cfg.Companion.Enabled,
+		Proposals:   srv,
 	}
 	// A nil *models.Service stored in the interface would not compare equal
 	// to nil, so the bridge would call into a service that is not there.
