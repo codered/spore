@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/codered/spore/internal/provider"
+	"github.com/codered/spore/internal/provider/httpstream"
 )
 
 const (
@@ -33,6 +34,7 @@ type Client struct {
 	workspaceID string
 	cache       bool
 	hc          *http.Client
+	stall       time.Duration // httpstream.StallTimeout; shorter in tests
 
 	// mu guards learnedWS, the default workspace the API reported for this
 	// key. It is only consulted when workspaceID is empty.
@@ -53,9 +55,9 @@ func New(baseURL, apiKey, workspaceID string, cache bool, hc *http.Client) *Clie
 		baseURL = "https://api.anthropic.com"
 	}
 	if hc == nil {
-		hc = &http.Client{Timeout: 10 * time.Minute}
+		hc = httpstream.NewHTTPClient()
 	}
-	return &Client{baseURL: strings.TrimSuffix(baseURL, "/"), apiKey: apiKey, workspaceID: workspaceID, cache: cache, hc: hc}
+	return &Client{baseURL: strings.TrimSuffix(baseURL, "/"), apiKey: apiKey, workspaceID: workspaceID, cache: cache, hc: hc, stall: httpstream.StallTimeout}
 }
 
 func (c *Client) Name() string { return "anthropic" }
@@ -160,13 +162,16 @@ func (c *Client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 		return nil, err
 	}
 
+	// The stream is cancelled through its own context when it stalls.
+	ctx, cancel := context.WithCancel(ctx)
 	resp, err := c.post(ctx, buf)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 
 	ch := make(chan provider.Event, 32)
-	go c.parse(resp.Body, ch)
+	go c.parse(httpstream.WatchStall(resp.Body, cancel, c.stall), ch)
 	return ch, nil
 }
 
