@@ -1,0 +1,4 @@
+- Run Go tests with `make test`, or pass `-tags sqlite_fts5` yourself. "no such module: fts5" means the tag is missing. It is not a broken environment and not a pre-existing failure: rerun with the tag.
+- Before you call a change verified, run every CI step and report each command with its result: `go vet -tags sqlite_fts5 ./...`, `make fmtcheck`, `make lint`, `make vulncheck`, `make tidycheck`, `go test -tags sqlite_fts5 -race ./...`. A targeted `go test -run` is not verification.
+- A change to `web/` or to the daemon's HTTP headers is verified only when the page has loaded in a browser with no console errors. If you cannot open a browser, say the change is unverified.
+- Before you write or update a findings or status document, re-read `git diff`. Name a test only if it exists in the tree, and mark an item fixed only if the diff shows the fix.
