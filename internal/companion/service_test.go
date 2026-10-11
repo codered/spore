@@ -110,6 +110,21 @@ func TestYesRefusesWhenTheCompanionSessionIsGone(t *testing.T) {
 	}
 }
 
+func TestAnswerProposalRefusesAResolvedProposal(t *testing.T) {
+	ctx := context.Background()
+	fx := newService(t)
+	_, id := fx.proposal(t, "stock:zs")
+	if ok, err := fx.st.ResolveOutreach(ctx, id, []string{store.OutcomePending}, store.OutcomeIgnored, "", fx.now); err != nil || !ok {
+		t.Fatalf("resolve to ignored: %v %v", ok, err)
+	}
+	if _, err := fx.svc.AnswerProposal(ctx, id, companion.ChoiceYes); !errors.Is(err, companion.ErrNotProposal) {
+		t.Fatalf("yes on an ignored proposal = %v, want ErrNotProposal", err)
+	}
+	if jobs, _ := fx.st.ListJobs(ctx); len(jobs) != 0 {
+		t.Fatalf("jobs = %d, want 0", len(jobs))
+	}
+}
+
 func TestAnswerProposalNotNowAndNever(t *testing.T) {
 	ctx := context.Background()
 	fx := newService(t)

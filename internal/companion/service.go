@@ -61,6 +61,9 @@ func (s *Service) AnswerProposal(ctx context.Context, outreachID int64, choice s
 	if !ok || o.Kind != store.OutreachProposal || o.InterestID == 0 {
 		return "", fmt.Errorf("%w: outreach %d", ErrNotProposal, outreachID)
 	}
+	if o.Outcome != store.OutcomePending && o.Outcome != store.OutcomeUnanswered {
+		return "", fmt.Errorf("%w: outreach %d is %s", ErrNotProposal, outreachID, o.Outcome)
+	}
 	in, ok, err := s.Store.InterestByID(ctx, o.InterestID)
 	if err != nil {
 		return "", err
