@@ -86,6 +86,7 @@ func toWire(system []provider.Block, msgs []provider.Message) []map[string]any {
 	for _, m := range msgs {
 		var text strings.Builder
 		var calls []map[string]any
+		lastResult := -1 // index in out of this message's last tool result
 		for _, b := range m.Blocks {
 			switch b.Type {
 			case provider.BlockText:
@@ -103,6 +104,7 @@ func toWire(system []provider.Block, msgs []provider.Message) []map[string]any {
 				out = append(out, map[string]any{
 					"role": "tool", "tool_call_id": b.ID, "content": content,
 				})
+				lastResult = len(out) - 1
 			}
 		}
 		if text.Len() == 0 && len(calls) == 0 {
@@ -110,9 +112,17 @@ func toWire(system []provider.Block, msgs []provider.Message) []map[string]any {
 		}
 		role := string(m.Role)
 		if m.Role == provider.RoleTool {
-			// An OpenAI tool message carries one result and nothing else.
-			// Text riding on the results message -- the environment Assemble
-			// appends to the tail -- goes after the results as a user message.
+			// Text riding on the results message is the environment Assemble
+			// appends to the tail. An OpenAI tool message must carry a
+			// tool_call_id, so it cannot go out as a bare tool message. Nor
+			// as a user message: the model reads one after every tool round
+			// as the user sending something empty, and says so. It joins the
+			// last result instead, the nearest the wire has to the Anthropic
+			// shape, where it sits beside the results in one message.
+			if lastResult >= 0 {
+				out[lastResult]["content"] = out[lastResult]["content"].(string) + text.String()
+				continue
+			}
 			role = string(provider.RoleUser)
 		}
 		msg := map[string]any{"role": role, "content": text.String()}
