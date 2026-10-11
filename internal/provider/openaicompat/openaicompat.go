@@ -15,19 +15,21 @@ import (
 	"time"
 
 	"github.com/codered/spore/internal/provider"
+	"github.com/codered/spore/internal/provider/httpstream"
 )
 
 type Client struct {
 	baseURL string
 	apiKey  string
 	hc      *http.Client
+	stall   time.Duration // httpstream.StallTimeout; shorter in tests
 }
 
 func New(baseURL, apiKey string, hc *http.Client) *Client {
 	if hc == nil {
-		hc = &http.Client{Timeout: 10 * time.Minute}
+		hc = httpstream.NewHTTPClient()
 	}
-	return &Client{baseURL: strings.TrimSuffix(baseURL, "/"), apiKey: apiKey, hc: hc}
+	return &Client{baseURL: strings.TrimSuffix(baseURL, "/"), apiKey: apiKey, hc: hc, stall: httpstream.StallTimeout}
 }
 
 func (c *Client) Name() string { return "openaicompat" }
@@ -164,8 +166,11 @@ func (c *Client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 		return nil, err
 	}
 
+	// The stream is cancelled through its own context when it stalls.
+	ctx, cancel := context.WithCancel(ctx)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(buf))
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	httpReq.Header.Set("content-type", "application/json")
@@ -175,16 +180,18 @@ func (c *Client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 
 	resp, err := c.hc.Do(httpReq)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("openai-compatible request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
+		defer cancel()
 		defer func() { _ = resp.Body.Close() }()
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("openai-compatible %s: %s", resp.Status, strings.TrimSpace(string(msg)))
 	}
 
 	ch := make(chan provider.Event, 32)
-	go parse(resp.Body, ch)
+	go parse(httpstream.WatchStall(resp.Body, cancel, c.stall), ch)
 	return ch, nil
 }
 
