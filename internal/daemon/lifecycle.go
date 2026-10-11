@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 
+	"github.com/codered/spore/internal/companion"
 	"github.com/codered/spore/internal/store"
 )
 
@@ -69,6 +71,11 @@ func (s *Server) handleDeleteSessions(w http.ResponseWriter, r *http.Request) {
 			out.Notes = append(out.Notes, s.cleaner.ForgetSessions(ctx, doomed)...)
 		}
 	}
+	companionID, _, err := s.store.CompanionState(ctx, companion.StateSessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "companion state: %v", err)
+		return
+	}
 	var deleted []string
 	if body.All {
 		deleted, err = s.store.DeleteAllSessions(ctx)
@@ -82,10 +89,30 @@ func (s *Server) handleDeleteSessions(w http.ResponseWriter, r *http.Request) {
 	for _, id := range deleted {
 		s.hub.Publish(id, WireEvent{Type: WireSessionDeleted})
 	}
+	s.reopenDeletedCompanion(ctx, companionID, deleted)
 	if deleted != nil {
 		out.Deleted = deleted
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// reopenDeletedCompanion re-opens the companion session when the delete just
+// removed it. The delete clears the origin of every watch that pointed at it;
+// EnsureSession opens a new session and points those watches at it, so their
+// runs keep reporting. A failure is logged: the delete itself succeeded.
+func (s *Server) reopenDeletedCompanion(ctx context.Context, companionID string, deleted []string) {
+	if s.companion == nil || companionID == "" {
+		return
+	}
+	for _, id := range deleted {
+		if id != companionID {
+			continue
+		}
+		if _, err := (companionDeliverer{s}).EnsureSession(ctx); err != nil {
+			slog.Warn("companion: could not re-open the session after its deletion; watches report nowhere until the next outreach", "err", err)
+		}
+		return
+	}
 }
 
 // doomedSessions is every session a delete would remove.

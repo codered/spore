@@ -25,22 +25,26 @@ const (
 	// SiteRefinement is the reviewer pass that proposes memory and
 	// project-note edits. A site of its own so it can run on a cheaper model.
 	SiteRefinement = "refinement"
+	// SiteCompanion is the companion's heartbeat reflection: whether to
+	// start a conversation. A site of its own so it can run on a cheaper
+	// model.
+	SiteCompanion = "companion"
 )
 
 func ValidSite(s string) bool {
 	switch s {
-	case SiteChat, SiteCompaction, SiteTitle, SiteClassify, SiteSubagent, SiteRefinement:
+	case SiteChat, SiteCompaction, SiteTitle, SiteClassify, SiteSubagent, SiteRefinement, SiteCompanion:
 		return true
 	}
 	return false
 }
 
 // Sites is every call site, in the order /model shows them.
-var Sites = []string{SiteChat, SiteCompaction, SiteTitle, SiteClassify, SiteRefinement, SiteSubagent}
+var Sites = []string{SiteChat, SiteCompaction, SiteTitle, SiteClassify, SiteRefinement, SiteCompanion, SiteSubagent}
 
 // GlobalSites are the call sites /model sets for the whole daemon. chat and
 // subagent are chosen per session instead, so they are never overridden here.
-var GlobalSites = []string{SiteCompaction, SiteTitle, SiteClassify, SiteRefinement}
+var GlobalSites = []string{SiteCompaction, SiteTitle, SiteClassify, SiteRefinement, SiteCompanion}
 
 // IsGlobalSite reports whether /model sets site daemon-wide.
 func IsGlobalSite(site string) bool { return slices.Contains(GlobalSites, site) }

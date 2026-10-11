@@ -390,6 +390,16 @@ func (f *fakeClient) deletedMessageIDs() []string {
 	return append([]string(nil), f.deletedMessages...)
 }
 
+// UserChannel names a user's DM channel "DM-<user>".
+func (f *fakeClient) UserChannel(ctx context.Context, userID string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.take("UserChannel"); err != nil {
+		return "", err
+	}
+	return "DM-" + userID, nil
+}
+
 func (f *fakeClient) ChannelKind(ctx context.Context, channelID string) (ChannelKind, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

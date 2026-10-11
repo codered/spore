@@ -13,6 +13,11 @@ import (
 // before it is retired.
 const FadeAfter = 30 * 24 * time.Hour
 
+// RecentWindow is how far back evidence counts toward a habit. It matches
+// FadeAfter: an interest that went quiet for a month starts over, so two
+// sightings in August and one today are not a habit.
+const RecentWindow = FadeAfter
+
 // Recorder turns validated signals into interest rows and keeps interest
 // states in step with the evidence.
 type Recorder struct {
@@ -92,30 +97,63 @@ func (r *Recorder) Record(ctx context.Context, sess store.Session, signals []Sig
 	return res, r.Sweep(ctx, now)
 }
 
-// Sweep moves observing and candidate interests to match their evidence:
-// retired after FadeAfter without a signal, candidate once seen on
-// habit_days distinct days (unless cooling down), and back to observing if
-// a candidate's evidence shrank below the bar.
+// Sweep moves interests to match their evidence: an observing or candidate
+// interest retires after FadeAfter without a signal, becomes a candidate
+// once seen on habit_days distinct days within RecentWindow (unless cooling
+// down), and goes back to observing if those recent days drop below the
+// bar. An active interest whose watch job was cancelled or deleted retires:
+// the user stopped the watch.
 func (r *Recorder) Sweep(ctx context.Context, now time.Time) error {
+	loc, err := r.Cfg.Companion.Location()
+	if err != nil {
+		return err
+	}
+	since := now.Add(-RecentWindow).In(loc).Format("2006-01-02")
 	rows, err := r.Store.Interests(ctx, store.InterestObserving, store.InterestCandidate)
 	if err != nil {
 		return err
 	}
 	habit := r.Cfg.Companion.HabitDays
 	for _, in := range rows {
+		recent, err := r.Store.InterestDaysSince(ctx, in.ID, since)
+		if err != nil {
+			return err
+		}
 		to := in.State
 		switch {
 		case !in.LastSeen.IsZero() && now.Sub(in.LastSeen) > FadeAfter:
 			to = store.InterestRetired
-		case in.State == store.InterestObserving && in.DaysSeen >= habit && !now.Before(in.CooldownUntil):
+		case in.State == store.InterestObserving && recent >= habit && !now.Before(in.CooldownUntil):
 			to = store.InterestCandidate
-		case in.State == store.InterestCandidate && in.DaysSeen < habit:
+		case in.State == store.InterestCandidate && recent < habit:
 			to = store.InterestObserving
 		}
 		if to == in.State {
 			continue
 		}
 		if _, err := r.Store.SetInterestState(ctx, in.ID, in.State, to); err != nil {
+			return err
+		}
+	}
+	return r.retireStoppedWatches(ctx)
+}
+
+// retireStoppedWatches retires every active interest whose watch job is
+// disabled or gone.
+func (r *Recorder) retireStoppedWatches(ctx context.Context) error {
+	rows, err := r.Store.Interests(ctx, store.InterestActive)
+	if err != nil {
+		return err
+	}
+	for _, in := range rows {
+		job, found, err := r.Store.Job(ctx, in.WatchJobID)
+		if err != nil {
+			return err
+		}
+		if found && job.Enabled {
+			continue
+		}
+		if _, err := r.Store.SetInterestState(ctx, in.ID, store.InterestActive, store.InterestRetired); err != nil {
 			return err
 		}
 	}

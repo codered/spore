@@ -30,6 +30,9 @@ type Job struct {
 	Notify string
 	// CheckedIn is set once the first-run check-in has been claimed.
 	CheckedIn bool
+	// Profile is the policy profile the job's runs work under: "local" for
+	// a job a person made, "companion" for a watch the companion created.
+	Profile string
 }
 
 // Notification modes for a job's runs after its first-run check-in.
@@ -112,6 +115,7 @@ func migrateJobColumns(db *sql.DB) error {
 		{"origin_session_id", `TEXT NOT NULL DEFAULT ''`},
 		{"notify", `TEXT NOT NULL DEFAULT 'ask'`},
 		{"checked_in", `INTEGER NOT NULL DEFAULT 0`},
+		{"profile", `TEXT NOT NULL DEFAULT 'local'`},
 	} {
 		if have[col.name] {
 			continue
@@ -128,12 +132,26 @@ func (s *Store) CreateJob(ctx context.Context, j Job) (int64, error) {
 	if j.Enabled {
 		enabled = 1
 	}
+	// A caller that already knows how runs are reported (a companion watch)
+	// says so; everyone else starts at ask, before the first-run check-in.
+	notify := j.Notify
+	if !ValidNotify(notify) {
+		notify = NotifyAsk
+	}
+	checkedIn := 0
+	if j.CheckedIn {
+		checkedIn = 1
+	}
+	profile := j.Profile
+	if profile == "" {
+		profile = "local"
+	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO jobs (kind, spec, prompt, enabled, next_run, last_session_id, created_at, origin_session_id, notify)
-		 VALUES (?, ?, ?, ?, ?, '', ?, ?, ?)`,
+		`INSERT INTO jobs (kind, spec, prompt, enabled, next_run, last_session_id, created_at, origin_session_id, notify, checked_in, profile)
+		 VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?)`,
 		j.Kind, j.Spec, j.Prompt, enabled,
 		j.NextRun.UTC().Format(timeFormat), time.Now().UTC().Format(timeFormat),
-		j.OriginSessionID, NotifyAsk)
+		j.OriginSessionID, notify, checkedIn, profile)
 	if err != nil {
 		return 0, fmt.Errorf("create job: %w", err)
 	}
@@ -150,7 +168,7 @@ func scanJobs(rows *sql.Rows) ([]Job, error) {
 		var last, lastSession sql.NullString
 		var checkedIn int
 		if err := rows.Scan(&j.ID, &j.Kind, &j.Spec, &j.Prompt, &enabled, &next, &last, &lastSession, &created,
-			&j.OriginSessionID, &j.Notify, &checkedIn); err != nil {
+			&j.OriginSessionID, &j.Notify, &checkedIn, &j.Profile); err != nil {
 			return nil, err
 		}
 		j.CheckedIn = checkedIn != 0
@@ -166,7 +184,7 @@ func scanJobs(rows *sql.Rows) ([]Job, error) {
 	return out, rows.Err()
 }
 
-const jobColumns = `id, kind, spec, prompt, enabled, next_run, last_run, last_session_id, created_at, origin_session_id, notify, checked_in`
+const jobColumns = `id, kind, spec, prompt, enabled, next_run, last_run, last_session_id, created_at, origin_session_id, notify, checked_in, profile`
 
 func (s *Store) ListJobs(ctx context.Context) ([]Job, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+jobColumns+` FROM jobs ORDER BY id`)
@@ -284,6 +302,22 @@ func (s *Store) AttachJobOrigin(ctx context.Context, id int64, sessionID string)
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// UpdateJobSchedule changes a job's schedule and prompt and moves its next
+// run to match. The companion uses it when the user adjusts a watch.
+func (s *Store) UpdateJobSchedule(ctx context.Context, id int64, spec, prompt string, next time.Time) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE jobs SET spec = ?, prompt = ?, next_run = ? WHERE id = ?`,
+		spec, prompt, next.UTC().Format(timeFormat), id)
+	if err != nil {
+		return fmt.Errorf("update job %d schedule: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return fmt.Errorf("no job %d", id)
+	}
+	return nil
 }
 
 // ClaimJobCheckIn marks the job's first-run check-in as taken, reporting

@@ -45,6 +45,10 @@ type Profile string
 const (
 	ProfileLocal  Profile = "local"
 	ProfileRemote Profile = "remote"
+	// ProfileCompanion is what the companion's unattended runs (watch jobs)
+	// work under. It must equal config.CompanionProfile, which config.Load
+	// fills in when the operator has not written one.
+	ProfileCompanion Profile = "companion"
 )
 
 // Where a rule came from, as the policy view shows it.

@@ -260,4 +260,32 @@ CREATE TABLE IF NOT EXISTS interest_signals (
 );
 
 CREATE INDEX IF NOT EXISTS idx_interest_signals_interest ON interest_signals(interest_id, day);
+
+-- outreach is every message the companion started on its own. Only the
+-- governor and the reflection read it. An outreach outlives the interest it
+-- was about: deleting an interest only clears the link.
+CREATE TABLE IF NOT EXISTS outreach (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  interest_id INTEGER REFERENCES interests(id) ON DELETE SET NULL,
+  kind        TEXT NOT NULL,
+  channel     TEXT NOT NULL DEFAULT '',
+  text        TEXT NOT NULL,
+  payload     TEXT NOT NULL DEFAULT '',
+  sent_at     TEXT NOT NULL,
+  outcome     TEXT NOT NULL DEFAULT 'pending',
+  nudge_of    INTEGER REFERENCES outreach(id) ON DELETE SET NULL,
+  drop_reason TEXT NOT NULL DEFAULT '',
+  resolved_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_outreach_outcome ON outreach(outcome, sent_at);
+CREATE INDEX IF NOT EXISTS idx_outreach_nudge ON outreach(nudge_of);
+
+-- companion_state holds the companion's singletons: its session, the
+-- governor's budget, a pause, and the last reflection's result.
+CREATE TABLE IF NOT EXISTS companion_state (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `

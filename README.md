@@ -1096,7 +1096,8 @@ plus every tool from your MCP servers.
 
 Off by default. When on, spore notices what you keep coming back to (a stock you
 check, a topic you return to) and keeps its own notes in `~/.spore/self.md`.
-In this release it only observes; it does not message you yet.
+It also reaches out now, as described below. The pinned TUI row, the web list
+and the `/companion` chat command come in a later release.
 
 ```toml
 [companion]
@@ -1112,6 +1113,47 @@ or spore will ask before each note. If it has its own `[policy.profile.remote]`
 deny list, add `self_note` there too, so a remote chat cannot write into spore's
 notes. `/refine rollback` undoes the session's most recent change, and a `self_note`
 counts as one, so rolling back right after a note removes the note.
+
+With `enabled = true` the companion also reaches out. Every `heartbeat`
+(30m by default) it looks at habits it has seen on `habit_days` days in
+the last month and at messages you have not answered. Now and then it
+offers to watch one, with Yes / Not now / Never buttons. It nudges an
+unanswered message at most once, and sends fewer messages when you do not
+answer. Only Yes starts a watch. A watch is a scheduled job that runs with
+read-only tools and posts every run where the proposal was.
+
+On Discord it uses a thread of its own in a channel you name, which can be
+a private channel just for you:
+
+```toml
+[companion]
+enabled = true
+
+[companion.discord]
+mode       = "thread"            # or "dm"
+channel_id = "123456789012345678"
+user_ids   = ["your user id"]    # who may talk there; defaults to bridge.discord.user_ids
+```
+
+Every companion user must also be in `bridge.discord.user_ids`. Thread mode
+needs the bridge's `guild_id`. DM mode needs `allow_dms = true`, and it takes
+over that user's existing DM conversation with spore.
+
+With `channel = "auto"` (the default), the companion uses Discord only when
+`[companion.discord]` is complete, and otherwise uses the terminal.
+
+Without a channel id, the companion's messages appear in its own `spore`
+session in the TUI and web UI, and `spore companion answer <id> yes`
+answers a proposal. `spore companion status`, `outreach`, `pause` and
+`resume` show and steer it.
+
+Turning the companion off (`enabled = false`) stops new messages, but watches
+you already approved keep running as ordinary jobs. Cancel them in the Jobs
+folder.
+
+If your `[policy.profile.remote]` lists its own `allow` rules, add
+`"interest_update"` and `"companion_feedback"` there so the companion
+thread can use them without asking.
 
 ## 🖥️ CLI
 

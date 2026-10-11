@@ -119,6 +119,9 @@ type CompanionConfig struct {
 	StartBudget        int  `toml:"start_budget"`
 	AlertBudget        int  `toml:"alert_budget"`
 	AlertsInQuietHours bool `toml:"alerts_in_quiet_hours"`
+	// Discord says how the companion reaches the user when its channel is
+	// Discord.
+	Discord CompanionDiscordConfig `toml:"discord"`
 }
 
 // Companion channels.
@@ -127,6 +130,44 @@ const (
 	CompanionChannelDiscord  = "discord"
 	CompanionChannelTerminal = "terminal"
 )
+
+// CompanionDiscordConfig says how the companion reaches the user on Discord.
+type CompanionDiscordConfig struct {
+	// Mode is "thread" (a thread opened in ChannelID; the default) or "dm"
+	// (a direct message to the first of UserIDs).
+	Mode string `toml:"mode"`
+	// ChannelID is the channel the companion's thread opens in. Required in
+	// thread mode. A private channel of the user's own is the intended use;
+	// it need not be in bridge.discord.channel_ids.
+	ChannelID string `toml:"channel_id"`
+	// UserIDs may talk in the companion thread and press its buttons. Empty
+	// means bridge.discord.user_ids. Each must also be a bridge user: the
+	// companion cannot admit someone the bridge does not.
+	UserIDs []string `toml:"user_ids"`
+}
+
+// Companion Discord modes.
+const (
+	CompanionDiscordThread = "thread"
+	CompanionDiscordDM     = "dm"
+)
+
+// CompanionProfile is the policy profile watch jobs run under. It mirrors
+// policy.ProfileCompanion, which config cannot import.
+const CompanionProfile = "companion"
+
+// companionProfile is the default [policy.profile.companion]: read-only
+// tools and spore's own notes. Default deny covers everything else; the
+// explicit deny list says so in the policy view, and keeps the companion's
+// own tools out of an unattended run.
+func companionProfile() ProfilePolicy {
+	return ProfilePolicy{
+		Default: "deny",
+		Allow:   []string{"web_*", "recall_search", "fs_read", "fs_list", "fs_glob", "fs_grep", "self_note"},
+		Deny: []string{"shell_exec", "fs_write", "fs_edit", "memory", "mcp__*", "schedule_*", "agent_*",
+			"skill_install", "interest_update", "companion_feedback"},
+	}
+}
 
 // Location is the zone days are counted in. Empty means the host's zone.
 func (c CompanionConfig) Location() (*time.Location, error) {
@@ -243,7 +284,7 @@ type RoutingConfig struct {
 
 // RoutingOverrideSites are the call sites [routing.override] may name. It
 // mirrors router.GlobalSites, which config cannot import.
-var RoutingOverrideSites = []string{"compaction", "title", "classify", "refinement"}
+var RoutingOverrideSites = []string{"compaction", "title", "classify", "refinement", "companion"}
 
 // ConfiguredRefs is every model ref the file names: default_model, each
 // route's model and each override, first appearance first. A provider that
@@ -643,7 +684,7 @@ func Default() *Config {
 			Default:         "ask",
 			ApprovalTimeout: "5m",
 			MaxOutput:       30_000,
-			Allow:           []string{"fs_read", "fs_list", "fs_glob", "fs_grep", "web_*", "schedule_list", "job_output", "schedule_notify", "recall_search", "skill_load", "refine", "self_note"},
+			Allow:           []string{"fs_read", "fs_list", "fs_glob", "fs_grep", "web_*", "schedule_list", "job_output", "schedule_notify", "recall_search", "skill_load", "refine", "self_note", "interest_update", "companion_feedback"},
 			Ask:             []string{"fs_write", "fs_edit", "shell_exec", "schedule_create", "schedule_cancel", "mcp__*", "memory", "skill_install", "agent_note"},
 			// The remote profile denies MCP outright: a Discord user is not
 			// the operator who declared the server, and an MCP server is
@@ -666,7 +707,8 @@ func Default() *Config {
 			CeilingSeconds: 1800, HelperMaxBytes: 4 << 20},
 		Refine: RefineConfig{IdleMinutes: 10, MaxEdits: 5},
 		Companion: CompanionConfig{Channel: CompanionChannelAuto, QuietHours: "22:00-08:00", HabitDays: 3,
-			Heartbeat: "30m", SelfMaxBytes: 10240, StartBudget: 4, AlertBudget: 3},
+			Heartbeat: "30m", SelfMaxBytes: 10240, StartBudget: 4, AlertBudget: 3,
+			Discord: CompanionDiscordConfig{Mode: CompanionDiscordThread}},
 	}
 }
 
@@ -693,6 +735,9 @@ func fillCompanionDefaults(c *CompanionConfig, d CompanionConfig) {
 	}
 	if c.AlertBudget == 0 {
 		c.AlertBudget = d.AlertBudget
+	}
+	if c.Discord.Mode == "" {
+		c.Discord.Mode = d.Discord.Mode
 	}
 }
 
@@ -882,6 +927,12 @@ func Load(path string) (*Config, error) {
 	if cfg.Policy.Profiles == nil {
 		cfg.Policy.Profiles = map[string]ProfilePolicy{}
 	}
+	// The companion profile is what watch jobs run under. An operator's own
+	// [policy.profile.companion] replaces it whole; the baseline deny applies
+	// to either.
+	if _, ok := cfg.Policy.Profiles[CompanionProfile]; !ok {
+		cfg.Policy.Profiles[CompanionProfile] = companionProfile()
+	}
 	// A profile workspace is expanded and bounded at load, so an operator
 	// learns about a bad one at startup rather than when a bridge user's
 	// first tool call is refused.
@@ -936,6 +987,9 @@ func Load(path string) (*Config, error) {
 	// Zero means "not set in the file", as for [refine]: a [companion] block
 	// that only sets enabled keeps every other default.
 	fillCompanionDefaults(&cfg.Companion, d.Companion)
+	if len(cfg.Companion.Discord.UserIDs) == 0 {
+		cfg.Companion.Discord.UserIDs = slices.Clone(cfg.Bridge.Discord.UserIDs)
+	}
 	if err := validateDiscord(cfg.Bridge.Discord); err != nil {
 		return nil, err
 	}
@@ -1050,6 +1104,9 @@ func (c *Config) Validate() error {
 	if err := c.Companion.validate(); err != nil {
 		return err
 	}
+	if err := c.validateCompanionDiscord(); err != nil {
+		return err
+	}
 	// SEC-003: if tracing is enabled and the endpoint is not loopback, force
 	// redaction on to prevent conversation content being exported unredacted.
 	if c.Trace.Enabled && !c.Trace.Redact && c.Trace.Endpoint != "" {
@@ -1066,6 +1123,67 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// validateCompanionDiscord checks [companion.discord] against the bridge.
+// The user check always runs: a companion user the bridge would refuse is a
+// mistake whether or not the companion is on yet.
+func (c *Config) validateCompanionDiscord() error {
+	d := c.Companion.Discord
+	if d.Mode != CompanionDiscordThread && d.Mode != CompanionDiscordDM {
+		return fmt.Errorf("companion.discord.mode must be thread or dm, got %q", d.Mode)
+	}
+	for _, u := range d.UserIDs {
+		if !slices.Contains(c.Bridge.Discord.UserIDs, u) {
+			return fmt.Errorf("companion.discord.user_ids: %s is not in bridge.discord.user_ids; the companion cannot admit someone the bridge does not", u)
+		}
+	}
+	if c.Companion.Enabled && c.Companion.Channel == CompanionChannelDiscord {
+		return c.companionDiscordReady()
+	}
+	return nil
+}
+
+// companionDiscordReady reports why the companion cannot be delivered on
+// Discord, or nil when it can.
+func (c *Config) companionDiscordReady() error {
+	d, b := c.Companion.Discord, c.Bridge.Discord
+	if !b.Enabled {
+		return fmt.Errorf("companion.channel = \"discord\" needs [bridge.discord] enabled")
+	}
+	switch d.Mode {
+	case CompanionDiscordThread:
+		if strings.TrimSpace(d.ChannelID) == "" {
+			return fmt.Errorf("companion.discord.channel_id is required in thread mode: name the channel the companion's thread opens in")
+		}
+		if b.GuildID == "" {
+			return fmt.Errorf("companion.discord thread mode needs bridge.discord.guild_id")
+		}
+	case CompanionDiscordDM:
+		if !b.AllowDMs {
+			return fmt.Errorf("companion.discord.mode = \"dm\" needs bridge.discord.allow_dms = true")
+		}
+	}
+	if len(d.UserIDs) == 0 {
+		return fmt.Errorf("companion.discord.user_ids is empty, and so is bridge.discord.user_ids")
+	}
+	return nil
+}
+
+// CompanionChannel is where unprompted messages go: CompanionChannelDiscord
+// or CompanionChannelTerminal. "auto" picks Discord when the bridge is on and
+// [companion.discord] is complete, and the terminal otherwise.
+func (c *Config) CompanionChannel() string {
+	switch c.Companion.Channel {
+	case CompanionChannelDiscord:
+		return CompanionChannelDiscord
+	case CompanionChannelTerminal:
+		return CompanionChannelTerminal
+	}
+	if c.companionDiscordReady() == nil {
+		return CompanionChannelDiscord
+	}
+	return CompanionChannelTerminal
 }
 
 func (c CompanionConfig) validate() error {

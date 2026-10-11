@@ -102,9 +102,11 @@ func (c *cache) rows(showAll bool, filter, selected string) []row {
 			return true
 		}
 		// "unknown" is every session from before sources were recorded: the
-		// user's whole history, which the default view must not hide.
+		// user's whole history, which the default view must not hide. The
+		// companion session is where spore reaches out unprompted, so it
+		// shows too.
 		switch sv.info.Source {
-		case "chat", "unknown":
+		case "chat", "unknown", "companion":
 			return true
 		}
 		return c.State(id) != daemon.SessionIdle

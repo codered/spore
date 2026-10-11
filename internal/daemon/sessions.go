@@ -444,6 +444,13 @@ func (s *Server) startTurnThen(sessionID, text, client string, profile policy.Pr
 	if !found {
 		return fmt.Errorf("no session %s", sessionID)
 	}
+	// A message the user sends in the companion session answers whatever
+	// spore said there. The scheduler's own turns are not the user.
+	if s.companion != nil && sess.Source == store.SourceCompanion && client != "scheduler" {
+		if err := s.companion.UserReplied(s.base, sessionID); err != nil {
+			slog.Warn("companion: could not record the reply", "session", sessionID, "err", err)
+		}
+	}
 	// A directory spore allocated is spore's to create, and it is created
 	// here rather than at creation so a session that is opened and never used
 	// leaves nothing on disk. A directory a human named is never created:
