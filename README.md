@@ -1096,7 +1096,8 @@ plus every tool from your MCP servers.
 
 Off by default. When on, spore notices what you keep coming back to (a stock you
 check, a topic you return to) and keeps its own notes in `~/.spore/self.md`.
-In this release it only observes; it does not message you yet.
+It also reaches out now, as described below. The pinned TUI row, the web list
+and the `/companion` chat command come in a later release.
 
 ```toml
 [companion]
