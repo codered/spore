@@ -17,6 +17,11 @@ type Admitter struct {
 	channels map[string]struct{}
 	users    map[string]struct{}
 	allowDMs bool
+	// companionChannel and companionUsers admit the companion's thread: any
+	// thread under that channel, for those users only. Empty when the
+	// companion is off or not on Discord in thread mode.
+	companionChannel string
+	companionUsers   map[string]struct{}
 }
 
 // NewAdmitter creates an Admitter that enforces the given configuration.
@@ -63,6 +68,20 @@ func (a Admitter) AdmitInteraction(i Interaction) bool {
 	return a.admit(i.UserID, i.GuildID, i.ChannelID, i.ParentID)
 }
 
+// WithCompanion returns a copy that also admits threads under channelID for
+// userIDs. The companion's channel may be a private one outside the bridge's
+// channel_ids; a top-level message there is still not admitted.
+func (a Admitter) WithCompanion(channelID string, userIDs []string) Admitter {
+	a.companionChannel = channelID
+	a.companionUsers = make(map[string]struct{}, len(userIDs))
+	for _, u := range userIDs {
+		if u != "" {
+			a.companionUsers[u] = struct{}{}
+		}
+	}
+	return a
+}
+
 func (a Admitter) admit(userID, guildID, channelID, parentID string) bool {
 	if _, ok := a.users[userID]; !ok {
 		return false
@@ -83,6 +102,12 @@ func (a Admitter) admit(userID, guildID, channelID, parentID string) bool {
 	if parentID != "" {
 		key = parentID
 	}
-	_, ok := a.channels[key]
-	return ok
+	if _, ok := a.channels[key]; ok {
+		return true
+	}
+	if a.companionChannel != "" && parentID == a.companionChannel {
+		_, ok := a.companionUsers[userID]
+		return ok
+	}
+	return false
 }

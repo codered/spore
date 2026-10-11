@@ -59,6 +59,13 @@ type Options struct {
 	// (New substitutes it); a negative value means "flush on every event"
 	// and is what tests pass so they never wait on a clock.
 	Throttle time.Duration
+	// Companion is how the companion reaches the user here; CompanionOn is
+	// whether it does at all. Off, the companion's channel admits nobody.
+	Companion   config.CompanionDiscordConfig
+	CompanionOn bool
+	// Proposals answers the companion's proposal buttons. Nil means a press
+	// is answered "the companion is off".
+	Proposals ProposalAnswerer
 }
 
 // Bridge connects one Discord bot to spore. It owns no agent machinery: it
@@ -67,16 +74,17 @@ type Options struct {
 // may run stays in the policy engine, and everything that decides whether a
 // person may be here stays in the Admitter.
 type Bridge struct {
-	cfg      config.DiscordConfig
-	admit    Admitter
-	client   Client
-	turns    Turns
-	sessions Sessions
-	store    *store.Store
-	answer   *answerer
-	throttle time.Duration
-	showCost bool
-	models   ModelChooser
+	cfg       config.DiscordConfig
+	admit     Admitter
+	client    Client
+	turns     Turns
+	sessions  Sessions
+	store     *store.Store
+	answer    *answerer
+	throttle  time.Duration
+	showCost  bool
+	models    ModelChooser
+	proposals ProposalAnswerer
 
 	// details holds recent turns' tool transcripts for the "show details"
 	// button. It lives here, not on the renderer, because the press arrives
@@ -146,18 +154,23 @@ func New(o Options) (*Bridge, error) {
 	if throttle == 0 {
 		throttle = defaultThrottle
 	}
+	admit := NewAdmitter(o.Cfg)
+	if o.CompanionOn && o.Companion.Mode == config.CompanionDiscordThread && o.Companion.ChannelID != "" {
+		admit = admit.WithCompanion(o.Companion.ChannelID, o.Companion.UserIDs)
+	}
 	return &Bridge{
-		cfg:      o.Cfg,
-		admit:    NewAdmitter(o.Cfg),
-		client:   o.Client,
-		turns:    o.Turns,
-		sessions: o.Sessions,
-		store:    o.Store,
-		answer:   newAnswerer(o.Broker, o.Guard),
-		throttle: throttle,
-		showCost: o.ShowCost,
-		models:   o.Models,
-		details:  newDetails(),
+		cfg:       o.Cfg,
+		admit:     admit,
+		client:    o.Client,
+		turns:     o.Turns,
+		sessions:  o.Sessions,
+		store:     o.Store,
+		answer:    newAnswerer(o.Broker, o.Guard),
+		throttle:  throttle,
+		showCost:  o.ShowCost,
+		models:    o.Models,
+		proposals: o.Proposals,
+		details:   newDetails(),
 	}, nil
 }
 
@@ -572,6 +585,10 @@ func (b *Bridge) handleInteraction(i Interaction) {
 	}
 	if isModelCustomID(i.CustomID) {
 		b.chooseModel(i)
+		return
+	}
+	if isCompanionCustomID(i.CustomID) {
+		b.answerProposal(i)
 		return
 	}
 	sessionID, pendingID, ans, err := decodeCustomID(i.CustomID)

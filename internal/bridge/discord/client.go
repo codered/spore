@@ -126,6 +126,9 @@ type Client interface {
 	Send(ctx context.Context, channelID string, m Message) (messageID string, err error)
 	Edit(ctx context.Context, channelID, messageID string, m Message) error
 	CreateThread(ctx context.Context, channelID, messageID, name string) (threadID string, err error)
+	// UserChannel opens (or finds) the DM channel with a user and returns
+	// its id. The companion uses it in DM mode.
+	UserChannel(ctx context.Context, userID string) (string, error)
 	// React adds one of the bot's own reactions to a message, and Unreact
 	// removes it again. They are how a prompt is acknowledged before there
 	// is anything to say about it: the eyes go on as soon as the message is
@@ -315,6 +318,15 @@ func (c *gatewayClient) CreateThread(ctx context.Context, channelID, messageID, 
 	}, discordgo.WithContext(ctx))
 	if err != nil {
 		return "", fmt.Errorf("create discord thread: %w", err)
+	}
+	return ch.ID, nil
+}
+
+// UserChannel returns the DM channel with userID, creating it if needed.
+func (c *gatewayClient) UserChannel(ctx context.Context, userID string) (string, error) {
+	ch, err := c.sess.UserChannelCreate(userID, discordgo.WithContext(ctx))
+	if err != nil {
+		return "", fmt.Errorf("open discord DM with %s: %w", userID, err)
 	}
 	return ch.ID, nil
 }
