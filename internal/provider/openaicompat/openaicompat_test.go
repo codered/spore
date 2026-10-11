@@ -292,30 +292,50 @@ func TestToWireJoinsSystemBlocks(t *testing.T) {
 // message. Sent as a tool message with no tool_call_id, it was rejected by a
 // strict endpoint (LiteLLM in front of Claude: "OpenAIException -
 // 'tool_call_id'"), failing every turn after its first tool call.
-func TestToWireSendsTextOnToolMessageAsUserMessage(t *testing.T) {
+// The environment rides on the tool-results message. It must not become a
+// user message: models answer one sent after every tool round with "looks
+// like you hit send before typing". Nor a tool message without a
+// tool_call_id, which strict backends reject with a 400.
+func TestToWireFoldsTextOnToolMessageIntoTheLastResult(t *testing.T) {
 	out := toWire(nil, []provider.Message{
 		{Role: provider.RoleAssistant, Blocks: []provider.Block{
 			{Type: provider.BlockToolUse, ID: "call_1", Name: "go_run", Input: json.RawMessage(`{}`)},
+			{Type: provider.BlockToolUse, ID: "call_2", Name: "fs_read", Input: json.RawMessage(`{}`)},
 		}},
 		{Role: provider.RoleTool, Blocks: []provider.Block{
 			{Type: provider.BlockToolResult, ID: "call_1", Content: "91"},
-			{Type: provider.BlockText, Text: "## Environment"},
+			{Type: provider.BlockToolResult, ID: "call_2", Content: "file body"},
+			{Type: provider.BlockText, Text: "\n\n## Environment"},
 		}},
 	})
 
 	if len(out) != 3 {
-		t.Fatalf("got %d messages, want assistant, tool, user: %v", len(out), out)
+		t.Fatalf("got %d messages, want assistant and two tool results: %v", len(out), out)
 	}
-	if out[1]["role"] != "tool" || out[1]["tool_call_id"] != "call_1" || out[1]["content"] != "91" {
-		t.Errorf("tool message = %v, want the result with tool_call_id call_1", out[1])
+	if out[1]["content"] != "91" {
+		t.Errorf("first result = %v, want it untouched", out[1])
 	}
-	if out[2]["role"] != "user" || out[2]["content"] != "## Environment" {
-		t.Errorf("message after the results = %v, want the text as a user message", out[2])
+	if out[2]["tool_call_id"] != "call_2" || out[2]["content"] != "file body\n\n## Environment" {
+		t.Errorf("last result = %v, want the environment appended to it", out[2])
 	}
 	for _, m := range out {
+		if m["role"] == "user" {
+			t.Errorf("a tool round produced a user message: %v", m)
+		}
 		if _, ok := m["tool_call_id"]; m["role"] == "tool" && !ok {
 			t.Errorf("tool message without tool_call_id: %v", m)
 		}
+	}
+}
+
+// A tool-role message with text and no result has nothing to join, so the
+// text still goes out, as a user message.
+func TestToWireSendsTextOnAResultlessToolMessageAsUser(t *testing.T) {
+	out := toWire(nil, []provider.Message{
+		{Role: provider.RoleTool, Blocks: []provider.Block{{Type: provider.BlockText, Text: "## Environment"}}},
+	})
+	if len(out) != 1 || out[0]["role"] != "user" || out[0]["content"] != "## Environment" {
+		t.Errorf("out = %v, want one user message with the text", out)
 	}
 }
 
