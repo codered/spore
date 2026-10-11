@@ -258,3 +258,56 @@ ask = ["shell_exec"]
 		})
 	}
 }
+
+type noneReflector struct{ calls int }
+
+func (r *noneReflector) Reflect(context.Context, string, string) (string, error) {
+	r.calls++
+	return `{"action":"none"}`, nil
+}
+
+func TestCheckRouteRunsOneTick(t *testing.T) {
+	ctx := context.Background()
+	s, ts := newTestServer(t)
+	s.cfg.Companion.Enabled = true
+	s.cfg.Companion.Timezone = "UTC"
+	s.AttachCompanion(companion.NewService(s.store, s.cfg))
+	refl := &noneReflector{}
+	s.AttachHeartbeat(&companion.Heartbeat{Store: s.store, Cfg: s.cfg, Recorder: companion.NewRecorder(s.store, s.cfg),
+		Reflector: refl, Deliverer: s.CompanionDeliverer(), Now: time.Now})
+	if _, err := s.store.TouchInterest(ctx, "stock:zs", "Zscaler (ZS)"); err != nil {
+		t.Fatal(err)
+	}
+	url := ts.URL + "/api/companion/check"
+
+	res := postJSON(t, url, map[string]any{})
+	var body map[string]string
+	_ = json.NewDecoder(res.Body).Decode(&body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || body["result"] != "nothing to decide" {
+		t.Fatalf("plain check = %d %v", res.StatusCode, body)
+	}
+
+	res = postJSON(t, url, map[string]any{"promote": "stock:zs", "force": true})
+	body = nil
+	_ = json.NewDecoder(res.Body).Decode(&body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || body["result"] != "none" || refl.calls != 1 {
+		t.Fatalf("promoted check = %d %v (calls %d)", res.StatusCode, body, refl.calls)
+	}
+
+	res = postJSON(t, url, map[string]any{"promote": "stock:nope"})
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown interest = %d, want 400", res.StatusCode)
+	}
+}
+
+func TestCheckRouteWithoutCompanionIs503(t *testing.T) {
+	_, ts := newTestServer(t)
+	res := postJSON(t, ts.URL+"/api/companion/check", map[string]any{})
+	res.Body.Close()
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", res.StatusCode)
+	}
+}

@@ -191,6 +191,32 @@ func (s *Server) handleAnswerProposal(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleCompanionCheck runs one heartbeat now, for an operator verifying the
+// companion: see companion.TickOptions.
+func (s *Server) handleCompanionCheck(w http.ResponseWriter, r *http.Request) {
+	if s.companion == nil || s.heartbeat == nil {
+		writeError(w, http.StatusServiceUnavailable, "%v", errCompanionOff)
+		return
+	}
+	var body struct {
+		Promote string `json:"promote"`
+		Force   bool   `json:"force"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "decode body: %v", err)
+		return
+	}
+	res, err := s.heartbeat.TickWith(r.Context(), companion.TickOptions{Manual: true, Promote: body.Promote, Force: body.Force})
+	switch {
+	case errors.Is(err, companion.ErrBadCheck):
+		writeError(w, http.StatusBadRequest, "%v", err)
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "%v", err)
+	default:
+		writeJSON(w, http.StatusOK, map[string]string{"result": res})
+	}
+}
+
 // CompanionStatusJSON is GET /api/companion/status.
 type CompanionStatusJSON struct {
 	Enabled        bool       `json:"enabled"`

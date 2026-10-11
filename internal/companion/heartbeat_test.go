@@ -5,6 +5,8 @@ import (
 	"errors"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -404,5 +406,153 @@ func TestTickRewritesSelf(t *testing.T) {
 	}
 	if len(fx.selfWrites) != 1 || fx.selfWrites[0] != body {
 		t.Fatalf("self writes = %q", fx.selfWrites)
+	}
+}
+
+// observed seeds an interest seen once, today: still observing.
+func (fx *hbFixture) observed(t *testing.T, key string) store.Interest {
+	t.Helper()
+	ctx := context.Background()
+	sid, _ := fx.st.CreateSessionFrom(ctx, "t", "", store.SourceChat)
+	in, err := fx.st.TouchInterest(ctx, key, "label for "+key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fx.st.AddInterestSignal(ctx, in.ID, sid, "asked", fx.now.Format("2006-01-02"), fx.now); err != nil {
+		t.Fatal(err)
+	}
+	return in
+}
+
+func TestCheckPromotesAnObservedInterest(t *testing.T) {
+	ctx := context.Background()
+	fx := newHeartbeat(t)
+	fx.observed(t, "stock:zs")
+	if res, err := fx.h.TickWith(ctx, companion.TickOptions{Manual: true}); err != nil || res != "nothing to decide" {
+		t.Fatalf("check without promote = %q %v", res, err)
+	}
+	fx.refl.replies = []string{proposeZS}
+	res, err := fx.h.TickWith(ctx, companion.TickOptions{Manual: true, Promote: "stock:zs"})
+	if err != nil || res != "propose stock:zs" {
+		t.Fatalf("check = %q %v", res, err)
+	}
+	if len(fx.del.sent) != 1 {
+		t.Fatalf("delivered %d, want 1", len(fx.del.sent))
+	}
+	if strings.Contains(fx.refl.inputs[0], "verification run") {
+		t.Fatal("an unforced check told the model to propose")
+	}
+}
+
+func TestCheckForceTellsTheModelToPropose(t *testing.T) {
+	ctx := context.Background()
+	fx := newHeartbeat(t)
+	fx.observed(t, "stock:zs")
+	fx.refl.replies = []string{proposeZS}
+	if _, err := fx.h.TickWith(ctx, companion.TickOptions{Manual: true, Promote: "stock:zs", Force: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fx.refl.inputs) != 1 || !strings.Contains(fx.refl.inputs[0], "verification run") ||
+		!strings.Contains(fx.refl.inputs[0], `"propose"`) || !strings.Contains(fx.refl.inputs[0], "stock:zs") {
+		t.Fatalf("input = %v", fx.refl.inputs)
+	}
+}
+
+func TestCheckRejectsBadOptions(t *testing.T) {
+	ctx := context.Background()
+	fx := newHeartbeat(t)
+	in := fx.observed(t, "stock:zs")
+	for name, o := range map[string]companion.TickOptions{
+		"force without promote": {Manual: true, Force: true},
+		"unknown key":           {Manual: true, Promote: "stock:nope"},
+	} {
+		if _, err := fx.h.TickWith(ctx, o); !errors.Is(err, companion.ErrBadCheck) {
+			t.Errorf("%s: err = %v, want ErrBadCheck", name, err)
+		}
+	}
+	_, _ = fx.st.SetInterestState(ctx, in.ID, store.InterestObserving, store.InterestDeclined)
+	if _, err := fx.h.TickWith(ctx, companion.TickOptions{Manual: true, Promote: "stock:zs"}); err == nil ||
+		!strings.Contains(err.Error(), "declined") {
+		t.Fatalf("promoting a declined interest = %v", err)
+	}
+	if len(fx.refl.inputs) != 0 {
+		t.Fatal("a rejected check reflected")
+	}
+}
+
+func TestCheckIgnoresPauseQuietAndUnchangedButNotBudget(t *testing.T) {
+	ctx := context.Background()
+	fx := newHeartbeat(t)
+	fx.candidate(t, "stock:zs")
+	fx.now = time.Date(2026, 10, 12, 23, 30, 0, 0, time.UTC)
+	if err := companion.SetPausedUntil(ctx, fx.st, fx.now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	manual := companion.TickOptions{Manual: true}
+	if res, err := fx.h.TickWith(ctx, manual); err != nil || res != "none" {
+		t.Fatalf("first check = %q %v", res, err)
+	}
+	if res, err := fx.h.TickWith(ctx, manual); err != nil || res != "none" {
+		t.Fatalf("second check (unchanged) = %q %v", res, err)
+	}
+	if len(fx.refl.inputs) != 2 {
+		t.Fatalf("reflected %d times, want 2", len(fx.refl.inputs))
+	}
+	fx.cfg.Companion.StartBudget = 1
+	if _, err := fx.st.AddOutreach(ctx, store.Outreach{Kind: store.OutreachNudge, Text: "x", SentAt: fx.now.Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := fx.h.TickWith(ctx, manual); err != nil || res != "budget spent" {
+		t.Fatalf("check with no budget = %q %v", res, err)
+	}
+}
+
+// blockingReflector holds every call until release closes, counting how
+// many run at once.
+type blockingReflector struct {
+	mu      sync.Mutex
+	running int
+	peak    int
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingReflector) Reflect(context.Context, string, string) (string, error) {
+	b.mu.Lock()
+	b.running++
+	b.peak = max(b.peak, b.running)
+	b.mu.Unlock()
+	b.entered <- struct{}{}
+	<-b.release
+	b.mu.Lock()
+	b.running--
+	b.mu.Unlock()
+	return `{"action":"none"}`, nil
+}
+
+func TestTicksDoNotOverlap(t *testing.T) {
+	ctx := context.Background()
+	fx := newHeartbeat(t)
+	fx.candidate(t, "stock:zs")
+	br := &blockingReflector{entered: make(chan struct{}, 2), release: make(chan struct{})}
+	fx.h.Reflector = br
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = fx.h.TickWith(ctx, companion.TickOptions{Manual: true})
+		}()
+	}
+	<-br.entered
+	select {
+	case <-br.entered:
+		t.Error("a second tick reflected while the first was still running")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(br.release)
+	wg.Wait()
+	if br.peak != 1 {
+		t.Fatalf("peak concurrent reflections = %d, want 1", br.peak)
 	}
 }

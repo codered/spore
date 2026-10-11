@@ -57,6 +57,16 @@ func (c *client) authorize(req *http.Request) {
 }
 
 func (c *client) do(ctx context.Context, method, path string, body, out any) error {
+	return c.request(ctx, c.short, method, path, body, out)
+}
+
+// doSlow is do without the 30-second limit, for a call that waits on a
+// model; ctx alone bounds it.
+func (c *client) doSlow(ctx context.Context, method, path string, body, out any) error {
+	return c.request(ctx, c.streamClient, method, path, body, out)
+}
+
+func (c *client) request(ctx context.Context, hc *http.Client, method, path string, body, out any) error {
 	var rdr io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -78,7 +88,7 @@ func (c *client) do(ctx context.Context, method, path string, body, out any) err
 	}
 	c.authorize(req)
 	//nolint:gosec // G704: c.base is the local daemon URL
-	res, err := c.short.Do(req) //nolint:gosec // G704: c.base is the local daemon URL
+	res, err := hc.Do(req) //nolint:gosec // G704: c.base is the local daemon URL
 	if err != nil {
 		return err
 	}

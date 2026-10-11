@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/codered/spore/internal/config"
@@ -31,6 +32,9 @@ const (
 // ErrBusy is the deliverer refusing because a turn is running in the
 // companion session: appending to it now would land inside that turn.
 var ErrBusy = errors.New("the companion session has a turn running")
+
+// ErrBadCheck wraps an operator's check that names no usable interest.
+var ErrBadCheck = errors.New("bad check")
 
 // Reflector makes the reflection call.
 type Reflector interface {
@@ -65,6 +69,21 @@ type Heartbeat struct {
 	WriteSelf SelfWriter
 	// Now is the clock; tests replace it.
 	Now func() time.Time
+
+	// mu keeps an operator's check and the ticker from reflecting at once.
+	mu sync.Mutex
+}
+
+// TickOptions shape an operator's check. The zero value is a heartbeat tick.
+type TickOptions struct {
+	// Manual skips pause, quiet hours and the unchanged-state skip. The
+	// budget still applies.
+	Manual bool
+	// Promote makes this observing interest a candidate first, however few
+	// days it has been seen on.
+	Promote string
+	// Force tells the reflection it must propose Promote.
+	Force bool
 }
 
 func (h *Heartbeat) now() time.Time {
@@ -103,6 +122,16 @@ func (h *Heartbeat) Run(ctx context.Context, every time.Duration) {
 // skipped, or the action taken. An error means the tick failed and nothing
 // was sent.
 func (h *Heartbeat) Tick(ctx context.Context) (string, error) {
+	return h.TickWith(ctx, TickOptions{})
+}
+
+// TickWith runs one tick shaped by o. See TickOptions.
+func (h *Heartbeat) TickWith(ctx context.Context, o TickOptions) (string, error) {
+	if o.Force && o.Promote == "" {
+		return "", fmt.Errorf("%w: force needs an interest to promote", ErrBadCheck)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	c := h.Cfg.Companion
 	if !c.Enabled {
 		return "disabled", nil
@@ -120,23 +149,33 @@ func (h *Heartbeat) Tick(ctx context.Context) (string, error) {
 			return "", err
 		}
 	}
-	paused, err := PausedUntil(ctx, h.Store)
-	if err != nil {
-		return "", err
+	if o.Promote != "" {
+		if err := h.promote(ctx, o.Promote, now, loc); err != nil {
+			return "", err
+		}
 	}
-	if now.Before(paused) {
-		return "paused", nil
-	}
-	quiet, err := InQuietHours(now, loc, c.QuietHours)
-	if err != nil {
-		return "", err
-	}
-	if quiet {
-		return "quiet hours", nil
+	if !o.Manual {
+		paused, err := PausedUntil(ctx, h.Store)
+		if err != nil {
+			return "", err
+		}
+		if now.Before(paused) {
+			return "paused", nil
+		}
+		quiet, err := InQuietHours(now, loc, c.QuietHours)
+		if err != nil {
+			return "", err
+		}
+		if quiet {
+			return "quiet hours", nil
+		}
 	}
 	v, err := h.view(ctx, now, loc)
 	if err != nil {
 		return "", err
+	}
+	if o.Force {
+		v.Force = o.Promote
 	}
 	if !Eligible(v) {
 		return "nothing to decide", nil
@@ -149,7 +188,7 @@ func (h *Heartbeat) Tick(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if last == fp {
+	if last == fp && !o.Manual {
 		return "nothing changed", nil
 	}
 	reply, err := h.Reflector.Reflect(ctx, ReflectionPrompt, RenderInput(v))
@@ -172,6 +211,30 @@ func (h *Heartbeat) Tick(ctx context.Context) (string, error) {
 	}
 	res := summarize(d)
 	return res, h.succeed(ctx, now, fp, res)
+}
+
+// promote makes key a candidate for one check. It runs after the sweep,
+// which would otherwise send a candidate with too few days straight back.
+func (h *Heartbeat) promote(ctx context.Context, key string, now time.Time, loc *time.Location) error {
+	in, ok, err := h.Store.InterestByKey(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: no interest %q (see spore companion interests)", ErrBadCheck, key)
+	}
+	if now.Before(in.CooldownUntil) {
+		return fmt.Errorf("%w: interest %s is cooling down until %s", ErrBadCheck, key, in.CooldownUntil.In(loc).Format("2006-01-02 15:04"))
+	}
+	switch in.State {
+	case store.InterestCandidate:
+		return nil
+	case store.InterestObserving:
+		_, err := h.Store.SetInterestState(ctx, in.ID, store.InterestObserving, store.InterestCandidate)
+		return err
+	default:
+		return fmt.Errorf("%w: interest %s is %s; only an observing or candidate interest can be promoted", ErrBadCheck, key, in.State)
+	}
 }
 
 // resolveStale times out what the user did not answer: a message pending
