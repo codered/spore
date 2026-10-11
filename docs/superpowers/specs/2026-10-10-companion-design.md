@@ -487,3 +487,45 @@ Recorded in `docs/backlog.md` as enhancements:
 - `DaysSeen` counts every sighting ever recorded, with no window, so a retired interest revived by one new sighting can become a candidate at once. PR 2 decides whether proposals need recent evidence.
 - `## ` headings inside `self.md` are demoted to `### ` when rendered under `## Your own notes`, so the user's file cannot open a new top-level prompt section.
 - `/context` counts `self.md` in its `System` figure; it does not count `soul.md` or `agent.md` (a pre-existing gap, left alone).
+
+## PR 2 decisions (2026-10-10)
+
+Settled with the user before planning PR 2. Where these differ from the
+sections above, these win.
+
+- **PR 2 is split.** 2a: the `companion` profile, the router site, the
+  heartbeat (reflection with `propose`, `nudge` and `none`, plus `drops` and
+  `self_md`), the governor, unanswered follow-up, the companion session,
+  proposals with Discord buttons, watch creation, `interest_update`,
+  `companion_feedback`, and the CLI (`status`, `outreach`, `pause`, `resume`,
+  `answer`, `interests undecline`). 2b: the pinned TUI row with
+  `alt+y`/`alt+n`/`alt+x`, the web list, and `/companion` on every chat
+  surface. `alert`, `finding`, `followup`, `digest` and `research` stay in
+  PR 3.
+- **Discord surface (replaces §5.2's DM rule).** A new `[companion.discord]`
+  block:
+
+  ```toml
+  [companion.discord]
+  mode       = "thread"   # thread (default) | dm
+  channel_id = ""         # the channel the companion thread opens in; required for thread mode
+  user_ids   = []         # who may talk in that thread and press its buttons; empty = bridge.discord.user_ids
+  ```
+
+  Thread mode posts one anchor message in `channel_id`, opens a thread named
+  `spore` on it, and binds the thread to the companion session; a reply in
+  the thread continues that session through the existing bridge path. The
+  channel need not be in `bridge.discord.channel_ids`: a thread under it is
+  admitted for the users in `companion.discord.user_ids` and nobody else,
+  and a top-level message in it is not admitted at all. Every companion user
+  must also be in `bridge.discord.user_ids`. DM mode binds the DM channel of
+  the first companion user, which needs `bridge.discord.allow_dms` and takes
+  over that user's rolling DM session. `channel = "discord"` with an
+  incomplete block is a load error; `channel = "auto"` falls back to the
+  terminal instead.
+- **Watch output stays as specced:** `notify = each`, so every run's reply is
+  a note in the companion session and its Discord thread.
+- **Recency.** Only signals from the last 30 days (`FadeAfter`) count toward
+  `habit_days`, for promotion to `candidate` and for demotion back to
+  `observing`. The all-time count is still what `spore companion interests`
+  shows.
