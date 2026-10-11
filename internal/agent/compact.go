@@ -114,9 +114,13 @@ func (a *Agent) Compact(ctx context.Context, sessionID string) (folded, before, 
 	}
 	_, span := sporetrace.StartLLM(ctx, router.SiteCompaction, ref)
 	ch, err := p.Stream(ctx, provider.Request{
-		Model:     model,
-		System:    []provider.Block{{Type: provider.BlockText, Text: compactionPrompt}},
-		MaxTokens: 1024,
+		Model:  model,
+		System: []provider.Block{{Type: provider.BlockText, Text: compactionPrompt}},
+		// The same cap as a chat reply, not a smaller one for a short
+		// summary: a model that reasons first spends its reasoning from this
+		// budget, and at 1024 a Qwen3 model used all of it thinking and
+		// wrote no summary at all.
+		MaxTokens: a.Cfg.Context.MaxOutputTokens,
 		Messages: []provider.Message{{
 			Role:   provider.RoleUser,
 			Blocks: []provider.Block{{Type: provider.BlockText, Text: transcript.String()}},
@@ -130,6 +134,7 @@ func (a *Agent) Compact(ctx context.Context, sessionID string) (folded, before, 
 
 	var summary string
 	var usage provider.Usage
+	var hitMaxTokens bool
 	for ev := range ch {
 		switch ev.Type {
 		case provider.EventTextDelta:
@@ -138,6 +143,7 @@ func (a *Agent) Compact(ctx context.Context, sessionID string) (folded, before, 
 			if ev.Usage != nil {
 				usage = *ev.Usage
 			}
+			hitMaxTokens = ev.HitMaxTokens
 		case provider.EventError:
 			span.RecordError(ev.Err)
 			span.End()
@@ -146,6 +152,11 @@ func (a *Agent) Compact(ctx context.Context, sessionID string) (folded, before, 
 	}
 	if strings.TrimSpace(summary) == "" {
 		err := fmt.Errorf("compaction produced an empty summary")
+		if hitMaxTokens {
+			err = fmt.Errorf("compaction model %s used its whole %d-token output limit without writing a summary; "+
+				"a model that reasons first spends that limit thinking: raise context.max_output_tokens "+
+				"or route compaction to a model that answers directly", ref, a.Cfg.Context.MaxOutputTokens)
+		}
 		span.RecordError(err)
 		span.End()
 		return 0, before, before, err
