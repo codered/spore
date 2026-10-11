@@ -66,7 +66,7 @@ func TestViewDefaultsAndScopes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(v.Ops) != 6 || v.Ops[0].Op != "chat" || v.Ops[5].Op != "subagent" {
+	if len(v.Ops) != 7 || v.Ops[0].Op != "chat" || v.Ops[6].Op != "subagent" {
 		t.Fatalf("ops = %+v", v.Ops)
 	}
 	chat := opOf(t, v, "chat")

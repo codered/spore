@@ -72,7 +72,7 @@ func TestGetModelsListsOpsAndGroups(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := decodeModels(t, res)
-	if len(v.Ops) != 6 || v.Ops[0].Op != "chat" {
+	if len(v.Ops) != 7 || v.Ops[0].Op != "chat" {
 		t.Fatalf("ops = %+v", v.Ops)
 	}
 	var sawDown, sawQwen bool

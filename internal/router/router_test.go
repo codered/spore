@@ -129,7 +129,7 @@ func TestOverridesAreSafeConcurrently(t *testing.T) {
 }
 
 func TestSitesOrder(t *testing.T) {
-	want := []string{SiteChat, SiteCompaction, SiteTitle, SiteClassify, SiteRefinement, SiteSubagent}
+	want := []string{SiteChat, SiteCompaction, SiteTitle, SiteClassify, SiteRefinement, SiteCompanion, SiteSubagent}
 	if !slices.Equal(Sites, want) {
 		t.Fatalf("Sites = %v, want %v", Sites, want)
 	}

@@ -160,10 +160,16 @@ func (s *Server) StartJob(ctx context.Context, job store.Job) (string, error) {
 	// has no directory of its own and gets a session directory, the same
 	// treatment as the web UI and the bridge. So does one whose origin's
 	// root is no longer usable, so the run still happens.
-	sessionID, err := s.CreateSession(ctx, title, s.originWorkspace(ctx, job), store.SourceJob, policy.ProfileLocal)
+	// A watch the companion created runs under the companion profile; every
+	// other job runs as its local creator would.
+	profile := policy.ProfileLocal
+	if job.Profile != "" {
+		profile = policy.Profile(job.Profile)
+	}
+	sessionID, err := s.CreateSession(ctx, title, s.originWorkspace(ctx, job), store.SourceJob, profile)
 	if err != nil && job.OriginSessionID != "" {
 		slog.Warn("the job's origin workspace could not be used; running in a session directory", "job", job.ID, "err", err)
-		sessionID, err = s.CreateSession(ctx, title, "", store.SourceJob, policy.ProfileLocal)
+		sessionID, err = s.CreateSession(ctx, title, "", store.SourceJob, profile)
 	}
 	if err != nil {
 		return "", err
@@ -176,7 +182,7 @@ func (s *Server) StartJob(ctx context.Context, job store.Job) (string, error) {
 		return sessionID, errSessionBusy
 	}
 	then := func(end WireEvent) { s.afterJobRun(job.ID, sessionID, end) }
-	if err := s.startTurnThen(sessionID, job.Prompt, "job", policy.ProfileLocal, then); err != nil {
+	if err := s.startTurnThen(sessionID, job.Prompt, "job", profile, then); err != nil {
 		s.hub.End(sessionID)
 		return sessionID, err
 	}

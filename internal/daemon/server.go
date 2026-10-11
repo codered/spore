@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/codered/spore/internal/agent"
+	"github.com/codered/spore/internal/companion"
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/models"
 	"github.com/codered/spore/internal/policy"
@@ -42,6 +43,14 @@ type Server struct {
 	// when no bridge is connected.
 	notifier Notifier
 	broker   *Broker
+
+	// companion is the companion service; nil when the companion is off.
+	companion *companion.Service
+	// companionChannel is where outreach goes besides the companion
+	// session; nil means the terminal alone.
+	companionChannel companion.Channel
+	// heartbeat is the companion's tick, run by serve; nil when off.
+	heartbeat *companion.Heartbeat
 
 	// subagents is the supervisor the sub-agent tools launch through. It is
 	// nil in tests that do not exercise sub-agents.
@@ -192,6 +201,8 @@ func (s *Server) buildMux() *http.ServeMux {
 	api("GET /api/sessions/{id}/approvals", s.handleListApprovals)
 	api("POST /api/sessions/{id}/approvals/{pending}", s.handleResolveApproval)
 	api("GET /api/jobs", s.handleListJobs)
+	api("POST /api/companion/proposals/{id}", s.handleAnswerProposal)
+	api("GET /api/companion/status", s.handleCompanionStatus)
 	api("POST /api/jobs", s.handleCreateJob)
 	api("DELETE /api/jobs/{id}", s.handleCancelJob)
 	api("GET /api/jobs/{id}/runs", s.handleJobRuns)

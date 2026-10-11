@@ -27,8 +27,8 @@ const (
 )
 
 // modelGroups splits the selects across messages: Discord allows five rows
-// per message, and there are six operations.
-var modelGroups = [][]string{{"chat", "subagent", "compaction", "title"}, {"classify", "refinement"}}
+// per message, and there are seven operations.
+var modelGroups = [][]string{{"chat", "subagent", "compaction", "title"}, {"classify", "refinement", "companion"}}
 
 func modelCustomID(sessionID, op string) string { return modelPrefix + op + ":" + sessionID }
 
