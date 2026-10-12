@@ -66,6 +66,9 @@ type Options struct {
 	// Proposals answers the companion's proposal buttons. Nil means a press
 	// is answered "the companion is off".
 	Proposals ProposalAnswerer
+	// Commands runs /companion. Nil means /companion says the companion
+	// is off.
+	Commands CompanionCommander
 }
 
 // Bridge connects one Discord bot to spore. It owns no agent machinery: it
@@ -85,6 +88,7 @@ type Bridge struct {
 	showCost  bool
 	models    ModelChooser
 	proposals ProposalAnswerer
+	commands  CompanionCommander
 
 	// details holds recent turns' tool transcripts for the "show details"
 	// button. It lives here, not on the renderer, because the press arrives
@@ -170,6 +174,7 @@ func New(o Options) (*Bridge, error) {
 		showCost:  o.ShowCost,
 		models:    o.Models,
 		proposals: o.Proposals,
+		commands:  o.Commands,
 		details:   newDetails(),
 	}, nil
 }
@@ -282,6 +287,12 @@ func (b *Bridge) handleMessage(in Inbound) {
 		return
 	}
 
+	if content == "/companion" || strings.HasPrefix(content, "/companion ") {
+		b.handleCompanion(in, strings.Fields(content)[1:])
+		b.settle(in) // no turn runs, so nothing else settles it; see /new
+		return
+	}
+
 	sessionID, replyChannel, err := b.resolveSession(in)
 	if err != nil {
 		slog.Warn("discord session resolution failed", "err", err)
@@ -349,6 +360,32 @@ func (b *Bridge) handleUsage(in Inbound) {
 	}
 	report += usage.Total(days, b.showCost)
 	b.say(in.ChannelID, "```\n"+report+"```")
+}
+
+// companionReplyLimit keeps a /companion reply inside Discord's 2000
+// character message cap with room for the code fence.
+const companionReplyLimit = 1900
+
+// handleCompanion answers /companion where it was typed. Who may run it
+// is who may talk here: admission has already run. It opens no thread
+// and no session.
+func (b *Bridge) handleCompanion(in Inbound, args []string) {
+	text := "the companion is not enabled"
+	if b.commands != nil {
+		out, err := b.commands.CompanionCommand(b.ctx, args)
+		if err != nil {
+			text = "companion: " + err.Error()
+		} else {
+			out = strings.TrimRight(out, "\n")
+			if r := []rune(out); len(r) > companionReplyLimit {
+				out = string(r[:companionReplyLimit]) + "\n…"
+			}
+			text = "```\n" + out + "\n```"
+		}
+	}
+	if _, err := b.client.Send(b.ctx, in.ChannelID, Message{Content: text, Quiet: true}); err != nil {
+		slog.Warn("discord /companion reply failed", "err", err)
+	}
 }
 
 // resolveSession maps an inbound message to the session it belongs to,
@@ -541,13 +578,14 @@ func (b *Bridge) Follow(sessionID string) func() {
 }
 
 // Deliver implements daemon.Notifier: it posts a note to the session's own
-// channel, and nowhere else.
+// channel, and nowhere else. Notes go out quiet: one never needs to ping,
+// and a job's output is model text.
 func (b *Bridge) Deliver(ctx context.Context, sessionID, text string) {
 	channelID, ok := b.boundChannel(ctx, sessionID)
 	if !ok {
 		return
 	}
-	if _, err := b.client.Send(ctx, channelID, Message{Content: text}); err != nil {
+	if _, err := b.client.Send(ctx, channelID, Message{Content: text, Quiet: true}); err != nil {
 		slog.Warn("discord note failed", "session", sessionID, "err", err)
 	}
 }

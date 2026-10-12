@@ -15,8 +15,25 @@ import (
 )
 
 type fakeProposals struct {
-	mu    sync.Mutex
-	calls []string
+	mu       sync.Mutex
+	calls    []string
+	commands [][]string
+}
+
+func (f *fakeProposals) CompanionCommand(_ context.Context, args []string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commands = append(f.commands, append([]string(nil), args...))
+	if len(args) > 0 && args[0] == "check" {
+		return "", errors.New("usage: check runs from the terminal")
+	}
+	return "companion said: " + strings.Join(args, " ") + "\n", nil
+}
+
+func (f *fakeProposals) commandArgs() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]string(nil), f.commands...)
 }
 
 func (f *fakeProposals) AnswerProposal(_ context.Context, _ int64, choice string) (string, error) {
@@ -46,7 +63,7 @@ func companionBridge(t *testing.T, mode string) (*Bridge, *fakeClient, *fakeTurn
 		Cfg: cfg, Client: f, Turns: turns, Sessions: &fakeSessions{store: st}, Store: st,
 		Broker: daemon.NewBroker(daemon.NewHub()), Throttle: -1,
 		Companion:   config.CompanionDiscordConfig{Mode: mode, ChannelID: "CC", UserIDs: []string{"U"}},
-		CompanionOn: true, Proposals: props,
+		CompanionOn: true, Proposals: props, Commands: props,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -213,6 +230,49 @@ func TestCompanionCustomIDRejectsGarbage(t *testing.T) {
 	for _, s := range []string{"companion|x|yes", "companion|7|maybe", "companion|7", "spore|s|1|allow|once"} {
 		if _, _, err := decodeCompanionCustomID(s); err == nil {
 			t.Errorf("decoded %q", s)
+		}
+	}
+}
+
+func TestSlashCompanionRepliesQuietlyWithoutATurn(t *testing.T) {
+	_, f, turns, _, props := companionBridge(t, config.CompanionDiscordThread)
+	f.deliver(Inbound{MessageID: "m1", UserID: "U", GuildID: "G", ChannelID: "C1", Content: "/companion pause 2h"})
+	waitFor(t, func() bool { return len(f.sentTo("C1")) > 0 })
+	got := f.sentTo("C1")[0].Message
+	if !strings.Contains(got.Content, "companion said: pause 2h") || !got.Quiet {
+		t.Fatalf("reply = %+v, want the command's text, sent quiet", got)
+	}
+	if a := props.commandArgs(); len(a) != 1 || strings.Join(a[0], " ") != "pause 2h" {
+		t.Fatalf("command args = %q", a)
+	}
+	f.deliver(Inbound{MessageID: "m2", UserID: "U", GuildID: "G", ChannelID: "C1", Content: "/companion check"})
+	waitFor(t, func() bool { return len(f.sentTo("C1")) > 1 })
+	if got := f.sentTo("C1")[1].Message.Content; !strings.Contains(got, "terminal") {
+		t.Fatalf("check reply = %q, want the refusal", got)
+	}
+	if turns.startCount() != 0 {
+		t.Fatalf("/companion started %d turns, want 0", turns.startCount())
+	}
+}
+
+// Text the model wrote must never ping: the anchor, every outreach and
+// every note go out with no mentions allowed.
+func TestCompanionSendsAreQuiet(t *testing.T) {
+	ctx := context.Background()
+	b, f, _, st, _ := companionBridge(t, config.CompanionDiscordThread)
+	sid, _ := st.CreateSessionFrom(ctx, "spore", "", store.SourceCompanion)
+	ch := b.CompanionChannel(config.CompanionDiscordConfig{Mode: config.CompanionDiscordThread, ChannelID: "CC", UserIDs: []string{"U"}})
+	if err := ch.Send(ctx, sid, store.Outreach{ID: 1, Kind: store.OutreachProposal, Text: "@everyone watch ZS?"}); err != nil {
+		t.Fatal(err)
+	}
+	b.Deliver(ctx, sid, "Watching ZS. @here")
+	sent := f.allSent()
+	if len(sent) != 3 {
+		t.Fatalf("sent %d messages, want anchor, outreach and note: %+v", len(sent), sent)
+	}
+	for _, s := range sent {
+		if !s.Message.Quiet {
+			t.Errorf("%q was sent with mentions allowed", s.Message.Content)
 		}
 	}
 }
