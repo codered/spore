@@ -346,6 +346,10 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 				seen = m.markSeen(id)
 			}
 			return tea.Batch(seen, m.drainQueue(id))
+		case daemon.WireJobNote:
+			if id == m.selected {
+				return m.markSeen(id)
+			}
 		}
 		return nil
 
@@ -1411,12 +1415,12 @@ func (m *Model) selectSession(id string) tea.Cmd {
 	return seen
 }
 
-// markSeen clears a job run's unread mark here and on the daemon, so the
-// jobs folder's badge stays right across restarts. Only job runs are
-// counted, so only they are marked.
+// markSeen clears a job run's or the companion's unread mark here and on the
+// daemon, so the badges stay right across restarts. Only those are counted,
+// so only they are marked.
 func (m *Model) markSeen(id string) tea.Cmd {
 	sv := m.cache.get(id)
-	if !sv.info.Unread || sv.info.Source != "job" {
+	if !sv.info.Unread || (sv.info.Source != "job" && sv.info.Source != "companion") {
 		return nil
 	}
 	sv.info.Unread = false

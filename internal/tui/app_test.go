@@ -64,6 +64,65 @@ type fakeBackend struct {
 	modelsErr  error
 	modelSets  []string
 	setErr     error
+
+	proposals       []daemon.ProposalJSON
+	proposalsErr    error
+	proposalFetches int
+	answers         []string
+	companionArgs   [][]string
+}
+
+func (f *fakeBackend) Companion(_ context.Context, args []string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.companionArgs = append(f.companionArgs, append([]string(nil), args...))
+	return "companion: " + strings.Join(args, " ") + "\n", nil
+}
+
+func (f *fakeBackend) Proposals(context.Context) ([]daemon.ProposalJSON, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.proposalFetches++
+	return append([]daemon.ProposalJSON(nil), f.proposals...), f.proposalsErr
+}
+
+// AnswerProposal answers like the daemon: the proposal leaves the open list.
+func (f *fakeBackend) AnswerProposal(_ context.Context, id int64, choice string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.answers = append(f.answers, fmt.Sprintf("%d:%s", id, choice))
+	for i, p := range f.proposals {
+		if p.ID == id {
+			f.proposals = append(f.proposals[:i:i], f.proposals[i+1:]...)
+			break
+		}
+	}
+	return "answered " + choice, nil
+}
+
+// runCmd runs cmd the way the runtime would and feeds back what it returns.
+func runCmd(m *Model, cmd tea.Cmd) {
+	for _, msg := range expand(cmd) {
+		run(m, msg)
+	}
+}
+
+// companionScene has a chat (selected) and the companion session, unread.
+func companionScene(t *testing.T) (*Model, *fakeBackend) {
+	t.Helper()
+	sp := daemon.SessionJSON{ID: "sp", Title: "spore", Source: "companion", Unread: true}
+	fb := &fakeBackend{
+		sessions: []daemon.SessionJSON{
+			{ID: "s1", Title: "chat", Source: "chat", Workspace: "/w"},
+			sp,
+		},
+		// The daemon's transcript carries the session itself; without it
+		// opening the session would blank its source.
+		transcripts: map[string]daemon.TranscriptJSON{"sp": {Session: sp}},
+	}
+	m := newTestModel(t, fb, "s1")
+	run(m, sessionsMsg{list: fb.sessions})
+	return m, fb
 }
 
 func (f *fakeBackend) Sessions(context.Context) ([]daemon.SessionJSON, error) { return f.sessions, nil }
@@ -127,6 +186,11 @@ func (f *fakeBackend) MarkSeen(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.seen = append(f.seen, id)
+	// As the daemon does, a later transcript reports the session seen.
+	if t, ok := f.transcripts[id]; ok {
+		t.Session.Unread = false
+		f.transcripts[id] = t
+	}
 	return nil
 }
 func (f *fakeBackend) fetched() {
@@ -1125,15 +1189,15 @@ func TestStartingOnARunOpensTheFolder(t *testing.T) {
 	}
 }
 
-// runCmd executes a command and any batch it returns, synchronously.
-func runCmd(t *testing.T, c tea.Cmd) {
+// execCmd executes a command and any batch it returns, synchronously.
+func execCmd(t *testing.T, c tea.Cmd) {
 	t.Helper()
 	if c == nil {
 		return
 	}
 	if b, ok := c().(tea.BatchMsg); ok {
 		for _, cc := range b {
-			runCmd(t, cc)
+			execCmd(t, cc)
 		}
 	}
 }
@@ -1141,8 +1205,8 @@ func runCmd(t *testing.T, c tea.Cmd) {
 func TestSlashRefinePassesInstructionsAndRollback(t *testing.T) {
 	fb := &fakeBackend{}
 	m := newTestModel(t, fb, "s1")
-	runCmd(t, m.slashLine("refine the lint rule"))
-	runCmd(t, m.slashLine("refine rollback"))
+	execCmd(t, m.slashLine("refine the lint rule"))
+	execCmd(t, m.slashLine("refine rollback"))
 	if len(fb.refined) != 1 || fb.refined[0] != "s1:the lint rule" {
 		t.Fatalf("refined = %v", fb.refined)
 	}
@@ -1158,5 +1222,34 @@ func TestColonMemoryWithAQueryOpensTheSearch(t *testing.T) {
 	m.command("memory tabs")
 	if m.table == nil || m.table.res.Name() != `memory · "tabs"` {
 		t.Fatalf("open view = %v", m.table)
+	}
+}
+
+func TestOpeningTheCompanionSessionMarksItSeen(t *testing.T) {
+	m, fb := companionScene(t)
+	runCmd(m, m.selectSession("sp"))
+	if len(fb.seen) != 1 || fb.seen[0] != "sp" {
+		t.Fatalf("seen = %v, want sp marked seen on the daemon", fb.seen)
+	}
+	if m.cache.get("sp").info.Unread {
+		t.Fatal("the companion session still reads unread after it was opened")
+	}
+}
+
+func TestOutreachWhileAwayMarksTheCompanionUnread(t *testing.T) {
+	m, fb := companionScene(t)
+	m.cache.get("sp").info.Unread = false
+	feed(m, daemon.WireEvent{Session: "sp", Type: daemon.WireJobNote, Text: "Want me to watch ZS?"})
+	if !m.cache.get("sp").info.Unread {
+		t.Fatal("outreach that arrived while another session was open must read unread")
+	}
+	if len(fb.seen) != 0 {
+		t.Fatalf("seen = %v, want nothing marked while it was not open", fb.seen)
+	}
+	runCmd(m, m.selectSession("sp"))
+	fb.seen = nil
+	feed(m, daemon.WireEvent{Session: "sp", Type: daemon.WireJobNote, Text: "Still?"})
+	if m.cache.get("sp").info.Unread || len(fb.seen) != 1 {
+		t.Fatalf("outreach on screen: unread=%v seen=%v, want it marked seen at once", m.cache.get("sp").info.Unread, fb.seen)
 	}
 }

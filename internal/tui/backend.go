@@ -36,4 +36,11 @@ type Backend interface {
 	Models(ctx context.Context, id string, fresh bool) (daemon.ModelsJSON, error)
 	// SetModel chooses ref for op and returns the updated view.
 	SetModel(ctx context.Context, id, op, ref string) (daemon.ModelsJSON, error)
+	// Companion runs one /companion line and returns its text.
+	Companion(ctx context.Context, args []string) (string, error)
+	// Proposals lists the companion's open proposals, newest first.
+	Proposals(ctx context.Context) ([]daemon.ProposalJSON, error)
+	// AnswerProposal presses one of a proposal's buttons and returns the
+	// line the daemon answers with.
+	AnswerProposal(ctx context.Context, id int64, choice string) (string, error)
 }

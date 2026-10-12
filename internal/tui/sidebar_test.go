@@ -272,3 +272,37 @@ func TestTheDefaultFilterShowsTheCompanionSession(t *testing.T) {
 		t.Fatalf("default rows = %q, want the idle companion session", got)
 	}
 }
+
+func TestTheCompanionSessionIsPinnedFirst(t *testing.T) {
+	c := seed(
+		daemon.SessionJSON{ID: "c1", Title: "chat", Workspace: "/a", Source: "chat"},
+		daemon.SessionJSON{ID: "sp", Title: "spore", Source: "companion"},
+	)
+	rs := c.rows(false, "", "")
+	if len(rs) < 2 || rs[0].id != "sp" || !rs[0].pin {
+		t.Fatalf("first row = %+v, want the companion pinned", rs[0])
+	}
+	if rs[1].key != folderKey {
+		t.Fatalf("second row = %+v, want the jobs folder", rs[1])
+	}
+	for _, r := range rs[1:] {
+		if r.id == "sp" {
+			t.Fatal("the companion session is listed twice")
+		}
+	}
+	c.get("sp").info.Unread = true
+	out := ansi.Strip(renderSidebar(c, c.rows(false, "", ""), "", "", sidebarWidth, 10))
+	first := strings.Split(out, "\n")[0]
+	if !strings.Contains(first, "◆ spore") || !strings.Contains(first, "new") {
+		t.Fatalf("first line = %q, want the pinned row with an unread badge", first)
+	}
+	if w := ansi.StringWidth(first); w > sidebarWidth {
+		t.Fatalf("pinned row is %d cells wide in a %d-cell sidebar", w, sidebarWidth)
+	}
+	// A filter that does not match it hides it like any other session.
+	for _, r := range c.rows(false, "chat", "") {
+		if r.pin {
+			t.Fatalf("filter 'chat' still shows the pinned row: %+v", r)
+		}
+	}
+}
