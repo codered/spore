@@ -209,3 +209,30 @@ func TestSecureHeaders(t *testing.T) {
 		}
 	}
 }
+
+// readAsset returns one embedded web file, as the other web tests read it.
+func readAsset(t *testing.T, name string) string {
+	t.Helper()
+	b, err := web.FS.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// The companion's web surfaces are wired: the bar, its routes and the
+// /companion command.
+func TestCompanionWebIsWired(t *testing.T) {
+	js := readAsset(t, "app.js")
+	for _, want := range []string{
+		`"/api/companion/proposals"`, `"/api/companion/proposals/{id}"`, `"/api/companion/command"`,
+		"function renderProposals", `"/companion"`, `s.source === "companion"`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("app.js is missing %s", want)
+		}
+	}
+	if html := readAsset(t, "index.html"); !strings.Contains(html, `id="proposals"`) {
+		t.Error(`index.html has no id="proposals" slot`)
+	}
+}
