@@ -163,6 +163,9 @@ func (m *Model) approvalHints() []string {
 	if ev.Pattern != "" {
 		parts = append(parts, hint("p", "propose"))
 	}
+	if m.proposalOpen() {
+		parts = append(parts, styMuted.Render("proposal after the approval"))
+	}
 	if id := m.nextBlockedID(); id != "" {
 		parts = append(parts, hint("b", "next blocked ("+short(id)+")"))
 	}
@@ -212,6 +215,9 @@ func (m *Model) keyHints(room int) string {
 	case modeInsert:
 		if m.waiting() {
 			parts = append(parts, hint("alt+y/n/s/p", "answer"))
+		}
+		if !m.waiting() && m.proposalOpen() {
+			parts = append(parts, hint("alt+y/n/x", "proposal"))
 		}
 		parts = append(parts, hint("enter", "send"), hint("ctrl+j", "newline"))
 		if m.cache.State(m.selected) != daemon.SessionIdle {
@@ -266,6 +272,9 @@ func (m *Model) normalHints() []string {
 		return []string{hint("tab", "chat"), hint("j/k", "session"), hint("enter", "open"), hint("i", "type"), hint("n", "new"), hint("?", "help")}
 	}
 	var parts []string
+	if m.proposalOpen() {
+		parts = append(parts, hint("alt+y/n/x", "proposal"))
+	}
 	if m.sidebarOn() {
 		parts = append(parts, hint("tab", "sessions"))
 	}

@@ -51,7 +51,7 @@ func (m *Model) sync() {
 	}
 	m.vp.Width = w
 	// One row inside the pane is the session's facts.
-	m.vp.Height = max(1, m.paneHeight()-1-lipgloss.Height(m.inputView())-m.draftLineHeight())
+	m.vp.Height = max(1, m.paneHeight()-1-lipgloss.Height(m.inputView())-m.draftLineHeight()-m.proposalHeight())
 
 	// The viewport measures every line it is given, so it gets new content
 	// only when the transcript changes or the working line comes or goes.
@@ -207,7 +207,11 @@ func (m *Model) mainView() string {
 	if card := m.approvalCard(m.vp.Width, m.vp.Height); card != "" {
 		vpView = placeOver(faint(vpView), card, m.vp.Width)
 	}
-	parts := []string{clip(m.sessionFacts(), m.mainWidth()), vpView, m.inputView()}
+	parts := []string{clip(m.sessionFacts(), m.mainWidth()), vpView}
+	if pv := m.proposalView(); pv != "" {
+		parts = append(parts, pv)
+	}
+	parts = append(parts, m.inputView())
 	if dl := m.draftLine(); dl != "" {
 		parts = append(parts, dl)
 	}
@@ -421,6 +425,10 @@ func helpText() string {
 		"  change the policy past this call. The draft is kept either way.",
 		"  n answers the approval, not \"new session\", until it is answered",
 		"",
+		styKey.Render("COMPANION") + "  (in the spore session, while a proposal shows)",
+		"  alt+y watch it · alt+n not now · alt+x never · an approval waiting answers first",
+		"  /companion [status | interests | outreach | pause [dur] | resume | answer <id> yes|not-now|never]",
+		"",
 		styKey.Render("INSERT"),
 		"  enter send · ctrl+j newline · ↑↓ history · esc stop the turn (or the sub-agent)",
 		"  esc esc pick a previous prompt · ctrl+o normal mode (alt+esc too, but not on Windows)",
@@ -431,7 +439,7 @@ func helpText() string {
 		"  jobs: enter lists a job's runs · runs: enter shows a run's output · o opens the run in the chat",
 		"",
 		styKey.Render("COMMANDS"),
-		"  :new [dir]  :sessions [all]  :clear  :compact  :context  :usage  :skills  :agents  :q",
+		"  :new [dir]  :sessions [all]  :clear  :compact  :context  :companion  :usage  :skills  :agents  :q",
 		"",
 		styMuted.Render("any key closes this"),
 	}, "\n")

@@ -69,6 +69,9 @@ var (
 			Padding(0, 1)
 	styInputIdle = styInputBox.BorderForeground(colMuted)
 
+	// styProposal frames the companion's open proposal above the input.
+	styProposal = styInputBox
+
 	styApprovalTitle = lipgloss.NewStyle().Foreground(colWarn).Bold(true)
 
 	// styApprovalCard frames the approval drawn over the transcript.
