@@ -255,6 +255,18 @@ func TestSlashCompanionRepliesQuietlyWithoutATurn(t *testing.T) {
 	}
 }
 
+func TestSlashCompanionIsForCompanionUsersOnly(t *testing.T) {
+	_, f, _, _, props := companionBridge(t, config.CompanionDiscordThread)
+	f.deliver(Inbound{MessageID: "m1", UserID: "V", GuildID: "G", ChannelID: "C1", Content: "/companion pause 2h"})
+	waitFor(t, func() bool { return len(f.sentTo("C1")) > 0 })
+	if got := f.sentTo("C1")[0].Message; !strings.Contains(got.Content, "only the companion's users") || !got.Quiet {
+		t.Fatalf("reply = %+v", got)
+	}
+	if a := props.commandArgs(); len(a) != 0 {
+		t.Fatalf("a non-companion user ran %q", a)
+	}
+}
+
 // Text the model wrote must never ping: the anchor, every outreach and
 // every note go out with no mentions allowed.
 func TestCompanionSendsAreQuiet(t *testing.T) {

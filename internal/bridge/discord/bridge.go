@@ -90,6 +90,9 @@ type Bridge struct {
 	proposals ProposalAnswerer
 	commands  CompanionCommander
 
+	// companionUsers may run /companion; empty means anyone admitted here.
+	companionUsers map[string]struct{}
+
 	// details holds recent turns' tool transcripts for the "show details"
 	// button. It lives here, not on the renderer, because the press arrives
 	// after the renderer's goroutine has ended with its turn.
@@ -162,20 +165,30 @@ func New(o Options) (*Bridge, error) {
 	if o.CompanionOn && o.Companion.Mode == config.CompanionDiscordThread && o.Companion.ChannelID != "" {
 		admit = admit.WithCompanion(o.Companion.ChannelID, o.Companion.UserIDs)
 	}
+	var companionUsers map[string]struct{}
+	if o.CompanionOn {
+		companionUsers = make(map[string]struct{}, len(o.Companion.UserIDs))
+		for _, u := range o.Companion.UserIDs {
+			if u != "" {
+				companionUsers[u] = struct{}{}
+			}
+		}
+	}
 	return &Bridge{
-		cfg:       o.Cfg,
-		admit:     admit,
-		client:    o.Client,
-		turns:     o.Turns,
-		sessions:  o.Sessions,
-		store:     o.Store,
-		answer:    newAnswerer(o.Broker, o.Guard),
-		throttle:  throttle,
-		showCost:  o.ShowCost,
-		models:    o.Models,
-		proposals: o.Proposals,
-		commands:  o.Commands,
-		details:   newDetails(),
+		companionUsers: companionUsers,
+		cfg:            o.Cfg,
+		admit:          admit,
+		client:         o.Client,
+		turns:          o.Turns,
+		sessions:       o.Sessions,
+		store:          o.Store,
+		answer:         newAnswerer(o.Broker, o.Guard),
+		throttle:       throttle,
+		showCost:       o.ShowCost,
+		models:         o.Models,
+		proposals:      o.Proposals,
+		commands:       o.Commands,
+		details:        newDetails(),
 	}, nil
 }
 
@@ -370,6 +383,14 @@ const companionReplyLimit = 1900
 // is who may talk here: admission has already run. It opens no thread
 // and no session.
 func (b *Bridge) handleCompanion(in Inbound, args []string) {
+	if len(b.companionUsers) > 0 {
+		if _, ok := b.companionUsers[in.UserID]; !ok {
+			if _, err := b.client.Send(b.ctx, in.ChannelID, Message{Content: "only the companion's users can run /companion", Quiet: true}); err != nil {
+				slog.Warn("discord /companion reply failed", "err", err)
+			}
+			return
+		}
+	}
 	text := "the companion is not enabled"
 	if b.commands != nil {
 		out, err := b.commands.CompanionCommand(b.ctx, args)

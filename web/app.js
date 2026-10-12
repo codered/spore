@@ -298,19 +298,19 @@ function apply(ev) {
         S.head.ctx = (ev.tokens_in || 0) + (ev.tokens_cache_read || 0) + (ev.tokens_cache_write || 0);
         S.head.cost += ev.cost_usd || 0;
       }
-      reloadSoon();
+      if (isOpen) markCompanionSeen(r, id).then(reloadSoon); else reloadSoon();
       break;
     case "stopped":
       r.working = false;
       dropApprovals(r, (a) => !a.origin_session);
       if (isOpen) { endLive(); addNote("stopped"); setStatus(""); }
-      reloadSoon();
+      if (isOpen) markCompanionSeen(r, id).then(reloadSoon); else reloadSoon();
       break;
     case "error":
       r.working = false;
       dropApprovals(r, (a) => !a.origin_session);
       if (isOpen) { endLive(); addLine("msg error", "turn failed: " + ev.error); }
-      reloadSoon();
+      if (isOpen) markCompanionSeen(r, id).then(reloadSoon); else reloadSoon();
       break;
     case "approval":
       if (!r.approvals.some((a) => a.pending_id === ev.pending_id)) r.approvals.push(ev);
@@ -331,7 +331,7 @@ function apply(ev) {
         // proposals may have changed, and the note has been seen.
         if (r.source === "companion") {
           loadProposals();
-          api("POST", "/api/sessions/{id}/seen", { id }).catch(() => {});
+          markCompanionSeen(r, id);
         }
       } else if (r.source === "companion") {
         r.unread = true;
@@ -818,6 +818,13 @@ async function answer(a, allow, scope, card) {
 function companionOpen() {
   const r = S.open && S.sessions.get(S.open);
   return !!r && r.source === "companion";
+}
+
+// markCompanionSeen tells the daemon the open companion session has been
+// read, so a turn the user just watched does not come back bold.
+function markCompanionSeen(r, id) {
+  if (r.source !== "companion") return Promise.resolve();
+  return api("POST", "/api/sessions/{id}/seen", { id }).catch(() => {});
 }
 
 // loadProposals fetches the open proposals for the companion session; any

@@ -226,7 +226,7 @@ func TestCompanionWebIsWired(t *testing.T) {
 	js := readAsset(t, "app.js")
 	for _, want := range []string{
 		`"/api/companion/proposals"`, `"/api/companion/proposals/{id}"`, `"/api/companion/command"`,
-		"function renderProposals", `"/companion"`, `s.source === "companion"`,
+		"function renderProposals", "function markCompanionSeen", `"/companion"`, `s.source === "companion"`,
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("app.js is missing %s", want)
