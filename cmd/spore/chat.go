@@ -76,6 +76,14 @@ func runPlainSlash(ctx context.Context, c *client, sessionID, text string, showC
 	if text == "/model" || strings.HasPrefix(text, "/model ") {
 		return true, runModelCommand(ctx, c, sessionID, strings.Fields(text)[1:], out)
 	}
+	if text == "/companion" || strings.HasPrefix(text, "/companion ") {
+		report, err := c.companionCommand(ctx, strings.Fields(text)[1:])
+		if err != nil {
+			return true, err
+		}
+		_, err = fmt.Fprint(out, report)
+		return true, err
+	}
 	switch text {
 	case "/usage":
 		u, err := c.usage(ctx, sessionID)

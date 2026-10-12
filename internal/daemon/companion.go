@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/codered/spore/internal/companion"
@@ -249,4 +250,101 @@ func (s *Server) handleCompanionStatus(w http.ResponseWriter, r *http.Request) {
 		out.LastReflection = &st.LastReflection
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// ProposalJSON is one open proposal in GET /api/companion/proposals.
+type ProposalJSON struct {
+	ID          int64     `json:"id"`
+	Text        string    `json:"text"`
+	SentAt      time.Time `json:"sent_at"`
+	InterestKey string    `json:"interest_key"`
+}
+
+// OpenProposals lists the proposals a press can still answer, newest first.
+// The TUI and web draw their proposal bar from it.
+func (s *Server) OpenProposals(ctx context.Context) ([]ProposalJSON, error) {
+	if s.companion == nil {
+		return nil, errCompanionOff
+	}
+	rows, err := s.store.OpenProposals(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ProposalJSON, 0, len(rows))
+	for _, o := range rows {
+		p := ProposalJSON{ID: o.ID, Text: o.Text, SentAt: o.SentAt}
+		in, ok, err := s.store.InterestByID(ctx, o.InterestID)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			p.InterestKey = in.Key
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func (s *Server) handleProposals(w http.ResponseWriter, r *http.Request) {
+	list, err := s.OpenProposals(r.Context())
+	switch {
+	case errors.Is(err, errCompanionOff):
+		writeError(w, http.StatusServiceUnavailable, "%v", err)
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "%v", err)
+	default:
+		writeJSON(w, http.StatusOK, list)
+	}
+}
+
+// CompanionCommand runs one /companion line and returns its text, for every
+// chat surface. answer goes through AnswerProposal so its note lands in the
+// companion session as a button press's does; check runs only from the
+// terminal, since it can take a model call's time and spends budget.
+func (s *Server) CompanionCommand(ctx context.Context, args []string) (string, error) {
+	if s.companion == nil {
+		return "", errCompanionOff
+	}
+	if len(args) > 0 {
+		switch args[0] {
+		case "check":
+			return "", fmt.Errorf("%w: check runs from the terminal: spore companion check", companion.ErrUsage)
+		case "answer":
+			if len(args) != 3 {
+				return "", fmt.Errorf("%w: answer <id> yes|not-now|never", companion.ErrUsage)
+			}
+			id, err := strconv.ParseInt(args[1], 10, 64)
+			if err != nil {
+				return "", fmt.Errorf("%w: outreach id %q must be a number", companion.ErrUsage, args[1])
+			}
+			return s.AnswerProposal(ctx, id, args[2])
+		}
+	}
+	var b strings.Builder
+	if err := companion.Run(ctx, &b, s.companion, args); err != nil {
+		return "", err
+	}
+	return b.String(), nil
+}
+
+func (s *Server) handleCompanionCommand(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Args []string `json:"args"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "decode body: %v", err)
+		return
+	}
+	text, err := s.CompanionCommand(r.Context(), body.Args)
+	switch {
+	case errors.Is(err, errCompanionOff):
+		writeError(w, http.StatusServiceUnavailable, "%v", err)
+	case errors.Is(err, companion.ErrNotProposal):
+		writeError(w, http.StatusConflict, "%v", err)
+	case err != nil:
+		// Usage errors and a bad choice, as the proposal route answers them.
+		writeError(w, http.StatusBadRequest, "%v", err)
+	default:
+		writeJSON(w, http.StatusOK, map[string]string{"text": text})
+	}
 }

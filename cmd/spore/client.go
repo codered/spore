@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -328,4 +329,33 @@ func (c *client) transcript(ctx context.Context, sessionID string) (daemon.Trans
 	var out daemon.TranscriptJSON
 	err := c.do(ctx, "GET", "/api/sessions/"+sessionID, nil, &out)
 	return out, err
+}
+
+// companionCommand runs one /companion line in the daemon and returns its
+// text. The daemon reads no args as status.
+func (c *client) companionCommand(ctx context.Context, args []string) (string, error) {
+	if args == nil {
+		args = []string{}
+	}
+	var out struct {
+		Text string `json:"text"`
+	}
+	err := c.do(ctx, "POST", "/api/companion/command", map[string]any{"args": args}, &out)
+	return out.Text, err
+}
+
+// companionProposals lists the companion's open proposals, newest first.
+func (c *client) companionProposals(ctx context.Context) ([]daemon.ProposalJSON, error) {
+	var out []daemon.ProposalJSON
+	err := c.do(ctx, "GET", "/api/companion/proposals", nil, &out)
+	return out, err
+}
+
+// answerProposal presses one of a proposal's buttons.
+func (c *client) answerProposal(ctx context.Context, id int64, choice string) (string, error) {
+	var out struct {
+		Message string `json:"message"`
+	}
+	err := c.do(ctx, "POST", "/api/companion/proposals/"+strconv.FormatInt(id, 10), map[string]string{"choice": choice}, &out)
+	return out.Message, err
 }
