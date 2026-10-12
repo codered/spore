@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/codered/spore/internal/agent"
@@ -139,7 +140,12 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 			if pc.BaseURL == "" {
 				return nil, agentParts{}, fmt.Errorf("provider %q: base_url is required for kind %q", name, pc.Kind)
 			}
-			reg.Register(name, openaicompat.New(pc.BaseURL, pc.APIKey, nil), price)
+			c := openaicompat.New(pc.BaseURL, pc.APIKey, nil)
+			if pc.CacheControlModels != "" {
+				// config.Load has compiled it already.
+				c.WithCacheControl(regexp.MustCompile(pc.CacheControlModels))
+			}
+			reg.Register(name, c, price)
 		default:
 			return nil, agentParts{}, fmt.Errorf("provider %q: unknown kind %q (want anthropic or openai)", name, pc.Kind)
 		}

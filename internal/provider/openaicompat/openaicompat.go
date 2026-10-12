@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -23,6 +24,9 @@ type Client struct {
 	apiKey  string
 	hc      *http.Client
 	stall   time.Duration // httpstream.StallTimeout; shorter in tests
+	// cacheModels names the models that get Anthropic-style cache_control
+	// markers. Nil sends none: a plain OpenAI endpoint has no use for them.
+	cacheModels *regexp.Regexp
 }
 
 func New(baseURL, apiKey string, hc *http.Client) *Client {
@@ -32,7 +36,68 @@ func New(baseURL, apiKey string, hc *http.Client) *Client {
 	return &Client{baseURL: strings.TrimSuffix(baseURL, "/"), apiKey: apiKey, hc: hc, stall: httpstream.StallTimeout}
 }
 
+// WithCacheControl sends Anthropic-style cache_control markers to the models
+// re matches, for a proxy such as LiteLLM that forwards them to Claude. A nil
+// re sends none.
+func (c *Client) WithCacheControl(re *regexp.Regexp) *Client {
+	c.cacheModels = re
+	return c
+}
+
 func (c *Client) Name() string { return "openaicompat" }
+
+// cacheControl is the marker LiteLLM forwards to Anthropic. The 5-minute TTL
+// is the default; see the anthropic adapter for why spore uses no other.
+var cacheControl = map[string]any{"type": "ephemeral"}
+
+// textBuilder gathers a message's text. Unmarked, it is one string, as the
+// wire has always carried it. A breakpoint splits it into text parts with the
+// marker on the part that ends at the breakpoint, so text after it -- the
+// per-turn environment -- stays outside the cached prefix.
+type textBuilder struct {
+	parts  []map[string]any
+	cur    strings.Builder
+	marked bool
+}
+
+func (t *textBuilder) write(s string, mark bool) {
+	t.cur.WriteString(s)
+	if !mark {
+		return
+	}
+	if t.cur.Len() > 0 {
+		t.flush()
+	}
+	// An empty part may not carry a marker; the one before it ends at the
+	// same place.
+	if n := len(t.parts); n > 0 {
+		t.parts[n-1]["cache_control"] = cacheControl
+		t.marked = true
+	}
+}
+
+func (t *textBuilder) flush() {
+	t.parts = append(t.parts, map[string]any{"type": "text", "text": t.cur.String()})
+	t.cur.Reset()
+}
+
+func (t *textBuilder) len() int { return len(t.parts) + t.cur.Len() }
+
+// content is the wire value: a string unless a marker landed.
+func (t *textBuilder) content() any {
+	if !t.marked {
+		var all strings.Builder
+		for _, p := range t.parts {
+			all.WriteString(p["text"].(string))
+		}
+		all.WriteString(t.cur.String())
+		return all.String()
+	}
+	if t.cur.Len() > 0 {
+		t.flush()
+	}
+	return t.parts
+}
 
 // ListModels asks the endpoint which models it serves: GET {base_url}/models
 // in the OpenAI shape, data[].id. llama-server, LiteLLM and Unsloth Studio
@@ -76,23 +141,24 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 
 // toWire flattens spore messages into OpenAI's shape: assistant tool calls
 // become `tool_calls`, and each tool result becomes its own `tool` message.
-func toWire(system []provider.Block, msgs []provider.Message) []map[string]any {
+// With cache set, blocks marked CacheBreak carry cache_control.
+func toWire(cache bool, system []provider.Block, msgs []provider.Message) []map[string]any {
 	out := []map[string]any{}
-	var sys strings.Builder
+	var sys textBuilder
 	for _, b := range system {
-		sys.WriteString(b.Text)
+		sys.write(b.Text, cache && b.CacheBreak)
 	}
-	if sys.Len() > 0 {
-		out = append(out, map[string]any{"role": "system", "content": sys.String()})
+	if sys.len() > 0 {
+		out = append(out, map[string]any{"role": "system", "content": sys.content()})
 	}
 	for _, m := range msgs {
-		var text strings.Builder
+		var text textBuilder
 		var calls []map[string]any
 		lastResult := -1 // index in out of this message's last tool result
 		for _, b := range m.Blocks {
 			switch b.Type {
 			case provider.BlockText:
-				text.WriteString(b.Text)
+				text.write(b.Text, cache && b.CacheBreak)
 			case provider.BlockToolUse:
 				calls = append(calls, map[string]any{
 					"id": b.ID, "type": "function",
@@ -103,13 +169,18 @@ func toWire(system []provider.Block, msgs []provider.Message) []map[string]any {
 				if b.IsError {
 					content = "Error: " + content
 				}
-				out = append(out, map[string]any{
-					"role": "tool", "tool_call_id": b.ID, "content": content,
-				})
+				res := map[string]any{"role": "tool", "tool_call_id": b.ID, "content": content}
+				// Anthropic rejects a marker inside tool_result.content,
+				// where LiteLLM puts a tool message's parts. On the
+				// message, LiteLLM moves it onto the tool_result.
+				if cache && b.CacheBreak {
+					res["cache_control"] = cacheControl
+				}
+				out = append(out, res)
 				lastResult = len(out) - 1
 			}
 		}
-		if text.Len() == 0 && len(calls) == 0 {
+		if text.len() == 0 && len(calls) == 0 {
 			continue
 		}
 		role := string(m.Role)
@@ -121,13 +192,19 @@ func toWire(system []provider.Block, msgs []provider.Message) []map[string]any {
 			// as the user sending something empty, and says so. It joins the
 			// last result instead, the nearest the wire has to the Anthropic
 			// shape, where it sits beside the results in one message.
-			if lastResult >= 0 {
-				out[lastResult]["content"] = out[lastResult]["content"].(string) + text.String()
+			//
+			// A marked result cannot take it: the marker would cache it
+			// with the result, and no later turn reads an entry holding an
+			// old environment. It goes as a user message instead, which
+			// Anthropic merges into the results' turn -- the native shape --
+			// so the empty-message reading above does not arise.
+			if plain, ok := text.content().(string); ok && lastResult >= 0 && out[lastResult]["cache_control"] == nil {
+				out[lastResult]["content"] = out[lastResult]["content"].(string) + plain
 				continue
 			}
 			role = string(provider.RoleUser)
 		}
-		msg := map[string]any{"role": role, "content": text.String()}
+		msg := map[string]any{"role": role, "content": text.content()}
 		if len(calls) > 0 {
 			msg["tool_calls"] = calls
 		}
@@ -141,7 +218,7 @@ func (c *Client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 		"model":          req.Model,
 		"stream":         true,
 		"stream_options": map[string]any{"include_usage": true},
-		"messages":       toWire(req.System, req.Messages),
+		"messages":       toWire(c.cacheModels != nil && c.cacheModels.MatchString(req.Model), req.System, req.Messages),
 	}
 	if req.MaxTokens > 0 {
 		body["max_tokens"] = req.MaxTokens
@@ -195,6 +272,38 @@ func (c *Client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 	return ch, nil
 }
 
+// wireUsage is the usage object as OpenAI and LiteLLM send it. Cache reads
+// arrive as prompt_tokens_details.cached_tokens (OpenAI) or
+// cache_read_input_tokens (LiteLLM's Anthropic passthrough), writes as
+// prompt_tokens_details.cache_write_tokens or cache_creation_input_tokens.
+// prompt_tokens counts both.
+type wireUsage struct {
+	PromptTokens       int `json:"prompt_tokens"`
+	CompletionTokens   int `json:"completion_tokens"`
+	CacheReadTokens    int `json:"cache_read_input_tokens"`
+	CacheCreateTokens  int `json:"cache_creation_input_tokens"`
+	PromptTokenDetails *struct {
+		CachedTokens     int `json:"cached_tokens"`
+		CacheWriteTokens int `json:"cache_write_tokens"`
+	} `json:"prompt_tokens_details"`
+}
+
+// toUsage makes InputTokens the uncached remainder, as provider.Usage
+// defines it, not the prompt size.
+func (w wireUsage) toUsage() provider.Usage {
+	read, write := w.CacheReadTokens, w.CacheCreateTokens
+	if d := w.PromptTokenDetails; d != nil {
+		read = max(read, d.CachedTokens)
+		write = max(write, d.CacheWriteTokens)
+	}
+	return provider.Usage{
+		InputTokens:      max(w.PromptTokens-read-write, 0),
+		OutputTokens:     w.CompletionTokens,
+		CacheReadTokens:  read,
+		CacheWriteTokens: write,
+	}
+}
+
 func parse(rc io.ReadCloser, ch chan<- provider.Event) {
 	defer close(ch)
 	defer func() { _ = rc.Close() }()
@@ -234,10 +343,7 @@ func parse(rc io.ReadCloser, ch chan<- provider.Event) {
 				} `json:"delta"`
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
-			Usage *struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
-			} `json:"usage"`
+			Usage *wireUsage `json:"usage"`
 			Error *struct {
 				Message string `json:"message"`
 				Type    string `json:"type"`
@@ -252,8 +358,7 @@ func parse(rc io.ReadCloser, ch chan<- provider.Event) {
 			return
 		}
 		if chunk.Usage != nil {
-			usage.InputTokens = chunk.Usage.PromptTokens
-			usage.OutputTokens = chunk.Usage.CompletionTokens
+			usage = chunk.Usage.toUsage()
 		}
 		for _, choice := range chunk.Choices {
 			if choice.FinishReason == "length" {

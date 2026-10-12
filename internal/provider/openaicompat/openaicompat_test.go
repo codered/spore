@@ -267,10 +267,10 @@ func TestToWireSendsToolResultAsToolMessage(t *testing.T) {
 }
 
 // Several system blocks become one system message. OpenAI-compatible
-// endpoints have no client-side cache control and no notion of system
-// blocks, so the join is the whole translation.
+// endpoints have no notion of system blocks, and with caching off a
+// breakpoint means nothing, so the join is the whole translation.
 func TestToWireJoinsSystemBlocks(t *testing.T) {
-	out := toWire([]provider.Block{
+	out := toWire(false, []provider.Block{
 		{Type: provider.BlockText, Text: "alpha"},
 		{Type: provider.BlockText, Text: "beta", CacheBreak: true},
 	}, nil)
@@ -297,7 +297,7 @@ func TestToWireJoinsSystemBlocks(t *testing.T) {
 // like you hit send before typing". Nor a tool message without a
 // tool_call_id, which strict backends reject with a 400.
 func TestToWireFoldsTextOnToolMessageIntoTheLastResult(t *testing.T) {
-	out := toWire(nil, []provider.Message{
+	out := toWire(false, nil, []provider.Message{
 		{Role: provider.RoleAssistant, Blocks: []provider.Block{
 			{Type: provider.BlockToolUse, ID: "call_1", Name: "go_run", Input: json.RawMessage(`{}`)},
 			{Type: provider.BlockToolUse, ID: "call_2", Name: "fs_read", Input: json.RawMessage(`{}`)},
@@ -331,7 +331,7 @@ func TestToWireFoldsTextOnToolMessageIntoTheLastResult(t *testing.T) {
 // A tool-role message with text and no result has nothing to join, so the
 // text still goes out, as a user message.
 func TestToWireSendsTextOnAResultlessToolMessageAsUser(t *testing.T) {
-	out := toWire(nil, []provider.Message{
+	out := toWire(false, nil, []provider.Message{
 		{Role: provider.RoleTool, Blocks: []provider.Block{{Type: provider.BlockText, Text: "## Environment"}}},
 	})
 	if len(out) != 1 || out[0]["role"] != "user" || out[0]["content"] != "## Environment" {

@@ -1042,6 +1042,14 @@ price_out = 25.0
 kind     = "openai"             # any OpenAI-compatible endpoint
 base_url = "http://localhost:11434/v1"
 
+[providers.litellm]
+kind     = "openai"
+base_url = "http://localhost:4000/v1"
+api_key  = "${LITELLM_API_KEY}"
+# Prompt caching for Claude behind the proxy: models whose id matches get
+# Anthropic-style cache_control markers. Others get none.
+cache_control_models = "claude|anthropic"
+
 # Call sites: chat, compaction, title, classify, refinement, subagent
 [[route]]
 when  = "compaction|title|classify|refinement"

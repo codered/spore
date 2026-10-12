@@ -956,3 +956,32 @@ func TestValidateTraceLoopbackKeepsRedactFalse(t *testing.T) {
 		t.Error("Validate incorrectly forced redact=true for a loopback trace endpoint")
 	}
 }
+
+func TestLoadValidatesCacheControlModels(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind, models string
+		ok                 bool
+	}{
+		{"openai with a regexp", "openai", "claude|anthropic", true},
+		{"openai unset", "openai", "", true},
+		{"bad regexp", "openai", "claude(", false},
+		{"on an anthropic provider", "anthropic", "claude", false},
+	} {
+		p := write(t, `
+default_model = "p/m"
+
+[providers.p]
+kind = "`+tc.kind+`"
+base_url = "http://127.0.0.1:4000/v1"
+cache_control_models = "`+tc.models+`"
+`)
+		cfg, err := Load(p)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: Load err = %v, want ok %v", tc.name, err, tc.ok)
+			continue
+		}
+		if tc.ok && cfg.Providers["p"].CacheControlModels != tc.models {
+			t.Errorf("%s: CacheControlModels = %q, want %q", tc.name, cfg.Providers["p"].CacheControlModels, tc.models)
+		}
+	}
+}
