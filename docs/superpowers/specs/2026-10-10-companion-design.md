@@ -596,9 +596,11 @@ sections above, these win.
   works with the daemon down, and calls the same `Run`.
 - Clients learn of changes from what already exists: delivering an outreach
   and answering a proposal both publish an event on the companion session's
-  stream. A client refetches `/proposals` when the companion session is
-  opened and on every event for it, so a press on Discord clears the bar
-  elsewhere.
+  stream as a `job_note`. A client refetches `/proposals` when the
+  companion session is opened and on every `job_note` for it -- not on
+  every event, which would refetch per streamed token -- so a press on
+  Discord clears the bar elsewhere. A `job_note` in the companion session
+  also marks it unread unless it is the session on screen.
 - `SessionJSON` already carries `source` and `unread`, and
   `POST /api/sessions/{id}/seen` accepts any session: no daemon change for
   the pin or the badge.
@@ -621,8 +623,10 @@ sections above, these win.
   fall-through to NORMAL (where `n` is new session and `x` cancel agent).
   No confirm step: each answer settles one item and each is reversible
   (`interests undecline`, deleting the watch).
-- **Proposal bar.** Drawn in the approval card's slot only when no approval
-  is pending:
+- **Proposal bar.** Docked between the transcript and the input, only
+  when no approval is pending. It is not overlaid the way the approval
+  card is: a proposal can stay open for days, and an overlay would hide
+  the conversation it belongs to.
 
   ```
   ╭ spore proposes ──────────────────────────────────╮
