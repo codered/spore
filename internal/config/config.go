@@ -264,6 +264,10 @@ type ProviderConfig struct {
 	// true: cheaper and faster is the right default, and an operator should
 	// not have to find a flag to get it.
 	Cache *bool `toml:"cache"`
+	// CacheControlModels, on an openai provider, is a regexp over model ids:
+	// requests to a match carry Anthropic-style cache_control markers, for a
+	// proxy such as LiteLLM that forwards them to Claude. Unset sends none.
+	CacheControlModels string `toml:"cache_control_models"`
 }
 
 // CacheEnabled reports whether to send cache breakpoints. Unset is true.
@@ -570,6 +574,21 @@ var (
 
 // validateMCP rejects a malformed server declaration at load, so a typo is a
 // startup error rather than a server that silently never appears.
+func validateProviders(ps map[string]ProviderConfig) error {
+	for name, p := range ps {
+		if p.CacheControlModels == "" {
+			continue
+		}
+		if p.Kind == "anthropic" {
+			return fmt.Errorf("provider %q: cache_control_models is for openai providers; an anthropic one caches by `cache`", name)
+		}
+		if _, err := regexp.Compile(p.CacheControlModels); err != nil {
+			return fmt.Errorf("provider %q: cache_control_models: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func validateMCP(c MCPConfig) error {
 	seen := map[string]bool{}
 	for i, s := range c.Servers {
@@ -994,6 +1013,9 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	if err := validateMCP(cfg.MCP); err != nil {
+		return nil, err
+	}
+	if err := validateProviders(cfg.Providers); err != nil {
 		return nil, err
 	}
 	if err := cfg.Validate(); err != nil {
