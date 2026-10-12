@@ -191,6 +191,11 @@ func (c *cache) Apply(ev daemon.WireEvent) string {
 		sv.add(kindError, "turn failed: "+ev.Error)
 	case daemon.WireJobNote:
 		sv.add(kindNotice, ev.Text)
+		if sv.info.Source == "companion" {
+			// Outreach: unread until someone opens it; the model clears
+			// it at once when the companion is the session on screen.
+			sv.info.Unread = true
+		}
 	case daemon.WireSession:
 		keep(&sv.info.Title, ev.Title)
 		keep(&sv.info.Workspace, ev.Workspace)

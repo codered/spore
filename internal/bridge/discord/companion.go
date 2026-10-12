@@ -17,6 +17,11 @@ type ProposalAnswerer interface {
 	AnswerProposal(ctx context.Context, outreachID int64, choice string) (string, error)
 }
 
+// CompanionCommander runs a /companion line. The daemon is one.
+type CompanionCommander interface {
+	CompanionCommand(ctx context.Context, args []string) (string, error)
+}
+
 const companionPrefix = "companion|"
 
 // companionCustomID packs a proposal answer into a button's custom id.
@@ -96,7 +101,7 @@ func (c *CompanionChannel) Send(ctx context.Context, sessionID string, o store.O
 	if err != nil {
 		return err
 	}
-	m := Message{Content: o.Text}
+	m := Message{Content: o.Text, Quiet: true}
 	if o.Kind == store.OutreachProposal {
 		m.Buttons = proposalButtons(o.ID)
 	}
@@ -125,7 +130,7 @@ func (c *CompanionChannel) channelFor(ctx context.Context, sessionID string) (st
 		}
 		channelID = dm
 	default:
-		anchor, err := c.b.client.Send(ctx, c.cfg.ChannelID, Message{Content: "spore: things I noticed and want to check with you"})
+		anchor, err := c.b.client.Send(ctx, c.cfg.ChannelID, Message{Content: "spore: things I noticed and want to check with you", Quiet: true})
 		if err != nil {
 			return "", err
 		}

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 )
@@ -179,5 +180,60 @@ func TestIdleSessionsSkipsTheCompanionSession(t *testing.T) {
 	}
 	if len(ids) != 1 || ids[0] != chat {
 		t.Fatalf("idle = %v, want only the chat %s", ids, chat)
+	}
+}
+
+// OpenProposals lists what a button press can still answer, newest first:
+// the test Service.AnswerProposal applies.
+func TestOpenProposals(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+	at := time.Date(2026, 10, 12, 15, 0, 0, 0, time.UTC)
+	interest := func(key, state string) Interest {
+		in, err := st.TouchInterest(ctx, key, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state != InterestObserving {
+			if _, err := st.SetInterestState(ctx, in.ID, InterestObserving, state); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return in
+	}
+	add := func(in Interest, kind string, sent time.Time) int64 {
+		id, err := st.AddOutreach(ctx, Outreach{InterestID: in.ID, Kind: kind, Channel: OutreachChannelTerminal, Text: in.Key, SentAt: sent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	zs := interest("stock:zs", InterestProposed)
+	goTopic := interest("topic:go", InterestProposed)
+	declined := interest("topic:old", InterestDeclined)
+
+	older := add(zs, OutreachProposal, at)
+	newer := add(goTopic, OutreachProposal, at.Add(time.Hour))
+	add(zs, OutreachNudge, at.Add(2*time.Hour))                // not a proposal
+	add(declined, OutreachProposal, at.Add(3*time.Hour))       // its interest is no longer proposed
+	answered := add(zs, OutreachProposal, at.Add(4*time.Hour)) // answered below
+	if _, err := st.ResolveOutreach(ctx, answered, []string{OutcomePending}, OutcomeReplied, "", at.Add(5*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	// unanswered is still open: the user may press the button late.
+	if _, err := st.ResolveOutreach(ctx, older, []string{OutcomePending}, OutcomeUnanswered, "", at.Add(5*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.OpenProposals(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	for _, o := range got {
+		ids = append(ids, o.ID)
+	}
+	if !slices.Equal(ids, []int64{newer, older}) {
+		t.Fatalf("open proposals = %v, want [%d %d]", ids, newer, older)
 	}
 }

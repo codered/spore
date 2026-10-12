@@ -318,6 +318,7 @@ func buildBridge(cfg *config.Config, srv *daemon.Server) (*discord.Bridge, error
 		Companion:   cfg.Companion.Discord,
 		CompanionOn: cfg.Companion.Enabled,
 		Proposals:   srv,
+		Commands:    srv,
 	}
 	// A nil *models.Service stored in the interface would not compare equal
 	// to nil, so the bridge would call into a service that is not there.

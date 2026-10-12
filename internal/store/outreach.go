@@ -150,6 +150,18 @@ func (s *Store) OutreachByOutcome(ctx context.Context, outcomes ...string) ([]Ou
 		strings.Repeat(`, ?`, len(outcomes)-1)+`) ORDER BY id`, args...)
 }
 
+// OpenProposals lists the proposals a button press can still answer, newest
+// first: kind proposal, outcome pending or unanswered, and an interest that
+// is still proposed. Service.AnswerProposal refuses anything else, so a
+// client that lists these never offers a press that fails.
+func (s *Store) OpenProposals(ctx context.Context) ([]Outreach, error) {
+	return s.queryOutreach(ctx, `SELECT `+outreachColumns+` FROM outreach
+		WHERE kind = ? AND outcome IN (?, ?)
+		  AND interest_id IN (SELECT id FROM interests WHERE state = ?)
+		ORDER BY id DESC`,
+		OutreachProposal, OutcomePending, OutcomeUnanswered, InterestProposed)
+}
+
 // NudgeFor returns the nudge that follows up id, if there is one. There is
 // at most one: reflection may nudge a message once.
 func (s *Store) NudgeFor(ctx context.Context, id int64) (Outreach, bool, error) {

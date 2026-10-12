@@ -554,3 +554,155 @@ sections above, these win.
   the next sweep.
 - Known gap: a proposal the user answers in text but never presses stays
   `proposed`. PR 3's follow-ups are the place to raise it again.
+
+## PR 2b decisions (2026-10-12)
+
+Settled with the user before planning PR 2b. Where these differ from the
+sections above, these win.
+
+- **Scope.** The pinned companion row, the proposal bar on the TUI and the
+  web, `/companion` on every chat surface, and one 2a leftover: companion
+  sends to Discord set empty `allowed_mentions`. The other two 2a leftovers
+  (a text-answered proposal stuck in `proposed`, ErrBusy wasting a
+  reflection) stay out.
+- **Proposals are answered from a bar**, in the slot the approval card uses,
+  not from buttons inline in the transcript.
+- **`/companion` runs every subcommand except `check`** -- `status`,
+  `interests`, `interests undecline <key>`, `outreach`, `pause [dur]`,
+  `resume`, `answer <id> yes|not-now|never` -- on every surface, for anyone
+  already admitted there. A model cannot run it: slash commands are taken
+  from the user's text before a turn starts. `check` stays CLI-only.
+- **One formatter.** The subcommands' text is produced by one function in
+  `internal/companion` that both the CLI and the daemon call; clients print
+  the text they get back.
+
+## Design — PR 2b
+
+### Daemon API
+
+- **Open proposal** means: an outreach of kind `proposal`, outcome `pending`
+  or `unanswered`, whose interest is still `proposed` -- the test
+  `Service.AnswerProposal` applies, so a listed proposal is always
+  answerable. `store.OpenProposals` returns them newest first.
+- `GET /api/companion/proposals` → `[{id, text, sent_at, interest_key}]`,
+  newest first; 503 when the companion is off.
+- `POST /api/companion/command {"args": [...]}` → `{"text": "..."}`. Empty
+  args mean `status`. `answer` goes through `Server.AnswerProposal`, so its
+  note still lands in the companion session and its Discord thread; the
+  rest go through `companion.Run(ctx, w, svc, cfg, args)`, which moves out of
+  `cmd/spore/companion.go` with its formatters unchanged. `check` or an
+  unknown subcommand is 400 with a usage line; companion off is 503.
+- The CLI keeps reading the store directly, so `spore companion status`
+  works with the daemon down, and calls the same `Run`.
+- Clients learn of changes from what already exists: delivering an outreach
+  and answering a proposal both publish an event on the companion session's
+  stream as a `job_note`. A client refetches `/proposals` when the
+  companion session is opened and on every `job_note` for it -- not on
+  every event, which would refetch per streamed token -- so a press on
+  Discord clears the bar elsewhere. A `job_note` in the companion session
+  also marks it unread unless it is the session on screen.
+- `SessionJSON` already carries `source` and `unread`, and
+  `POST /api/sessions/{id}/seen` accepts any session: no daemon change for
+  the pin or the badge.
+- Companion Discord sends -- the thread anchor, outreach, notes in the
+  companion thread, and `/companion` replies -- set
+  `allowed_mentions: {parse: []}`. The rest of the bridge sets none either;
+  that wider gap goes to the backlog, not this PR.
+
+### TUI
+
+- **Pinned row.** The companion session is the first sidebar row, above the
+  jobs folder and outside the workspace groups, drawn as `◆ spore`, with an
+  unread badge from `Unread`. Opening it marks it seen through the path job
+  runs use (`markSeen`), widened to `companion`.
+- **Keys.** `alt+y` / `alt+n` / `alt+x` answer the newest open proposal --
+  Yes / Not now / Never -- at once, in INSERT and in NORMAL, while the
+  companion session is selected and a proposal is open. A pending tool
+  approval in that session wins: `alt+y`/`alt+n` answer it as today and
+  `alt+x` does nothing. In every other case alt+key keeps today's
+  fall-through to NORMAL (where `n` is new session and `x` cancel agent).
+  No confirm step: each answer settles one item and each is reversible
+  (`interests undecline`, deleting the watch).
+- **Proposal bar.** Docked between the transcript and the input, only
+  when no approval is pending. It is not overlaid the way the approval
+  card is: a proposal can stay open for days, and an overlay would hide
+  the conversation it belongs to.
+
+  ```
+  ╭ spore proposes ──────────────────────────────────╮
+  │ Watch ZS: check the daily close at 9:00 weekdays │
+  │ alt+y yes   alt+n not now   alt+x never   (+1)   │
+  ╰──────────────────────────────────────────────────╯
+  ```
+
+  The text is the outreach text through `visible()` (it is model output),
+  clipped to two lines; `(+N)` counts the other open proposals. The header
+  and status line show `alt+y/n/x proposal`, or "approval first" while an
+  approval is pending. After an answer the posted note appears in the
+  transcript and the refetch clears the bar; an error goes to the status
+  line.
+- `/companion …` and `:companion …` call a new `Backend.Companion(ctx,
+  args)` and show the text as `/usage` output is shown. The `?` help gains
+  one line.
+
+### Web
+
+- **Pin.** The companion session renders first in the session list, in its
+  own `spore` group above the workspaces. `unread` counts `companion` as
+  well as `job`; opening the session posts `/seen`.
+- **Proposal bar.** In the `#approvals` slot above the composer, while the
+  companion session is open, a proposal is open and no approval is pending:
+  the text as a text node, Yes / Not now / Never buttons, and "+N more".
+  Styles go through classes or `el.style` (the CSP forbids style
+  attributes). A click posts `/api/companion/proposals/{id}`; a failure is a
+  `msg error` line.
+- **`/companion …`** is a prefix match in `slashCommands` (today they match
+  whole strings); the returned text renders as a preformatted note. The help
+  table gains a row.
+
+### Discord
+
+- In `handle`, beside `/usage` and `/model`: `/companion` or a
+  `/companion ` prefix calls `CompanionCommand(ctx, args)` on the bridge's
+  daemon interface and replies in the same channel or thread, with empty
+  `allowed_mentions`, then settles. Admission has already run, so who may
+  use it follows from who may talk there, the companion thread included.
+
+### Plain chat
+
+- `runPlainSlash` gains `/companion …` through the same client call. Plain
+  chat has no bar; `answer` is how a proposal is answered there.
+
+### Testing
+
+- store / companion: `OpenProposals` (pending and unanswered listed;
+  answered, non-proposal and interest-no-longer-proposed excluded); `Run`
+  output per subcommand equals the old CLI's; the CLI tests move onto `Run`.
+- daemon: `GET /proposals`; `POST /command` (`answer` posts the note,
+  `check` and unknown are 400, companion off is 503); `/seen` on a
+  companion session clears `unread`.
+- TUI: pinned row order; unread badge and clearing; goldens for the bar
+  alone and with "approval first"; `alt+y` answers the proposal without an
+  approval and the approval with one; `alt+x` with no open proposal keeps
+  today's fall-through.
+- Discord (fake client): `/companion status` replies; that reply, outreach
+  and the anchor carry empty `allowed_mentions`.
+- Web has no JS test suite; the bar and pin are checked in the manual gate
+  with Playwright.
+- Manual gate: an isolated daemon on :7788 with the real model;
+  `spore companion check --promote <key> --force` to get a proposal; answer
+  one with `alt+y` in the TUI and one from the web bar; `/companion status`
+  on both; a press on one surface clears the other's bar. Discord is checked
+  live by the user only -- never a second daemon on the bot token.
+
+## As built — PR 2b
+
+- `Bridge.Deliver` sends every note quiet, not only the companion's: it
+  cannot tell which session is the companion's, and a note never needs to
+  ping. Button answers (`Respond`) are quiet too.
+- The TUI bar is docked above the input and shrinks the transcript by its
+  height; the approval card is still drawn over the transcript.
+- Clients refetch proposals on open and on `job_note` in the companion
+  session; a `job_note` there also marks it unread unless it is on screen.
+- The TUI no longer shows a just-opened session as unread when its
+  transcript arrives after the mark-seen call.

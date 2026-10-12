@@ -85,6 +85,10 @@ type Message struct {
 	Embeds  []Embed
 	Buttons []Button
 	Selects []Select
+	// Quiet sends with no mentions allowed: an @everyone, role or user
+	// mention in Content renders as text but pings nobody. Set it on any
+	// message whose text a model or the companion wrote.
+	Quiet bool
 }
 
 // embedDescriptionLimit is Discord's documented per-embed description cap.
@@ -274,11 +278,15 @@ func (c *gatewayClient) Close() error {
 // Send posts a new message and returns its id, which callers hold onto for
 // later Edit or CreateThread calls.
 func (c *gatewayClient) Send(ctx context.Context, channelID string, m Message) (string, error) {
-	msg, err := c.sess.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+	send := &discordgo.MessageSend{
 		Content:    m.Content,
 		Embeds:     embedsFor(m.Embeds),
 		Components: componentsFor(m.Buttons, m.Selects),
-	}, discordgo.WithContext(ctx))
+	}
+	if m.Quiet {
+		send.AllowedMentions = noMentions()
+	}
+	msg, err := c.sess.ChannelMessageSendComplex(channelID, send, discordgo.WithContext(ctx))
 	if err != nil {
 		return "", fmt.Errorf("send discord message: %w", err)
 	}
@@ -373,14 +381,21 @@ func (c *gatewayClient) Respond(ctx context.Context, interactionID, token, conte
 	err := c.sess.InteractionRespond(&discordgo.Interaction{ID: interactionID, Token: token}, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content: content,
-			Flags:   discordgo.MessageFlagsEphemeral,
+			Content:         content,
+			Flags:           discordgo.MessageFlagsEphemeral,
+			AllowedMentions: noMentions(),
 		},
 	}, discordgo.WithContext(ctx))
 	if err != nil {
 		return fmt.Errorf("respond to discord interaction: %w", err)
 	}
 	return nil
+}
+
+// noMentions allows no mention to ping. An empty Parse list, not a nil
+// one, is what tells Discord "none": nil leaves its default, which pings.
+func noMentions() *discordgo.MessageAllowedMentions {
+	return &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}}
 }
 
 // embedsFor translates the bridge's Embed to discordgo's, truncating

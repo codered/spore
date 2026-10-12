@@ -29,6 +29,8 @@ type row struct {
 	// key is set on the rows the cursor can rest on that are not sessions:
 	// folderKey on the jobs folder, jobKey(id) on a job's label.
 	key string
+	// pin marks the companion session's row, drawn first as "◆ spore".
+	pin bool
 }
 
 // folderKey is the jobs folder row's cursor key.
@@ -59,7 +61,7 @@ const idleShownPerWorkspace = 10
 // the sidebar has hidden.
 func (c *cache) rows(showAll bool, filter, selected string) []row {
 	kids := map[string][]*sessionView{}
-	var roots, jobRuns []*sessionView
+	var roots, jobRuns, pinned []*sessionView
 	for _, sv := range c.sessions {
 		if sv.info.ID == "" {
 			continue
@@ -71,6 +73,10 @@ func (c *cache) rows(showAll bool, filter, selected string) []row {
 			// A job run lives in the jobs folder, not under its workspace:
 			// its workspace is a throwaway session directory.
 			jobRuns = append(jobRuns, sv)
+		case sv.info.Source == "companion":
+			// The companion is where spore reaches out unprompted, so it
+			// sits above everything instead of under a workspace.
+			pinned = append(pinned, sv)
 		default:
 			roots = append(roots, sv)
 		}
@@ -85,6 +91,7 @@ func (c *cache) rows(showAll bool, filter, selected string) []row {
 	}
 	byRecent(roots)
 	byRecent(jobRuns)
+	byRecent(pinned)
 	for k := range kids {
 		byRecent(kids[k])
 	}
@@ -133,6 +140,14 @@ func (c *cache) rows(showAll bool, filter, selected string) []row {
 				addKids(k, depth+1, all)
 			}
 		}
+	}
+
+	for _, p := range pinned {
+		if !subtree(p) {
+			continue
+		}
+		out = append(out, row{id: p.info.ID, pin: true})
+		addKids(p, 1, filter == "" && visible(p))
 	}
 
 	out = append(out, c.jobFolder(jobRuns, filter, selected, visible, subtree, addKids)...)
@@ -230,6 +245,17 @@ func sessionRow(c *cache, r row, width int, selected bool) string {
 		glyph = styAccent.Render("●")
 	case daemon.SessionBlocked:
 		glyph = styWarn.Render("◐")
+	}
+	if r.pin {
+		line := glyph + " " + styAccent.Bold(true).Render("◆ spore")
+		if sv.info.Unread {
+			line += " " + styBadge.Render(" new ")
+		}
+		line = clip(line, width)
+		if selected {
+			return fill(line, width, colFillSel)
+		}
+		return line
 	}
 	lead := ""
 	if r.depth > 0 {

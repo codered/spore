@@ -149,6 +149,18 @@ func (b tuiBackend) SetModel(ctx context.Context, id, op, ref string) (daemon.Mo
 	return b.c.setModel(ctx, id, op, ref)
 }
 
+func (b tuiBackend) Companion(ctx context.Context, args []string) (string, error) {
+	return b.c.companionCommand(ctx, args)
+}
+
+func (b tuiBackend) Proposals(ctx context.Context) ([]daemon.ProposalJSON, error) {
+	return b.c.companionProposals(ctx)
+}
+
+func (b tuiBackend) AnswerProposal(ctx context.Context, id int64, choice string) (string, error) {
+	return b.c.answerProposal(ctx, id, choice)
+}
+
 func (b tuiBackend) Skills(ctx context.Context, sessionID string) (daemon.SkillsJSON, error) {
 	var out daemon.SkillsJSON
 	err := b.c.do(ctx, "GET", "/api/sessions/"+sessionID+"/skills?body=1", nil, &out)

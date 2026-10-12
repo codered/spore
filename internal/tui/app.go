@@ -122,7 +122,7 @@ type Options struct {
 }
 
 // commandNames are the `:` commands, for completion.
-var commandNames = []string{"agents", "chat", "clear", "compact", "context", "delete", "jobs", "model", "new", "q", "quit", "refine", "refinements", "sessions", "skills", "usage"}
+var commandNames = []string{"agents", "chat", "clear", "compact", "companion", "context", "delete", "jobs", "model", "new", "q", "quit", "refine", "refinements", "sessions", "skills", "usage"}
 
 // confirmState is the modal on screen. yes and alt run on the model's
 // goroutine when the key is pressed, so they may change the model before
@@ -210,6 +210,10 @@ type Model struct {
 	// flash is a one-line report in the status bar, such as what a delete
 	// did; the next key clears it.
 	flash string
+
+	// proposals are the companion's open proposals, newest first, while
+	// the companion session is selected; nil anywhere else.
+	proposals []daemon.ProposalJSON
 
 	history []string
 	histIdx int
@@ -346,6 +350,12 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 				seen = m.markSeen(id)
 			}
 			return tea.Batch(seen, m.drainQueue(id))
+		case daemon.WireJobNote:
+			// Outreach arrives and answers are posted as notes, so a note
+			// is when the open proposals may have changed.
+			if id == m.selected {
+				return tea.Batch(m.markSeen(id), m.fetchProposals(id))
+			}
 		}
 		return nil
 
@@ -378,6 +388,9 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 				return m.selectSession(ids[0])
 			}
 		}
+		if m.proposals == nil {
+			return m.fetchProposals(m.selected)
+		}
 		return nil
 
 	case transcriptMsg:
@@ -386,11 +399,39 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		m.cache.SetTranscript(msg.t)
+		// The transcript can answer before the /seen it raced with: the
+		// session on screen has been seen, whatever the daemon said then.
+		if msg.t.Session.ID == m.selected {
+			m.cache.get(m.selected).info.Unread = false
+		}
 		return nil
 
 	case modelsMsg:
 		m.modelsLoaded(msg)
 		return nil
+
+	case proposalsMsg:
+		if msg.session != m.selected {
+			return nil
+		}
+		// An error means the companion is off or the daemon refused:
+		// there is nothing to answer, so there is no bar.
+		m.proposals = nil
+		if msg.err == nil {
+			m.proposals = msg.list
+		}
+		return nil
+
+	case proposalAnsweredMsg:
+		if msg.err != nil {
+			m.flash = "proposal: " + msg.err.Error()
+		} else {
+			m.flash = oneLine(msg.text)
+		}
+		if msg.session != m.selected {
+			return nil
+		}
+		return m.fetchProposals(msg.session)
 
 	case noticeMsg:
 		kind := kindNotice
@@ -527,6 +568,13 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 					}
 					return nil
 				}
+			}
+		}
+		// alt+y/n/x answer the companion's open proposal; an approval
+		// above has already had its turn at alt+y/n.
+		if m.table == nil {
+			if cmd, ok := m.proposalKey(string(k.Runes)); ok {
+				return cmd
 			}
 		}
 		m.mode = modeNormal
@@ -903,6 +951,8 @@ func (m *Model) command(line string) tea.Cmd {
 		return m.openModels()
 	case "refine":
 		return m.refine(args)
+	case "companion":
+		return m.companion(args)
 	case "memory":
 		// The one view that takes arguments: `:memory tabs` searches.
 		return m.openView(memoryRes{query: strings.Join(args, " ")})
@@ -926,6 +976,8 @@ func (m *Model) slashLine(line string) tea.Cmd {
 		return m.slash(fields[0])
 	case "refine":
 		return m.refine(fields[1:])
+	case "companion":
+		return m.companion(fields[1:])
 	}
 	return m.command(line)
 }
@@ -1404,19 +1456,20 @@ func (m *Model) selectSession(id string) tea.Cmd {
 		// A run lives in the jobs folder; showing one opens it.
 		m.cache.jobsOpen = true
 	}
-	seen := m.markSeen(id)
+	m.proposals = nil
+	cmds := []tea.Cmd{m.markSeen(id), m.fetchProposals(id)}
 	if !m.cache.get(id).loaded {
-		return tea.Batch(seen, m.loadTranscript(id))
+		cmds = append(cmds, m.loadTranscript(id))
 	}
-	return seen
+	return tea.Batch(cmds...)
 }
 
-// markSeen clears a job run's unread mark here and on the daemon, so the
-// jobs folder's badge stays right across restarts. Only job runs are
-// counted, so only they are marked.
+// markSeen clears a job run's or the companion's unread mark here and on the
+// daemon, so the badges stay right across restarts. Only those are counted,
+// so only they are marked.
 func (m *Model) markSeen(id string) tea.Cmd {
 	sv := m.cache.get(id)
-	if !sv.info.Unread || sv.info.Source != "job" {
+	if !sv.info.Unread || (sv.info.Source != "job" && sv.info.Source != "companion") {
 		return nil
 	}
 	sv.info.Unread = false

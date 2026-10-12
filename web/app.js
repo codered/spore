@@ -18,6 +18,7 @@ const S = {
   filter: "",          // sidebar session filter
   order: [],           // visible session ids, sidebar order, for j/k/b
   jobs: [],
+  proposals: [],       // the companion's open proposals, newest first
   keys: { enabled: true, hints: true },
   // approvals this page answered, so their `resolved` echo is not reported
   // as answered elsewhere.
@@ -192,8 +193,9 @@ async function loadSessions() {
     Object.assign(r, {
       title: s.title, workspace: s.workspace, source: s.source, parent_id: s.parent_id || "",
       updated_at: s.updated_at, pending: s.pending || 0,
-      // Only a job run is "unread", as in the TUI: nobody watched it happen.
-      unread: !!s.unread && s.source === "job",
+      // A job run or the companion's outreach is "unread", as in the TUI:
+      // nobody watched it arrive.
+      unread: !!s.unread && (s.source === "job" || s.source === "companion"),
       working: s.state === "working" || s.state === "blocked",
     });
     seen.add(s.id);
@@ -296,19 +298,19 @@ function apply(ev) {
         S.head.ctx = (ev.tokens_in || 0) + (ev.tokens_cache_read || 0) + (ev.tokens_cache_write || 0);
         S.head.cost += ev.cost_usd || 0;
       }
-      reloadSoon();
+      if (isOpen) markCompanionSeen(r, id).then(reloadSoon); else reloadSoon();
       break;
     case "stopped":
       r.working = false;
       dropApprovals(r, (a) => !a.origin_session);
       if (isOpen) { endLive(); addNote("stopped"); setStatus(""); }
-      reloadSoon();
+      if (isOpen) markCompanionSeen(r, id).then(reloadSoon); else reloadSoon();
       break;
     case "error":
       r.working = false;
       dropApprovals(r, (a) => !a.origin_session);
       if (isOpen) { endLive(); addLine("msg error", "turn failed: " + ev.error); }
-      reloadSoon();
+      if (isOpen) markCompanionSeen(r, id).then(reloadSoon); else reloadSoon();
       break;
     case "approval":
       if (!r.approvals.some((a) => a.pending_id === ev.pending_id)) r.approvals.push(ev);
@@ -323,7 +325,17 @@ function apply(ev) {
       reloadSoon();
       break;
     case "job_note":
-      if (isOpen) addNote(ev.text);
+      if (isOpen) {
+        addNote(ev.text);
+        // Outreach arrives and answers are posted as notes: the open
+        // proposals may have changed, and the note has been seen.
+        if (r.source === "companion") {
+          loadProposals();
+          markCompanionSeen(r, id);
+        }
+      } else if (r.source === "companion") {
+        r.unread = true;
+      }
       break;
     case "session":
       Object.assign(r, { title: ev.title || r.title, workspace: ev.workspace || r.workspace, source: ev.source || r.source, parent_id: ev.parent_id || r.parent_id });
@@ -336,6 +348,7 @@ function apply(ev) {
         S.open = null;
         el("transcript").textContent = "";
         el("approvals").textContent = "";
+        el("proposals").textContent = "";
       }
       break;
     case "agent_state":
@@ -401,7 +414,7 @@ function renderSidebar() {
   };
 
   const groups = new Map();
-  for (const r of roots.filter(visible)) {
+  for (const r of roots.filter((r) => r.source !== "companion" && visible(r))) {
     const ws = r.workspace || "(no workspace)";
     if (!groups.has(ws)) groups.set(ws, []);
     groups.get(ws).push(r);
@@ -429,6 +442,12 @@ function renderSidebar() {
     nav.appendChild(a);
     for (const c of (kids.get(r.id) || []).filter(visible).sort(byUpdated)) row(c, depth + 1);
   };
+  // The companion is where spore reaches out unprompted: pinned above the
+  // workspaces, as in the TUI.
+  for (const r of roots.filter((r) => r.source === "companion" && visible(r))) {
+    nav.appendChild(h("div", { class: "group pinned" }, h("h2", { text: "spore" })));
+    row(r, 0);
+  }
   for (const [ws, list] of ordered) {
     nav.appendChild(h("div", { class: "group" }, h("h2", { title: ws, text: tailPath(ws, 34) })));
     for (const r of list) row(r, 0);
@@ -704,11 +723,14 @@ async function selectSession(id) {
   if (location.hash !== "#" + id) history.replaceState(null, "", "#" + id);
   el("transcript").textContent = "";
   el("approvals").textContent = "";
+  el("proposals").textContent = "";
+  S.proposals = [];
   S.head = { model: "", ctx: 0, cost: 0 };
   renderSidebar();
   renderHeader();
   if (S.view !== "chat") refreshView();
   await loadTranscript(id, gen);
+  if (S.generation === gen) await loadProposals();
 }
 
 async function newSession() {
@@ -736,6 +758,7 @@ function renderApprovals() {
     if (!document.getElementById("approval-" + a.pending_id)) host.appendChild(approvalCard(a));
   }
   tickCountdowns();
+  renderProposals();
 }
 
 function approvalCard(a) {
@@ -789,6 +812,73 @@ async function answer(a, allow, scope, card) {
   }
 }
 
+// ---------- companion proposals ----------
+
+// companionOpen reports whether the open session is the companion's.
+function companionOpen() {
+  const r = S.open && S.sessions.get(S.open);
+  return !!r && r.source === "companion";
+}
+
+// markCompanionSeen tells the daemon the open companion session has been
+// read, so a turn the user just watched does not come back bold.
+function markCompanionSeen(r, id) {
+  if (r.source !== "companion") return Promise.resolve();
+  return api("POST", "/api/sessions/{id}/seen", { id }).catch(() => {});
+}
+
+// loadProposals fetches the open proposals for the companion session; any
+// other session has none. A failure (the companion is off) shows no bar.
+async function loadProposals() {
+  const sid = S.open;
+  if (!companionOpen()) {
+    S.proposals = [];
+    renderProposals();
+    return;
+  }
+  let list = [];
+  try {
+    list = (await api("GET", "/api/companion/proposals", {})) || [];
+  } catch (err) {
+    list = [];
+  }
+  if (S.open !== sid) return;
+  S.proposals = list;
+  renderProposals();
+}
+
+// renderProposals draws the newest open proposal above the composer. An
+// approval waiting in the session answers first, so the bar hides.
+function renderProposals() {
+  const host = el("proposals");
+  host.textContent = "";
+  const r = S.open && S.sessions.get(S.open);
+  if (!companionOpen() || !S.proposals.length || (r && r.approvals.length)) return;
+  const p = S.proposals[0];
+  const card = h("div", { class: "proposal", role: "region", "aria-label": "spore proposes" });
+  card.appendChild(h("h3", { text: "spore proposes" }));
+  card.appendChild(h("div", { class: "text", text: p.text }));
+  const buttons = h("div", { class: "buttons" });
+  for (const [label, choice, cls] of [["Yes, watch it", "yes", "allow"], ["Not now", "not-now", ""], ["Never", "never", "deny"]]) {
+    buttons.appendChild(h("button", { type: "button", class: cls, onclick: () => answerProposal(p, choice, card) }, label));
+  }
+  if (S.proposals.length > 1) {
+    buttons.appendChild(h("span", { class: "more", text: "+" + (S.proposals.length - 1) + " more" }));
+  }
+  card.appendChild(buttons);
+  host.appendChild(card);
+}
+
+async function answerProposal(p, choice, card) {
+  for (const b of card.querySelectorAll("button")) b.disabled = true;
+  try {
+    await api("POST", "/api/companion/proposals/{id}", { id: p.id }, { choice });
+  } catch (err) {
+    addLine("msg error", "could not answer the proposal: " + err.message);
+  }
+  await loadProposals();
+}
+
 function tickCountdowns() {
   for (const n of document.querySelectorAll(".approval .countdown")) {
     const exp = n.dataset.exp;
@@ -811,13 +901,21 @@ function tickCountdowns() {
 // other text starting with "/" is still sent as an ordinary message.
 const slashCommands = { "/usage": showUsage, "/model": showModels };
 
+// runCompanion runs /companion [args] in the daemon and shows its text.
+async function runCompanion(text) {
+  const args = text.split(/\s+/).slice(1).filter(Boolean);
+  const res = await api("POST", "/api/companion/command", {}, { args });
+  addLine("msg note usage", ((res && res.text) || "").replace(/\n+$/, ""));
+}
+
 async function send() {
   const input = el("input");
   const text = input.value.trim();
   if (!text || !S.open) return;
   input.value = "";
   addUser(text);
-  const cmd = slashCommands[text];
+  const cmd = slashCommands[text] ||
+    (text === "/companion" || text.startsWith("/companion ") ? () => runCompanion(text) : null);
   if (cmd) {
     try {
       await cmd(S.open);
@@ -1384,6 +1482,7 @@ const SHORTCUTS = [
   ["C S A J U R", "open Chat, Skills, Agents, Jobs, Usage, Refinements"],
   [",", "settings"],
   ["/model", "choose the model for each operation (type it in the composer)"],
+  ["/companion", "status, interests, outreach, pause, resume, answer (type it in the composer)"],
   ["?", "this list"],
   ["j / k", "next / previous session"],
   ["b", "next blocked session"],

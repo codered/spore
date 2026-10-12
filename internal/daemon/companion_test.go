@@ -311,3 +311,101 @@ func TestCheckRouteWithoutCompanionIs503(t *testing.T) {
 		t.Fatalf("status = %d, want 503", res.StatusCode)
 	}
 }
+
+func commandJSON(t *testing.T, url string, args []string) (int, map[string]string) {
+	t.Helper()
+	res := postJSON(t, url, map[string]any{"args": args})
+	defer res.Body.Close()
+	var body map[string]string
+	_ = json.NewDecoder(res.Body).Decode(&body)
+	return res.StatusCode, body
+}
+
+func TestCompanionCommandRoute(t *testing.T) {
+	s, ts := newTestServer(t)
+	s.AttachCompanion(companion.NewService(s.store, s.cfg))
+	url := ts.URL + "/api/companion/command"
+	if code, body := commandJSON(t, url, nil); code != http.StatusOK || !strings.Contains(body["text"], "companion:") {
+		t.Fatalf("no args = %d %v, want status", code, body)
+	}
+	if code, body := commandJSON(t, url, []string{"pause", "2h"}); code != http.StatusOK || !strings.Contains(body["text"], "paused until") {
+		t.Fatalf("pause = %d %v", code, body)
+	}
+	for _, args := range [][]string{{"check"}, {"bogus"}, {"answer", "x", "yes"}, {"answer", "1"}, {"pause", "soon"}} {
+		if code, body := commandJSON(t, url, args); code != http.StatusBadRequest || body["error"] == "" {
+			t.Errorf("%v = %d %v, want 400 with a message", args, code, body)
+		}
+	}
+}
+
+// answer goes through AnswerProposal, so its note lands in the companion
+// session (and, live, in its Discord thread) exactly as a button press's.
+func TestCompanionCommandAnswerPostsTheNote(t *testing.T) {
+	ctx := context.Background()
+	s, ts := newTestServer(t)
+	s.AttachCompanion(companion.NewService(s.store, s.cfg))
+	id := seedProposal(t, s)
+	url := ts.URL + "/api/companion/command"
+	args := []string{"answer", strconv.FormatInt(id, 10), companion.ChoiceNever}
+	code, body := commandJSON(t, url, args)
+	if code != http.StatusOK || body["text"] == "" {
+		t.Fatalf("answer = %d %v", code, body)
+	}
+	sid, _, _ := s.store.CompanionState(ctx, companion.StateSessionID)
+	msgs, _ := s.store.Messages(ctx, sid)
+	if last := msgs[len(msgs)-1]; last.Role != store.RoleNote {
+		t.Fatalf("last message = %+v, want the answer's note", last)
+	}
+	if code, _ := commandJSON(t, url, args); code != http.StatusConflict {
+		t.Fatalf("second answer = %d, want 409", code)
+	}
+}
+
+func TestOpenProposalsRoute(t *testing.T) {
+	s, ts := newTestServer(t)
+	s.AttachCompanion(companion.NewService(s.store, s.cfg))
+	id := seedProposal(t, s)
+	list := func() []ProposalJSON {
+		t.Helper()
+		res, err := http.Get(ts.URL + "/api/companion/proposals")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d", res.StatusCode)
+		}
+		var out []ProposalJSON
+		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		if out == nil {
+			t.Fatal("an empty list must be [], not null")
+		}
+		return out
+	}
+	got := list()
+	if len(got) != 1 || got[0].ID != id || got[0].Text != "watch ZS?" || got[0].InterestKey != "stock:zs" || got[0].SentAt.IsZero() {
+		t.Fatalf("proposals = %+v", got)
+	}
+	res := postJSON(t, ts.URL+"/api/companion/proposals/"+strconv.FormatInt(id, 10), map[string]string{"choice": companion.ChoiceNotNow})
+	res.Body.Close()
+	if got := list(); len(got) != 0 {
+		t.Fatalf("after an answer = %+v, want none", got)
+	}
+}
+
+func TestCompanionRoutesWithoutCompanionAre503(t *testing.T) {
+	_, ts := newTestServer(t)
+	res, err := http.Get(ts.URL + "/api/companion/proposals")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("proposals = %d, want 503", res.StatusCode)
+	}
+	if code, _ := commandJSON(t, ts.URL+"/api/companion/command", []string{"status"}); code != http.StatusServiceUnavailable {
+		t.Fatalf("command = %d, want 503", code)
+	}
+}

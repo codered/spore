@@ -223,6 +223,19 @@ pre {
 .approval .buttons .deny { border-color: var(--error); color: var(--error); }
 .approval .fine { color: var(--dim); font-size: 12px; margin-top: 6px; }
 
+#proposals { padding: 0 16px; }
+.proposal {
+  max-width: 780px; margin: 8px auto;
+  border: 1px solid var(--accent); border-radius: 6px; background: var(--panel);
+  padding: 12px;
+}
+.proposal h3 { margin: 0 0 4px; font-size: 14px; color: var(--accent); }
+.proposal .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.proposal .buttons { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; align-items: center; }
+.proposal .buttons .allow { border-color: var(--accent); }
+.proposal .buttons .deny { border-color: var(--error); color: var(--error); }
+.proposal .more { color: var(--dim); font-size: 12px; }
+
 #composer { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); }
 #input {
   flex: 1;
