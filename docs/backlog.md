@@ -452,6 +452,15 @@ The three open questions are answered
 A symbol snapshot test lists every function the six packages expose, so a
 yaegi upgrade that adds one fails until someone checks it for disk access.
 
+## Discord mentions outside the companion
+
+Known gap. Since PR 2b, companion sends, notes, `/companion` replies and
+button answers go out with `allowed_mentions: {parse: []}`, so model text
+there pings nobody. Turn output (the streamed reply), approval cards and
+`/usage` still use Discord's default, so a reply containing `@everyone`
+in a channel where the bot may mention everyone would ping. Open question:
+set `Quiet` on every send, or only on model text (the renderer's messages)?
+
 ## Companion: enhancements left out of the first design
 
 Enhancement, not scheduled. The companion

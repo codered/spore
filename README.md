@@ -1096,8 +1096,8 @@ plus every tool from your MCP servers.
 
 Off by default. When on, spore notices what you keep coming back to (a stock you
 check, a topic you return to) and keeps its own notes in `~/.spore/self.md`.
-It also reaches out now, as described below. The pinned TUI row, the web list
-and the `/companion` chat command come in a later release.
+It also reaches out now, as described below. Its session is pinned at the top
+of the TUI and web session lists as **spore**, and `/companion` works in every chat.
 
 ```toml
 [companion]
@@ -1142,10 +1142,12 @@ over that user's existing DM conversation with spore.
 With `channel = "auto"` (the default), the companion uses Discord only when
 `[companion.discord]` is complete, and otherwise uses the terminal.
 
-Without a channel id, the companion's messages appear in its own `spore`
-session in the TUI and web UI, and `spore companion answer <id> yes`
-answers a proposal. `spore companion status`, `outreach`, `pause` and
-`resume` show and steer it.
+Without a channel id, the companion's messages appear in its pinned `spore`
+session in the TUI and web UI. An open proposal shows above the input: press
+`alt+y` (watch it), `alt+n` (not now) or `alt+x` (never) in the TUI, or the
+buttons in the web UI. A tool approval waiting in that session is answered
+first. `spore companion answer <id> yes` works from any terminal.
+`spore companion status`, `outreach`, `pause` and `resume` show and steer it.
 
 To see it work without waiting three days, run one heartbeat now:
 
@@ -1154,6 +1156,10 @@ spore companion check                                  # reflect now, ignoring p
 spore companion check --promote topic:subagents        # treat an observed interest as a habit first
 spore companion check --promote topic:subagents --force  # and tell the model it must propose it
 ```
+
+In any chat (TUI, web, Discord, plain `spore chat`), `/companion` runs the same
+subcommands as `spore companion` except `check`: `/companion`,
+`/companion interests`, `/companion pause 2h`, `/companion answer 4 never`.
 
 `spore companion interests` lists the keys. A check spends from the day's
 message budget like any other message, and what it sends is real: pressing

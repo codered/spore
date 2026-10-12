@@ -694,3 +694,15 @@ sections above, these win.
   one with `alt+y` in the TUI and one from the web bar; `/companion status`
   on both; a press on one surface clears the other's bar. Discord is checked
   live by the user only -- never a second daemon on the bot token.
+
+## As built — PR 2b
+
+- `Bridge.Deliver` sends every note quiet, not only the companion's: it
+  cannot tell which session is the companion's, and a note never needs to
+  ping. Button answers (`Respond`) are quiet too.
+- The TUI bar is docked above the input and shrinks the transcript by its
+  height; the approval card is still drawn over the transcript.
+- Clients refetch proposals on open and on `job_note` in the companion
+  session; a `job_note` there also marks it unread unless it is on screen.
+- The TUI no longer shows a just-opened session as unread when its
+  transcript arrives after the mark-seen call.
