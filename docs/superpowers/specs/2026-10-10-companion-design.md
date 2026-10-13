@@ -1,7 +1,7 @@
 # spore — companion: initiative, habits and a self
 
 **Date:** 2026-10-10
-**Status:** approved (brainstorming dialogue); written spec awaiting review
+**Status:** PR 1, 2a, 2b shipped; PR 3 design appended 2026-10-13, awaiting review
 **Builds on:** `2026-09-22-soul-and-agent-files-design.md` (soul.md, the prompt
 prefix), `2026-09-26-refinement-design.md` (the reviewer round and its ledger),
 `2026-09-22-job-checkin-design.md` (jobs reporting into their origin chat)
@@ -706,3 +706,245 @@ sections above, these win.
   session; a `job_note` there also marks it unread unless it is on screen.
 - The TUI no longer shows a just-opened session as unread when its
   transcript arrives after the mark-seen call.
+
+## PR 3 decisions (2026-10-13)
+
+Settled with the user before planning PR 3. Where these differ from the
+sections above, these win.
+
+- **A watch run decides its own alerts.** The run ends its work with a
+  verdict, `ALERT:` or `NOTHING:`. A `NOTHING` run posts nothing; an `ALERT`
+  run is delivered at once as an `alert` outreach. Reflection does not gate
+  watch output, and watch runs no longer post every reply (`notify = each`
+  is retired for companion watches).
+- **The digest goes out every morning**, even when it is short, in the first
+  tick of the local day outside quiet hours. It is outside the daily budget.
+- **Research is started by reflection only** (the `research` action, as in
+  §4.4): no fixed schedule per interest.
+- **Both 2a leftovers are fixed:** a proposal answered in text no longer
+  stays `proposed` for ever, and a reflection that meets a busy companion
+  session is kept and applied on the next tick instead of being thrown away.
+- **Run text is not stored.** Run replies are read from their sessions and
+  clipped only when rendered into the reflection input: 1 KiB per watch run,
+  6 KiB per research run.
+
+## Design — PR 3
+
+### Watch alerts
+
+- **The verdict instruction is added at run time.** A watch job stores its
+  rendered prompt, not its goal, so changing `WatchPrompt` alone would never
+  reach the watches that already exist. `StartJob` appends `VerdictSuffix`
+  to the prompt of any job that is the `watch_job_id` of an `active`
+  interest: begin the reply with `ALERT: <what to tell the user>` or
+  `NOTHING: <one line>`. `WatchPrompt` keeps its current text.
+- **`afterJobRun` takes a companion branch first.** When the finished job is
+  an active interest's watch, the run is handled by the companion -- before
+  the no-origin early return and whatever the job's `notify` mode -- and the
+  ordinary note path is skipped. New watches are created with
+  `notify = none`; existing ones need no migration, because the branch
+  ignores `notify`.
+- **Parsing.** `companion.ParseVerdict(reply)` reads the first non-empty
+  line, after removing a surrounding code fence and leading `*`/`#`/space,
+  case-insensitively. `NOTHING:` gives `nothing`; `ALERT:` gives `alert`
+  with the rest of the reply as the message. Anything else -- no marker, an
+  empty reply -- is `alert` with the whole reply (fail-open: a missed alert
+  is worse than a noisy one, and the alert budget caps the noise). A failed
+  or stopped run is `failed`.
+- **Delivery.** Every finished watch run gets a `companion_runs` row. An
+  `alert` row is then delivered through `Deliverer.Deliver` as an `alert`
+  outreach (text clipped to 1200 runes, with "· the rest is in the Jobs
+  folder"), so it lands in the companion session and its Discord thread and
+  can go `unanswered` and be nudged like any outreach. Before sending:
+  - **Paused:** held.
+  - **Quiet hours:** held unless `alerts_in_quiet_hours`.
+  - **Alert budget:** alerts already sent today (local day) are counted;
+    at `alert_budget` the row is held.
+  - **`ErrBusy`:** held.
+  A held alert keeps `verdict = alert` with no `reported_outreach_id`. The
+  heartbeat retries held alerts before reflecting, under the same checks
+  and with no model call. An alert held when the next digest is written is
+  offered to that digest instead, and is never retried after it.
+- **A failed run** posts the existing "job N failed" note into the
+  companion session (as today). Three failed rows in a row for one watch
+  make it a follow-up subject.
+
+### `companion_runs`
+
+| column | meaning |
+|---|---|
+| `id` | INTEGER PK |
+| `interest_id` | FK to `interests`, ON DELETE CASCADE |
+| `kind` | `watch` or `research` |
+| `job_id` | the job that ran |
+| `session_id` | the run's session, or empty while a research job has not started |
+| `question` | research only |
+| `verdict` | watch: `alert`, `nothing`, `failed`; research: `pending`, `done`, `failed` |
+| `started_at`, `finished_at` | |
+| `reported_outreach_id` | the outreach that told the user about it, nullable |
+| `seen_at` | when a reflection first saw it, nullable |
+
+No reply text is stored. It is read from `session_id` with
+`schedule.LastReply` when needed; a deleted session reads as `(run deleted)`.
+Rows older than 30 days are swept by the heartbeat.
+
+### Research runs
+
+- **Action.** `{"action":"research","interest":"stock:zs","research":{"question":"…"}}`.
+  Valid when the interest is `active`, the question is 1..300 characters,
+  no research row is `pending` and younger than 2 hours, and fewer than 6
+  research rows started this local day. It sends nothing, so it does not
+  count against the daily budget and `message` must be empty. It is chosen
+  only on ticks that reflect at all, so pause and quiet hours stop it as
+  they stop everything else.
+- **Running it.** The heartbeat creates a `once` job due now with
+  `Prompt = ResearchPrompt(label, question)`, `Profile = companion`, no
+  origin, `notify = none`, `checked_in = 1`, and a `pending` research row
+  pointing at it. The scheduler starts it on its next tick; `StartJob`
+  records the run session on the row. `ResearchPrompt` says the run is
+  unattended and read-only, asks for an answer to the question with its
+  sources, and asks it to name any tool it lacked.
+- **Finishing.** `afterJobRun` finds the row by `job_id` and sets
+  `verdict` to `done` or `failed`, and `finished_at`. A research run never
+  alerts; what it found reaches the user only through a `finding` or the
+  digest.
+- **Stuck runs.** A research row still `pending` after 2 hours is set to
+  `failed` by the heartbeat; a late finish does not overwrite it. There is
+  no turn timeout in the daemon, so this is what stops one stuck run from
+  blocking research.
+
+### What reflection sees
+
+- A new input section, **"Runs since you last looked"**: every finished row
+  with no `reported_outreach_id` that finished in the last 7 days, newest
+  first, each with its id, kind, interest key, verdict, age and reply --
+  watch replies clipped to 1 KiB, research replies to 6 KiB, a clipped
+  entry ending `… (clipped; full reply in job run <session>)`. Rows already
+  seen are marked `(seen before)`. Held alerts appear here marked
+  `(held: not sent)`.
+- **Follow-up subjects** are listed in their own section: an active watch
+  with 10 or more runs and no reply or reaction to any of its outreach in
+  14 days; a watch whose last 3 runs failed; and, in the digest slot,
+  "read your Threads with you and raise any that has come due".
+- After a successful reflection, every row shown is given `seen_at`.
+
+### New actions
+
+| action | fields | budget | notes |
+|---|---|---|---|
+| `research` | `interest`, `research.question` | none | see above |
+| `finding` | `message`, optional `interest`, `runs` (1+ ids shown in the runs section) | daily | sets `reported_outreach_id` on the cited runs |
+| `followup` | `message`, optional `interest` | daily | for a follow-up subject or a `self.md` thread |
+| `digest` | `message`, optional `runs`, optional `nudge_of` as a list | none | only in the digest slot, and required there |
+
+`alert` is not a reflection action: alerts come only from watch runs.
+
+### The digest slot
+
+- The slot is due on a tick when the companion is not paused, it is not
+  quiet hours, and `companion_state.last_digest_day` is not today's local
+  date. The first such tick of the day is the slot, whatever the time, so a
+  daemon down all morning still gets one.
+- In the slot the input says so, and the only valid action is `digest`.
+  The digest may cite `runs` (marking them reported), fold unanswered
+  messages through a `nudge_of` list (each listed row counts as nudged), and
+  carry `drops` and `self_md` as any reflection may.
+- `last_digest_day` is written only after the digest is delivered. A
+  failed or invalid reflection, or a busy session, leaves the slot due for
+  the next tick.
+- When a digest is delivered, the previous digest, if still `pending` or
+  `unanswered`, is resolved `ignored` with the reason "superseded by the
+  next digest", with no governor step. A digest is never nudged. A reply or
+  reaction to a digest still steps the governor up.
+
+### The gate
+
+- `Eligible` is true when any of these holds: a candidate out of cooldown,
+  an unanswered outreach, the digest slot is due, a finished run not yet
+  seen, a held alert, a follow-up subject, or a saved pending decision.
+- `Fingerprint` adds the unseen run ids, the held alert ids, the follow-up
+  subjects and the digest-slot flag. An unchanged fingerprint still means no
+  model call.
+
+### The 2a leftovers
+
+- **Text-answered proposal.** In `resolveStale`: a `proposal` outreach that
+  is `replied`, whose interest is still `proposed` 24 hours after it was
+  resolved, sends the interest back to `candidate` with
+  `cooldown_until = now + 7d` (the `ReturnCooldown` path).
+- **Busy session.** When `apply` meets `ErrBusy`, the validated decision is
+  saved as JSON in `companion_state.pending_decision`. On the next tick,
+  before any reflection, it is validated again against a fresh view: still
+  valid, it is applied with no model call (and the fingerprint recorded as
+  usual); invalid, it is discarded and the tick reflects as normal. A
+  pending decision older than 12 hours is discarded.
+
+### `spore companion check --research <key>`
+
+The operator check gains `--research <key>`, the research counterpart of
+`--promote … --force`: the reflection input gains an "Operator check" line
+telling it to answer `research` for that interest, with a question of its
+choosing. It fails with `ErrBadCheck` unless the interest is `active`. The
+research validation rules (one in flight, 6 a day) still apply. It exists
+so the manual gate does not wait for reflection to choose research.
+
+### Status
+
+`spore companion status` (and `/companion status`, through the shared
+formatter) gains:
+
+```
+digest:    sent 08:02          (or: due, or: paused)
+research:  2 of 6 today, 1 running
+alerts:    1 of 3 today, 1 held
+```
+
+No other surface changes: alerts, findings, follow-ups and digests reach the
+companion thread, the pinned TUI row and the web list as any outreach does.
+
+### Failures
+
+| failure | behaviour |
+|---|---|
+| A watch reply has no marker | delivered as an alert (fail-open) |
+| A research run fails | row `failed`; reflection sees it and may ask again within the daily cap |
+| A research run is still pending after 2 h | row `failed` by the heartbeat; a late finish is ignored |
+| Reflection invalid in the digest slot | tick skipped; the slot stays due; three in a row warn in status as today |
+| A run's session is deleted | the row stays; its reply renders `(run deleted)` |
+| Discord down during an alert | the existing `terminal-fallback` path |
+
+### Testing
+
+Built with `config.Load`, a fake clock, and a symlinked TMPDIR.
+
+- `ParseVerdict`: `ALERT:`/`NOTHING:` in any case, inside a code fence,
+  after markdown emphasis, missing, empty.
+- Run-time verdict suffix: added for an active interest's watch, not for an
+  ordinary job, not for a research job.
+- Alert path: delivered within `alert_budget`; held over it, in quiet hours
+  with the flag off, while paused, and on `ErrBusy`; sent in quiet hours
+  with the flag on; a held alert retried on the next tick with no model
+  call; a held alert offered to the digest and not retried after it; an
+  existing `notify = each` watch takes the companion branch and posts no
+  ordinary note.
+- `check --research`: rejected for a non-active interest; the input
+  carries the operator line.
+- Research: each validation rule; the created job's profile, origin,
+  notify and check-in; the row filled by `afterJobRun`; a 2-hour stuck run
+  failed and its late finish ignored.
+- Digest: required in the slot and rejected outside it; exempt from the
+  budget; none while paused; `last_digest_day` written only after delivery;
+  the previous digest superseded with no governor step; a `nudge_of` list.
+- Reflection input: watch and research clip sizes and the clip marker;
+  `(seen before)` and `(held: not sent)`; unseen runs change the
+  fingerprint; `seen_at` set after a successful reflection only.
+- `finding` marks its runs reported; `followup` counts against the budget.
+- Leftovers: a `replied` proposal returns to `candidate` after 24 h, not
+  before; a pending decision applied without a model call, and discarded
+  when no longer valid or older than 12 h.
+- Manual gate: an isolated daemon on :7788 with the real model. A forced
+  watch on a short cron: one `NOTHING` run stays in the Jobs folder, one
+  `ALERT` run reaches the companion session. A research run via
+  `spore companion check --research <key>` on an active interest. The digest slot
+  reached by clearing `last_digest_day`. Discord is checked live by the user
+  only -- never a second daemon on the bot token.
