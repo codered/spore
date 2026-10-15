@@ -15,17 +15,20 @@ import (
 
 const (
 	// listTimeout bounds one provider's listing. A provider that is down
-	// must cost /model a short wait, not a hang.
-	listTimeout = 3 * time.Second
+	// must cost /model a short wait, not a hang. Unsloth Studio rebuilds its
+	// list after a few seconds idle, and the rebuild takes up to about 6s.
+	listTimeout = 10 * time.Second
 	// cacheTTL keeps opening /model cheap; a choice re-checks fresh.
 	cacheTTL = 60 * time.Second
 )
 
-// Group is one provider's models, as provider/model refs.
+// Group is one provider's models, as provider/model refs. A Stale group's
+// listing failed: Refs is the last good listing, shown but not choosable.
 type Group struct {
 	Provider string   `json:"provider"`
 	Refs     []string `json:"refs"`
 	Error    string   `json:"error,omitempty"`
+	Stale    bool     `json:"stale,omitempty"`
 }
 
 // Catalog lists what each provider serves.
@@ -39,12 +42,29 @@ type Catalog struct {
 	mu     sync.Mutex
 	cached []Group
 	at     time.Time
+	// last is each listing provider's last good refs, kept so that one
+	// slow or failed listing does not empty the provider's models.
+	last map[string][]string
+	// timeouts replaces timeout for the providers it names.
+	timeouts map[string]time.Duration
 }
 
 // NewCatalog lists the providers in reg. configured is every ref the config
 // names; a provider that cannot list offers the ones with its prefix.
 func NewCatalog(reg *provider.Registry, configured []string) *Catalog {
-	return &Catalog{reg: reg, configured: configured, timeout: listTimeout, ttl: cacheTTL, now: time.Now}
+	return &Catalog{reg: reg, configured: configured, timeout: listTimeout, ttl: cacheTTL, now: time.Now, last: map[string][]string{}, timeouts: map[string]time.Duration{}}
+}
+
+// SetListTimeout makes d the listing timeout for the named provider. A
+// non-positive d restores the default.
+func (c *Catalog) SetListTimeout(name string, d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if d <= 0 {
+		delete(c.timeouts, name)
+		return
+	}
+	c.timeouts[name] = d
 }
 
 // List returns one group per provider, sorted by name. fresh skips the cache.
@@ -97,26 +117,43 @@ func (c *Catalog) group(ctx context.Context, name string) Group {
 		sort.Strings(g.Refs)
 		return g
 	}
-	lctx, cancel := context.WithTimeout(ctx, c.timeout)
+	c.mu.Lock()
+	timeout, ok := c.timeouts[name]
+	c.mu.Unlock()
+	if !ok {
+		timeout = c.timeout
+	}
+	lctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	ids, err := l.ListModels(lctx)
 	if err != nil {
 		g.Error = err.Error()
+		c.mu.Lock()
+		last, ok := c.last[name]
+		c.mu.Unlock()
+		if ok {
+			g.Refs, g.Stale = slices.Clone(last), true
+			g.Error += "; showing the last list"
+		}
 		return g
 	}
 	for _, id := range ids {
 		g.Refs = append(g.Refs, name+"/"+id)
 	}
 	sort.Strings(g.Refs)
+	c.mu.Lock()
+	c.last[name] = slices.Clone(g.Refs)
+	c.mu.Unlock()
 	return g
 }
 
 // Has reports whether ref is served right now. It always lists fresh: a
 // choice is checked against what the provider says at that moment, and a
-// provider that is down makes its models unavailable.
+// provider that is down makes its models unavailable, even those its last
+// good listing named.
 func (c *Catalog) Has(ctx context.Context, ref string) bool {
 	for _, g := range c.List(ctx, true) {
-		if slices.Contains(g.Refs, ref) {
+		if !g.Stale && slices.Contains(g.Refs, ref) {
 			return true
 		}
 	}

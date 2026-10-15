@@ -40,8 +40,12 @@ func Options(v models.View, op string) []Option {
 	if !ok {
 		return nil
 	}
+	// A stale group's refs are its last good listing: shown, not choosable.
 	avail := map[string]bool{}
 	for _, g := range v.Groups {
+		if g.Stale {
+			continue
+		}
 		for _, r := range g.Refs {
 			avail[r] = true
 		}

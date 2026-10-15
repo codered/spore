@@ -100,3 +100,20 @@ func TestConfirmSaysWhereItApplies(t *testing.T) {
 		t.Fatalf("compaction confirm = %q", got)
 	}
 }
+
+func TestAStaleGroupsRefsAreListedButNotChoosable(t *testing.T) {
+	v := view()
+	v.Groups = append(v.Groups, models.Group{Provider: "slow", Refs: []string{"slow/m"}, Error: "context deadline exceeded; showing the last list", Stale: true})
+	var got Option
+	for _, o := range Options(v, "title") {
+		if o.Ref == "slow/m" {
+			got = o
+		}
+	}
+	if got.Ref == "" {
+		t.Fatal("slow/m not listed")
+	}
+	if got.Available || got.Choosable() {
+		t.Fatalf("slow/m = %+v, want listed but not choosable", got)
+	}
+}

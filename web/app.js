@@ -983,7 +983,8 @@ const M = { sid: null, view: null, tab: 0, note: "", err: false };
 function modelOptions(v, op) {
   const o = v.ops.find((x) => x.op === op);
   if (!o) return [];
-  const avail = new Set(v.groups.flatMap((g) => g.refs || []));
+  // A stale group's refs are its last good listing: shown, not choosable.
+  const avail = new Set(v.groups.filter((g) => !g.stale).flatMap((g) => g.refs || []));
   const out = [];
   const seen = new Set();
   const add = (ref) => {

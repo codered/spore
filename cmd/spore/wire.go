@@ -215,7 +215,11 @@ func buildAgent(cfg *config.Config, st *store.Store, approver policy.Approver) (
 	sup := subagent.New(st, cfg.Subagents)
 	// /model's service: the supervisor asks it for each child's model, and
 	// the daemon serves it.
-	modelSvc := &models.Service{Store: st, Router: rt, Catalog: models.NewCatalog(reg, cfg.ConfiguredRefs()), ConfigPath: cfg.Path}
+	catalog := models.NewCatalog(reg, cfg.ConfiguredRefs())
+	for name, pc := range cfg.Providers {
+		catalog.SetListTimeout(name, pc.ListTimeoutDuration())
+	}
+	modelSvc := &models.Service{Store: st, Router: rt, Catalog: catalog, ConfigPath: cfg.Path}
 	sup.SetModels(modelSvc)
 
 	// One Refiner per daemon: the tool records the model's requests on it,
