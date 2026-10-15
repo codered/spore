@@ -197,6 +197,7 @@ func (a *Agent) Snapshot(ctx context.Context, sessionID string) (Snapshot, error
 		if err != nil {
 			return Snapshot{}, err
 		}
+		snap.Mode = mode
 		if mode == config.KernelModeCode {
 			snap.Kernel = kernel.Reference(a.Tools.Specs())
 		}
@@ -346,8 +347,9 @@ func (a *Agent) modelFor(ctx context.Context, sessionID, site string) (ref strin
 
 // kernelMode returns the kernel mode for the session's turns: tools mode
 // when kernel.tools_models matches the session's model, otherwise
-// kernel.mode. Snapshot and the request builder both use it, so the size
-// compaction measures is the size the model is sent.
+// kernel.mode. Only Snapshot calls it: the request builder reads
+// Snapshot.Mode, so the size compaction measures is the size the model is
+// sent, and one round never mixes two modes.
 func (a *Agent) kernelMode(ctx context.Context, sessionID string) (string, error) {
 	if a.Cfg.Kernel.ToolsModels == "" {
 		return a.Cfg.Kernel.Mode, nil
@@ -376,11 +378,7 @@ func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Eve
 		req := Assemble(snap, a.Cfg.Context)
 		if a.Tools != nil {
 			req.Tools = a.Tools.Specs()
-			mode, err := a.kernelMode(ctx, sessionID)
-			if err != nil {
-				return err
-			}
-			if mode == config.KernelModeCode {
+			if snap.Mode == config.KernelModeCode {
 				req.Tools = onlyKernel(req.Tools)
 			}
 		}

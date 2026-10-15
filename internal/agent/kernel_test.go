@@ -188,3 +188,27 @@ func TestSwitchingModeKeepsHistoryFromTheOtherMode(t *testing.T) {
 		t.Error("the direct schedule_list call from tools mode is missing from history")
 	}
 }
+
+// The request builder must use the mode Snapshot used, read once per
+// round. A /model switch between two reads would otherwise send the go_run
+// reference with every tool, or go_run alone with no reference.
+func TestSnapshotRecordsTheModeItUsed(t *testing.T) {
+	_, a, sid := runOnceOn(t, "model-b", "test/model-b")
+	snap, err := a.Snapshot(context.Background(), sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Mode != config.KernelModeTools {
+		t.Errorf("Snapshot.Mode = %q, want %q", snap.Mode, config.KernelModeTools)
+	}
+	if err := a.Store.SetSessionModel(context.Background(), sid, "chat", ""); err != nil {
+		t.Fatal(err)
+	}
+	snap, err = a.Snapshot(context.Background(), sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Mode != config.KernelModeCode || snap.Kernel == "" {
+		t.Errorf("Snapshot.Mode = %q with kernel section %v, want %q with the section", snap.Mode, snap.Kernel != "", config.KernelModeCode)
+	}
+}
