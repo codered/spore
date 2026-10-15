@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -129,5 +130,58 @@ func TestACancelledListingIsNotCached(t *testing.T) {
 	}
 	if n := l.calls.Load(); n != 2 {
 		t.Fatalf("lister calls = %d, want 2 (the second listing was served from cache)", n)
+	}
+}
+
+func TestTheDefaultListTimeoutOutlastsAStudioRescan(t *testing.T) {
+	// Unsloth Studio rebuilds its model list after a few seconds idle; the
+	// rebuild was measured at 3.6s and 6.2s against a 3s limit.
+	c := NewCatalog(provider.NewRegistry(), nil)
+	if c.timeout < 7*time.Second {
+		t.Fatalf("timeout = %v, want at least 7s", c.timeout)
+	}
+}
+
+func TestAFailedListingShowsTheLastGoodRefsButCannotBeChosenFrom(t *testing.T) {
+	reg := provider.NewRegistry()
+	l := newLister("m")
+	reg.Register("p", l, provider.ProviderPrice{})
+	c := NewCatalog(reg, nil)
+
+	c.List(context.Background(), true)
+	l.err = errors.New("context deadline exceeded")
+
+	got := c.List(context.Background(), true)
+	if len(got) != 1 {
+		t.Fatalf("groups = %+v", got)
+	}
+	g := got[0]
+	if !slices.Equal(g.Refs, []string{"p/m"}) {
+		t.Fatalf("refs = %v, want the last good listing", g.Refs)
+	}
+	if !g.Stale || !strings.Contains(g.Error, "context deadline exceeded") {
+		t.Fatalf("group = %+v, want stale with the error", g)
+	}
+	if c.Has(context.Background(), "p/m") {
+		t.Fatal("Has accepted a ref only a stale listing names")
+	}
+
+	l.err = nil
+	got = c.List(context.Background(), true)
+	if got[0].Stale || got[0].Error != "" {
+		t.Fatalf("group after recovery = %+v, want fresh", got[0])
+	}
+}
+
+func TestAFailedFirstListingHasNoRefs(t *testing.T) {
+	reg := provider.NewRegistry()
+	l := newLister()
+	l.err = errors.New("connection refused")
+	reg.Register("p", l, provider.ProviderPrice{})
+	c := NewCatalog(reg, nil)
+
+	got := c.List(context.Background(), true)
+	if len(got[0].Refs) != 0 || got[0].Stale || got[0].Error == "" {
+		t.Fatalf("group = %+v, want an error and no refs", got[0])
 	}
 }
