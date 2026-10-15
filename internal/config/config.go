@@ -430,6 +430,11 @@ const (
 // KernelConfig configures go_run, the Go kernel.
 type KernelConfig struct {
 	Mode string `toml:"mode"`
+	// ToolsModels is a regexp over provider/model refs. A turn on a
+	// matching model runs in tools mode, whatever Mode says. Use it for a
+	// model that calls tools well but writes go_run programs badly. Unset
+	// matches no model.
+	ToolsModels string `toml:"tools_models"`
 	// TimeoutSeconds is the default interpreter budget for one program. Time
 	// spent inside a spore.* helper (an approval wait included) is not
 	// charged to it.
@@ -440,6 +445,17 @@ type KernelConfig struct {
 	CeilingSeconds int `toml:"ceiling_seconds"`
 	// HelperMaxBytes caps one helper result handed to a program.
 	HelperMaxBytes int `toml:"helper_max_bytes"`
+}
+
+// ModeFor returns the kernel mode for a turn on the model ref. Validate
+// has compiled ToolsModels already, so a compile error here means no match.
+func (k KernelConfig) ModeFor(ref string) string {
+	if k.ToolsModels != "" {
+		if ok, err := regexp.MatchString(k.ToolsModels, ref); err == nil && ok {
+			return KernelModeTools
+		}
+	}
+	return k.Mode
 }
 
 // DaemonConfig configures the HTTP + SSE server. Addr is validated to be a
@@ -1137,6 +1153,11 @@ func (c *Config) Validate() error {
 	case KernelModeCode, KernelModeTools:
 	default:
 		return fmt.Errorf("kernel.mode must be %s or %s, got %q", KernelModeCode, KernelModeTools, c.Kernel.Mode)
+	}
+	if c.Kernel.ToolsModels != "" {
+		if _, err := regexp.Compile(c.Kernel.ToolsModels); err != nil {
+			return fmt.Errorf("kernel.tools_models: %w", err)
+		}
 	}
 	if c.Kernel.TimeoutSeconds < 0 || c.Kernel.MaxTimeoutSeconds < 0 || c.Kernel.CeilingSeconds < 0 || c.Kernel.HelperMaxBytes < 0 {
 		return fmt.Errorf("kernel: timeouts and helper_max_bytes must not be negative")

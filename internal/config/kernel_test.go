@@ -35,3 +35,31 @@ func TestKernelRejectsNegativeNumbers(t *testing.T) {
 		t.Fatal("a negative timeout was accepted")
 	}
 }
+
+func TestKernelToolsModelsForcesToolsModeForAMatch(t *testing.T) {
+	cfg := loadTestConfig(t, "[kernel]\ntools_models = \"LFM2\\\\.5\"\n")
+	if got := cfg.Kernel.ModeFor("studio/unsloth/LFM2.5-24B-A2B-GGUF"); got != KernelModeTools {
+		t.Errorf("ModeFor(LFM) = %q, want %q", got, KernelModeTools)
+	}
+	if got := cfg.Kernel.ModeFor("studio/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF"); got != KernelModeCode {
+		t.Errorf("ModeFor(Qwen) = %q, want %q", got, KernelModeCode)
+	}
+}
+
+func TestKernelToolsModelsUnsetLeavesModeAlone(t *testing.T) {
+	cfg := loadTestConfig(t, "[kernel]\nmode = \"tools\"\n")
+	if got := cfg.Kernel.ModeFor("any/model"); got != KernelModeTools {
+		t.Errorf("ModeFor = %q, want the configured mode %q", got, KernelModeTools)
+	}
+	cfg = loadTestConfig(t, "")
+	if got := cfg.Kernel.ModeFor("any/model"); got != KernelModeCode {
+		t.Errorf("ModeFor = %q, want the default mode %q", got, KernelModeCode)
+	}
+}
+
+func TestKernelRejectsABadToolsModelsRegexp(t *testing.T) {
+	_, err := loadTestConfigErr(t, "[kernel]\ntools_models = \"(\"\n")
+	if err == nil || !strings.Contains(err.Error(), "kernel.tools_models") {
+		t.Fatalf("err = %v, want one naming kernel.tools_models", err)
+	}
+}
