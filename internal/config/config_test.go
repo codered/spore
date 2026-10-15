@@ -985,3 +985,36 @@ cache_control_models = "`+tc.models+`"
 		}
 	}
 }
+
+func TestLoadValidatesListTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name, value string
+		want        time.Duration
+		ok          bool
+	}{
+		{"unset", "", 0, true},
+		{"a duration", "30s", 30 * time.Second, true},
+		{"not a duration", "30", 0, false},
+		{"zero", "0s", 0, false},
+		{"negative", "-5s", 0, false},
+	} {
+		p := write(t, `
+default_model = "p/m"
+
+[providers.p]
+kind = "openai"
+base_url = "http://127.0.0.1:8888/v1"
+list_timeout = "`+tc.value+`"
+`)
+		cfg, err := Load(p)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: Load err = %v, want ok %v", tc.name, err, tc.ok)
+			continue
+		}
+		if tc.ok {
+			if got := cfg.Providers["p"].ListTimeoutDuration(); got != tc.want {
+				t.Errorf("%s: ListTimeoutDuration = %v, want %v", tc.name, got, tc.want)
+			}
+		}
+	}
+}

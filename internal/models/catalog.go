@@ -45,12 +45,26 @@ type Catalog struct {
 	// last is each listing provider's last good refs, kept so that one
 	// slow or failed listing does not empty the provider's models.
 	last map[string][]string
+	// timeouts replaces timeout for the providers it names.
+	timeouts map[string]time.Duration
 }
 
 // NewCatalog lists the providers in reg. configured is every ref the config
 // names; a provider that cannot list offers the ones with its prefix.
 func NewCatalog(reg *provider.Registry, configured []string) *Catalog {
-	return &Catalog{reg: reg, configured: configured, timeout: listTimeout, ttl: cacheTTL, now: time.Now, last: map[string][]string{}}
+	return &Catalog{reg: reg, configured: configured, timeout: listTimeout, ttl: cacheTTL, now: time.Now, last: map[string][]string{}, timeouts: map[string]time.Duration{}}
+}
+
+// SetListTimeout makes d the listing timeout for the named provider. A
+// non-positive d restores the default.
+func (c *Catalog) SetListTimeout(name string, d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if d <= 0 {
+		delete(c.timeouts, name)
+		return
+	}
+	c.timeouts[name] = d
 }
 
 // List returns one group per provider, sorted by name. fresh skips the cache.
@@ -103,7 +117,13 @@ func (c *Catalog) group(ctx context.Context, name string) Group {
 		sort.Strings(g.Refs)
 		return g
 	}
-	lctx, cancel := context.WithTimeout(ctx, c.timeout)
+	c.mu.Lock()
+	timeout, ok := c.timeouts[name]
+	c.mu.Unlock()
+	if !ok {
+		timeout = c.timeout
+	}
+	lctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	ids, err := l.ListModels(lctx)
 	if err != nil {

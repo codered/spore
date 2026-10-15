@@ -268,6 +268,21 @@ type ProviderConfig struct {
 	// requests to a match carry Anthropic-style cache_control markers, for a
 	// proxy such as LiteLLM that forwards them to Claude. Unset sends none.
 	CacheControlModels string `toml:"cache_control_models"`
+	// ListTimeout is a Go duration bounding how long /model waits for this
+	// provider's model list. Unset uses the catalog default (10s). Set it
+	// higher for a server that rebuilds its list slowly, such as Unsloth
+	// Studio after a long idle.
+	ListTimeout string `toml:"list_timeout"`
+}
+
+// ListTimeoutDuration is the parsed ListTimeout, or 0 when it is unset. Load
+// has already rejected an unparsable or non-positive value.
+func (p ProviderConfig) ListTimeoutDuration() time.Duration {
+	d, err := time.ParseDuration(p.ListTimeout)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
 // CacheEnabled reports whether to send cache breakpoints. Unset is true.
@@ -576,6 +591,15 @@ var (
 // startup error rather than a server that silently never appears.
 func validateProviders(ps map[string]ProviderConfig) error {
 	for name, p := range ps {
+		if p.ListTimeout != "" {
+			d, err := time.ParseDuration(p.ListTimeout)
+			if err != nil {
+				return fmt.Errorf("provider %q: list_timeout %q: %w", name, p.ListTimeout, err)
+			}
+			if d <= 0 {
+				return fmt.Errorf("provider %q: list_timeout %q must be positive", name, p.ListTimeout)
+			}
+		}
 		if p.CacheControlModels == "" {
 			continue
 		}

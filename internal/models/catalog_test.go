@@ -185,3 +185,27 @@ func TestAFailedFirstListingHasNoRefs(t *testing.T) {
 		t.Fatalf("group = %+v, want an error and no refs", got[0])
 	}
 }
+
+func TestAProvidersListTimeoutReplacesTheDefaultForItAlone(t *testing.T) {
+	reg := provider.NewRegistry()
+	patient := newLister("m")
+	patient.delay = 150 * time.Millisecond
+	reg.Register("patient", patient, provider.ProviderPrice{})
+	other := newLister("m")
+	other.delay = 150 * time.Millisecond
+	reg.Register("other", other, provider.ProviderPrice{})
+	c := NewCatalog(reg, nil)
+	c.timeout = 50 * time.Millisecond
+	c.SetListTimeout("patient", time.Second)
+
+	byName := map[string]Group{}
+	for _, g := range c.List(context.Background(), true) {
+		byName[g.Provider] = g
+	}
+	if g := byName["patient"]; g.Error != "" || !slices.Equal(g.Refs, []string{"patient/m"}) {
+		t.Fatalf("patient = %+v, want listed within its own timeout", g)
+	}
+	if byName["other"].Error == "" {
+		t.Fatalf("other = %+v, want the default timeout to cut it off", byName["other"])
+	}
+}

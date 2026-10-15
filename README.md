@@ -1041,6 +1041,7 @@ price_out = 25.0
 [providers.ollama]
 kind     = "openai"             # any OpenAI-compatible endpoint
 base_url = "http://localhost:11434/v1"
+# list_timeout = "30s"          # how long /model waits for this provider's model list (default 10s)
 
 [providers.litellm]
 kind     = "openai"
