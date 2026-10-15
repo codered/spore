@@ -73,3 +73,73 @@ func TestInvalidToolArgumentsComeBackAsAnError(t *testing.T) {
 		t.Errorf("provider called %d times, want 2 (the model must see the errors and finish)", n)
 	}
 }
+
+// A local model (LFM2.5) escaped newlines and quotes in go_run's code but
+// left Go's tab indentation as raw tab bytes, on every try. Strict JSON
+// refuses a raw control character in a string, so the call never ran and the
+// model fell back to programs that did not do the task. Such arguments must
+// be repaired and run, and stored as valid JSON.
+func TestRawControlCharactersInArgumentStringsAreRepaired(t *testing.T) {
+	ctx := context.Background()
+	raw := "{\"code\":\"func main() {\n\tx()\r\n}\",\t\"n\": 1}"
+	script := provider.NewScript(
+		provider.ScriptTurn{ToolCalls: []provider.Block{
+			{Type: provider.BlockToolUse, ID: "tabs", Name: "fs.read", Input: json.RawMessage(raw)},
+		}},
+		provider.ScriptTurn{Text: "done"},
+	)
+	tools := &fakeTools{result: "ok"}
+	a, st := harness(t, script, tools)
+	sid, _ := st.CreateSession(ctx, "t", "")
+	ch, err := a.Run(ctx, sid, "go")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, ev := range collect(t, ch) {
+		if ev.Type == EvError {
+			t.Fatalf("the turn failed: %v", ev.Err)
+		}
+		if ev.Type == EvToolResult && ev.Block.IsError {
+			t.Fatalf("the call was refused: %s", ev.Block.Content)
+		}
+	}
+
+	if len(tools.calls) != 1 {
+		t.Fatalf("dispatched %d calls, want 1", len(tools.calls))
+	}
+	var args struct {
+		Code string `json:"code"`
+		N    int    `json:"n"`
+	}
+	if err := json.Unmarshal(tools.calls[0].Input, &args); err != nil {
+		t.Fatalf("the tool got invalid JSON %q: %v", tools.calls[0].Input, err)
+	}
+	if want := "func main() {\n\tx()\r\n}"; args.Code != want || args.N != 1 {
+		t.Errorf("the tool got code %q n %d, want %q n 1", args.Code, args.N, want)
+	}
+
+	msgs, _ := st.Messages(ctx, sid)
+	for _, m := range msgs {
+		var blocks []provider.Block
+		if err := json.Unmarshal(m.BlocksJSON, &blocks); err != nil {
+			t.Fatalf("stored blocks do not parse: %v", err)
+		}
+	}
+}
+
+func TestRepairControlChars(t *testing.T) {
+	cases := map[string]struct{ in, want string }{
+		"tab in string":          {"{\"a\":\"x\ty\"}", `{"a":"x\ty"}`},
+		"other control":          {"{\"a\":\"x\x01y\"}", `{"a":"x\u0001y"}`},
+		"escaped quote kept":     {"{\"a\":\"q\\\"\t\"}", `{"a":"q\"\t"}`},
+		"escaped backslash kept": {"{\"a\":\"b\\\\\"}", `{"a":"b\\"}`},
+		"whitespace outside":     {"{\n\t\"a\": 1}", "{\n\t\"a\": 1}"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := string(repairControlChars([]byte(c.in))); got != c.want {
+				t.Errorf("repairControlChars(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
