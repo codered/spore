@@ -86,7 +86,7 @@ func Run(ctx context.Context, src string, r Runner, opt Options) (Result, error)
 	written := src
 	src, err := prepare(src)
 	if err != nil {
-		return Result{}, errors.New(explainError(written, err.Error()))
+		return Result{}, errors.New(explainError(written, err.Error(), opt.Docs))
 	}
 	runID, err := newRunID()
 	if err != nil {
@@ -179,7 +179,7 @@ func Run(ctx context.Context, src string, r Runner, opt Options) (Result, error)
 				truncated = truncated || m.Truncated
 				mu.Unlock()
 				if m.Error != "" {
-					return result(), errors.New(explainError(written, m.Error))
+					return result(), errors.New(explainError(written, m.Error, opt.Docs))
 				}
 				return result(), nil
 			}
