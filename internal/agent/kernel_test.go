@@ -77,3 +77,114 @@ func TestKernelSectionCountsTowardTheSnapshotSize(t *testing.T) {
 		t.Errorf("a 4000-byte kernel section added %d tokens, want about 1000", with-without)
 	}
 }
+
+// runOnceOn runs one turn in code mode, with tools_models set to pattern,
+// on a session whose chat model is ref ("" keeps the default).
+func runOnceOn(t *testing.T, pattern, ref string) (provider.Request, *Agent, string) {
+	t.Helper()
+	script := provider.NewScript(provider.ScriptTurn{Text: "done"})
+	a, st := harness(t, script, kernelTools{})
+	a.Cfg.Kernel.Mode = config.KernelModeCode
+	a.Cfg.Kernel.ToolsModels = pattern
+	ctx := context.Background()
+	sid, _ := st.CreateSession(ctx, "t", "")
+	if ref != "" {
+		if err := st.SetSessionModel(ctx, sid, "chat", ref); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ch, err := a.Run(ctx, sid, "weather in London?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	collect(t, ch)
+	reqs := script.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("provider called %d times", len(reqs))
+	}
+	return reqs[0], a, sid
+}
+
+// LFM2.5 calls a native tool correctly but writes go_run programs that
+// call tools as bare functions. A model that tools_models matches must get
+// every tool directly and no go_run reference; any other model keeps code
+// mode.
+func TestToolsModelsPutsAMatchingSessionModelInToolsMode(t *testing.T) {
+	req, a, sid := runOnceOn(t, "model-b", "test/model-b")
+	if len(req.Tools) != 3 {
+		t.Fatalf("tools = %+v, want all three", req.Tools)
+	}
+	if strings.Contains(systemText(req.System), "## Acting through go_run") {
+		t.Error("a tools-mode turn carries the go_run section")
+	}
+	// Compaction measures Snapshot, so it must leave the reference out too.
+	snap, err := a.Snapshot(context.Background(), sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Kernel != "" {
+		t.Error("Snapshot carries the go_run reference that the request leaves out")
+	}
+}
+
+func TestToolsModelsLeavesOtherModelsInCodeMode(t *testing.T) {
+	req, _, _ := runOnceOn(t, "model-b", "")
+	if len(req.Tools) != 1 || req.Tools[0].Name != "go_run" {
+		t.Fatalf("tools = %+v, want only go_run", req.Tools)
+	}
+}
+
+// /model can move a session between modes. History from the other mode
+// holds tool_use blocks for tools the new mode does not offer. The turn
+// must still send that history, unchanged.
+func TestSwitchingModeKeepsHistoryFromTheOtherMode(t *testing.T) {
+	script := provider.NewScript(
+		provider.ScriptTurn{ToolCalls: []provider.Block{
+			{Type: provider.BlockToolUse, ID: "direct", Name: "schedule_list", Input: json.RawMessage(`{}`)},
+		}},
+		provider.ScriptTurn{Text: "listed"},
+		provider.ScriptTurn{Text: "done"},
+	)
+	a, st := harness(t, script, kernelTools{})
+	a.Cfg.Kernel.Mode = config.KernelModeCode
+	a.Cfg.Kernel.ToolsModels = "model-b"
+	ctx := context.Background()
+	sid, _ := st.CreateSession(ctx, "t", "")
+	if err := st.SetSessionModel(ctx, sid, "chat", "test/model-b"); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := a.Run(ctx, sid, "list jobs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	collect(t, ch)
+
+	if err := st.SetSessionModel(ctx, sid, "chat", ""); err != nil {
+		t.Fatal(err)
+	}
+	ch, err = a.Run(ctx, sid, "again")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range collect(t, ch) {
+		if ev.Type == EvError {
+			t.Fatalf("the code-mode turn failed: %v", ev.Err)
+		}
+	}
+	reqs := script.Requests()
+	last := reqs[len(reqs)-1]
+	if len(last.Tools) != 1 || last.Tools[0].Name != "go_run" {
+		t.Fatalf("tools = %+v, want only go_run after the switch", last.Tools)
+	}
+	found := false
+	for _, m := range last.Messages {
+		for _, b := range m.Blocks {
+			if b.Type == provider.BlockToolUse && b.Name == "schedule_list" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("the direct schedule_list call from tools mode is missing from history")
+	}
+}
