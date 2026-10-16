@@ -106,7 +106,7 @@ func TestGoldenApprovalOverlay(t *testing.T) {
 	press(m, "alt+esc")
 	golden(t, "approval-normal-100", m.View())
 	press(m, "s")
-	golden(t, "approval-modal-100", m.View())
+	golden(t, "approval-answered-100", m.View())
 }
 
 func TestGoldenTooSmall(t *testing.T) {

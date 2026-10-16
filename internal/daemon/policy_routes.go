@@ -18,6 +18,9 @@ type PolicyRuleJSON struct {
 
 type PolicyJSON struct {
 	Rules []PolicyRuleJSON `json:"rules"`
+	// GrantDurations are the timed-grant choices, config order. Empty when
+	// grants are off.
+	GrantDurations []string `json:"grant_durations"`
 }
 
 // handlePolicy lists every profile's rules in evaluation order, from the
@@ -28,7 +31,7 @@ func (s *Server) handlePolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows := s.guard.Engine().Rules()
-	out := PolicyJSON{Rules: make([]PolicyRuleJSON, 0, len(rows))}
+	out := PolicyJSON{Rules: make([]PolicyRuleJSON, 0, len(rows)), GrantDurations: s.guard.Engine().GrantChoices()}
 	for _, row := range rows {
 		out.Rules = append(out.Rules, PolicyRuleJSON{
 			Profile: string(row.Profile), Decision: string(row.Decision), Rule: row.Rule, Source: row.Source,

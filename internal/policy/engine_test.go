@@ -648,3 +648,19 @@ func TestWouldAllow(t *testing.T) {
 		t.Errorf("after WouldAllow, Evaluate = %s, want ask", got)
 	}
 }
+
+func TestEngineGrantDuration(t *testing.T) {
+	e := engine(t, config.PolicyConfig{GrantDurations: []string{"5m", "1h"}})
+	if d, ok := e.GrantDuration("1h"); !ok || d != time.Hour {
+		t.Errorf("GrantDuration(1h) = %v, %v; want 1h, true", d, ok)
+	}
+	for _, s := range []string{"60m", "2h", ""} {
+		if _, ok := e.GrantDuration(s); ok {
+			t.Errorf("GrantDuration(%q) accepted a string that is not a configured choice", s)
+		}
+	}
+	want := []time.Duration{5 * time.Minute, time.Hour}
+	if got := e.GrantDurations(); !slices.Equal(got, want) {
+		t.Errorf("GrantDurations() = %v, want %v", got, want)
+	}
+}

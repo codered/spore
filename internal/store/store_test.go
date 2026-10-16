@@ -1111,3 +1111,28 @@ func TestStoreFilePermissions(t *testing.T) {
 		}
 	})
 }
+
+func TestPendingCallStateReadsTheClosingDecision(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+	sid, err := s.CreateSession(ctx, "t", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.AddPendingCall(ctx, PendingCall{SessionID: sid, ToolUseID: "call-1", Tool: "shell_exec", Profile: "local", ArgsJSON: []byte(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := s.PendingCallState(ctx, id); err != nil || state != "pending" {
+		t.Fatalf("open row state = %q, %v; want pending", state, err)
+	}
+	if _, err := s.ResolvePendingCall(ctx, id, "allow"); err != nil {
+		t.Fatal(err)
+	}
+	if state, err := s.PendingCallState(ctx, id); err != nil || state != "allow" {
+		t.Errorf("resolved row state = %q, %v; want allow", state, err)
+	}
+	if state, err := s.PendingCallState(ctx, id+1000); err != nil || state != "" {
+		t.Errorf("missing row state = %q, %v; want empty and no error", state, err)
+	}
+}

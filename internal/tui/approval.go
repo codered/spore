@@ -72,6 +72,9 @@ func (m *Model) approvalCard(w, h int) string {
 		if ev.Pattern != "" && level < 2 {
 			rows = append(rows, clip(styKey.Render(mod+"p")+styMuted.Render(" allow once + propose ")+styAccent.Render(ev.Pattern), inner))
 		}
+		if len(m.grantDurations) > 0 && level < 2 {
+			rows = append(rows, clip(grantRow(mod), inner))
+		}
 		rows = append(gap(rows), styMuted.Render(m.deadline(ev.ExpiresAt)))
 		sty := styApprovalCard
 		if level > 0 {
@@ -231,6 +234,9 @@ func (m *Model) draftLine() string {
 		return ""
 	}
 	msg := "answer with alt+y/n/s/p, or ctrl+o then y/n/s/p"
+	if len(m.grantDurations) > 0 {
+		msg = "answer with alt+y/n/s/p/a, or ctrl+o then y/n/s/p/a"
+	}
 	if strings.TrimSpace(m.input.Value()) != "" {
 		msg = "draft kept · " + msg
 	}

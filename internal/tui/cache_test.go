@@ -245,3 +245,21 @@ func TestToolTimesComeFromEvents(t *testing.T) {
 		t.Fatalf("duration = %v", got)
 	}
 }
+
+// The sweep and the waiter can both announce one approval's resolution. Only
+// the first finds it queued, so the second adds no notice.
+func TestARepeatResolvedAddsNoNotice(t *testing.T) {
+	c := newCache(fixedNow)
+	c.Apply(daemon.WireEvent{Session: "s", Type: daemon.WireApproval, PendingID: 1, Tool: "shell"})
+	c.Apply(daemon.WireEvent{Session: "s", Type: daemon.WireResolved, PendingID: 1, Tool: "shell", Decision: "allow"})
+	c.Apply(daemon.WireEvent{Session: "s", Type: daemon.WireResolved, PendingID: 1, Tool: "shell", Decision: "allow"})
+	notices := 0
+	for _, b := range c.get("s").blocks {
+		if b.kind == kindNotice {
+			notices++
+		}
+	}
+	if notices != 1 {
+		t.Fatalf("two resolved events for one approval left %d notices, want 1", notices)
+	}
+}

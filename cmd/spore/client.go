@@ -314,6 +314,25 @@ func (c *client) stop(ctx context.Context, sessionID string) error {
 	return c.do(ctx, "POST", "/api/sessions/"+sessionID+"/stop", nil, nil)
 }
 
+// startGrant opens a timed grant on a root session and returns when it ends.
+func (c *client) startGrant(ctx context.Context, sessionID, duration string) (time.Time, error) {
+	var out struct {
+		ExpiresAt string `json:"expires_at"`
+	}
+	if err := c.do(ctx, "POST", "/api/sessions/"+sessionID+"/grant", map[string]string{"duration": duration}, &out); err != nil {
+		return time.Time{}, err
+	}
+	at, err := time.Parse(time.RFC3339, out.ExpiresAt)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("grant: expires_at %q is not RFC3339: %w", out.ExpiresAt, err)
+	}
+	return at, nil
+}
+
+func (c *client) endGrant(ctx context.Context, sessionID string) error {
+	return c.do(ctx, "DELETE", "/api/sessions/"+sessionID+"/grant", nil, nil)
+}
+
 func (c *client) cancelAgent(ctx context.Context, parent, child string) error {
 	return c.do(ctx, "DELETE", "/api/sessions/"+parent+"/agents/"+child, nil, nil)
 }

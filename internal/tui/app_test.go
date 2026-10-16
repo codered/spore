@@ -22,16 +22,17 @@ import (
 
 // fakeBackend records every call the model makes.
 type fakeBackend struct {
-	mu          sync.Mutex
-	sent        []string
-	stopped     []string
-	resolved    []string
-	cancelled   []string
-	sendErr     error
-	resolveErr  error
-	created     string
-	sessions    []daemon.SessionJSON
-	transcripts map[string]daemon.TranscriptJSON
+	mu             sync.Mutex
+	sent           []string
+	stopped        []string
+	resolved       []string
+	resolvedScopes []policy.Scope
+	cancelled      []string
+	sendErr        error
+	resolveErr     error
+	created        string
+	sessions       []daemon.SessionJSON
+	transcripts    map[string]daemon.TranscriptJSON
 
 	skills        daemon.SkillsJSON
 	agents        daemon.AgentsJSON
@@ -70,6 +71,39 @@ type fakeBackend struct {
 	proposalFetches int
 	answers         []string
 	companionArgs   [][]string
+
+	grantDurations []string
+	// grantDurationCalls counts GrantDurations calls, so a test can see that
+	// a reconnect asked the daemon again.
+	grantDurationCalls int
+	grantErr           error
+	grants             []string
+	grantEnds          []string
+}
+
+// StartGrant records the grant as the daemon would: the root and the duration.
+func (f *fakeBackend) StartGrant(_ context.Context, id, duration string) (time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.grants = append(f.grants, id+":"+duration)
+	if f.grantErr != nil {
+		return time.Time{}, f.grantErr
+	}
+	return fixedNow().Add(15 * time.Minute), nil
+}
+
+func (f *fakeBackend) EndGrant(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.grantEnds = append(f.grantEnds, id)
+	return nil
+}
+
+func (f *fakeBackend) GrantDurations(context.Context) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.grantDurationCalls++
+	return append([]string(nil), f.grantDurations...), nil
 }
 
 func (f *fakeBackend) Companion(_ context.Context, args []string) (string, error) {
@@ -151,6 +185,7 @@ func (f *fakeBackend) Resolve(_ context.Context, id string, pendingID int64, ans
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resolved = append(f.resolved, fmt.Sprintf("%s:%d:%t", id, pendingID, ans.Allow))
+	f.resolvedScopes = append(f.resolvedScopes, ans.Scope)
 	return f.resolveErr
 }
 func (f *fakeBackend) CancelAgent(_ context.Context, parent, child string) error {

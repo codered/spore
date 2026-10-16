@@ -29,6 +29,17 @@ func askEverything(t *testing.T, workspace string) *Engine {
 	return e
 }
 
+// rootScopedDecision reads a remembered session answer under the root of the
+// chain. The guard reads the store directly now that it resolves the root
+// once; this keeps the tests' view of the lookup in one place.
+func rootScopedDecision(ctx context.Context, st *store.Store, sessionID, tool string) (string, bool, error) {
+	root, err := rootOf(ctx, st, sessionID)
+	if err != nil {
+		return "", false, err
+	}
+	return st.SessionDecision(ctx, root, tool)
+}
+
 func treeStore(t *testing.T) (*store.Store, string, string, string) {
 	t.Helper()
 	ctx := context.Background()

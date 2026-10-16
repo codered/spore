@@ -26,6 +26,9 @@ type sessionView struct {
 	ctxTokens int
 	cost      float64
 	started   time.Time
+	// grantUntil is when the root's timed grant ends; zero when none is live.
+	// Only the root carries it: a sub-agent's calls run under its root's grant.
+	grantUntil time.Time
 }
 
 func (sv *sessionView) last() *block {
@@ -79,13 +82,15 @@ func (sv *sessionView) dropLastUser(text string) {
 	}
 }
 
-func (sv *sessionView) dropApproval(pendingID int64) {
+// dropApproval removes the queued approval and reports whether one was there.
+func (sv *sessionView) dropApproval(pendingID int64) bool {
 	for i, a := range sv.approvals {
 		if a.PendingID == pendingID {
 			sv.approvals = append(sv.approvals[:i], sv.approvals[i+1:]...)
-			return
+			return true
 		}
 	}
+	return false
 }
 
 func (sv *sessionView) dropApprovalsWhere(match func(daemon.WireEvent) bool) {
@@ -164,8 +169,12 @@ func (c *cache) Apply(ev daemon.WireEvent) string {
 		}
 		sv.approvals = append(sv.approvals, ev)
 	case daemon.WireResolved:
-		sv.dropApproval(ev.PendingID)
-		if !c.answered[ev.PendingID] {
+		queued := sv.dropApproval(ev.PendingID)
+		// Only an approval this session still had queued was answered
+		// elsewhere. A repeat resolved for one already dropped (the grant
+		// sweep and the waiter can both announce it) is quiet. So is an ask
+		// that stopped waiting, since nobody answered it.
+		if queued && !c.answered[ev.PendingID] && ev.Decision != daemon.DecisionExpired {
 			sv.add(kindNotice, fmt.Sprintf("approval for %s answered elsewhere: %s", ev.Tool, ev.Decision))
 		}
 		delete(c.answered, ev.PendingID)
@@ -206,6 +215,10 @@ func (c *cache) Apply(ev daemon.WireEvent) string {
 		if !known || sv.info.UpdatedAt.IsZero() {
 			sv.info.UpdatedAt = c.now()
 		}
+	case daemon.WireGrant:
+		grantEvent(sv, ev)
+	case daemon.WireBlocked:
+		sv.add(kindNotice, blockedNotice(ev))
 	case daemon.WireAgentState:
 		sv.working = ev.State == "running"
 		if !sv.working {
@@ -217,6 +230,19 @@ func (c *cache) Apply(ev daemon.WireEvent) string {
 		}
 	}
 	return id
+}
+
+// blockedNotice says a deny rule refused a call. Content, when the event
+// carries it, is the detail that follows.
+func blockedNotice(ev daemon.WireEvent) string {
+	s := "blocked by config: " + visible(ev.Tool)
+	if ev.Rule != "" {
+		s += " (rule " + visible(ev.Rule) + ")"
+	}
+	if ev.Content != "" {
+		s += " · " + visible(oneLine(ev.Content))
+	}
+	return s
 }
 
 // keep sets *field to v unless v is empty: an event that leaves a field out
@@ -368,6 +394,15 @@ func (c *cache) ClearApprovals() {
 	}
 }
 
+// ClearGrants forgets every timed grant. The global feed replays the live
+// grants on connect, so a grant that ended while the stream was down is
+// dropped here and one still running is set again by its replay.
+func (c *cache) ClearGrants() {
+	for _, sv := range c.sessions {
+		sv.grantUntil = time.Time{}
+	}
+}
+
 func (c *cache) markAnswered(root string, pendingID int64) {
 	c.answered[pendingID] = true
 	c.get(root).dropApproval(pendingID)
@@ -388,11 +423,35 @@ func (c *cache) pending(root string, pendingID int64) bool {
 }
 
 // restoreApproval puts back an approval whose answer failed to send, so the
-// overlay stays up and the human can try again.
+// card can be tried again. It goes to the back of the queue: a card that
+// keeps failing must not hold up the ones behind it.
 func (c *cache) restoreApproval(root string, ev daemon.WireEvent) {
 	delete(c.answered, ev.PendingID)
 	sv := c.get(root)
-	sv.approvals = append([]daemon.WireEvent{ev}, sv.approvals...)
+	sv.approvals = append(sv.approvals, ev)
+}
+
+// rootOf is the root session id above id: id itself when it has no known
+// parent. A sub-agent's grant and approvals belong to its root.
+func (c *cache) rootOf(id string) string {
+	// A parent chain cannot be longer than the number of sessions; the bound
+	// keeps a corrupt cycle from looping forever.
+	for range len(c.sessions) {
+		sv, ok := c.sessions[id]
+		if !ok || sv.info.ParentID == "" {
+			return id
+		}
+		id = sv.info.ParentID
+	}
+	return id
+}
+
+// grantOf is when the grant covering id ends, zero when none does.
+func (c *cache) grantOf(id string) time.Time {
+	if sv, ok := c.sessions[c.rootOf(id)]; ok {
+		return sv.grantUntil
+	}
+	return time.Time{}
 }
 
 // remove forgets a deleted session.

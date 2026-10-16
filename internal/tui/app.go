@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -28,10 +29,11 @@ const (
 	modeConfirm
 	modeHistory
 	modeModels
+	modeGrant
 )
 
 func (m mode) String() string {
-	return [...]string{"NORMAL", "INSERT", "COMMAND", "FILTER", "CONFIRM", "HISTORY", "MODELS"}[m]
+	return [...]string{"NORMAL", "INSERT", "COMMAND", "FILTER", "CONFIRM", "HISTORY", "MODELS", "GRANT"}[m]
 }
 
 // pane is which half of the chat screen NORMAL-mode keys drive.
@@ -122,7 +124,7 @@ type Options struct {
 }
 
 // commandNames are the `:` commands, for completion.
-var commandNames = []string{"agents", "chat", "clear", "compact", "companion", "context", "delete", "jobs", "model", "new", "q", "quit", "refine", "refinements", "sessions", "skills", "usage"}
+var commandNames = []string{"agents", "chat", "clear", "compact", "companion", "context", "delete", "grant", "jobs", "model", "new", "q", "quit", "refine", "refinements", "sessions", "skills", "usage"}
 
 // confirmState is the modal on screen. yes and alt run on the model's
 // goroutine when the key is pressed, so they may change the model before
@@ -215,6 +217,12 @@ type Model struct {
 	// the companion session is selected; nil anywhere else.
 	proposals []daemon.ProposalJSON
 
+	// grantDurations are the durations a timed grant may be started for,
+	// fetched on connect; empty when grants are off. grantPick is the
+	// picker on screen, nil unless mode is modeGrant.
+	grantDurations []string
+	grantPick      *grantPicker
+
 	history []string
 	histIdx int
 	draft   string
@@ -292,7 +300,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // the working line's spinner every frame, or an approval's countdown every
 // second. At most one tick is in flight, and it lapses once nothing moves.
 func (m *Model) armTick() tea.Cmd {
-	if m.ticking || m.table != nil || m.selected == "" || m.cache.State(m.selected) == daemon.SessionIdle {
+	// A live grant counts down on screen, so it keeps the tick going too.
+	if m.ticking || m.table != nil || m.selected == "" ||
+		(m.cache.State(m.selected) == daemon.SessionIdle && m.grantLeft() <= 0) {
 		return nil
 	}
 	m.ticking = true
@@ -324,7 +334,8 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		m.reconnecting = false
 		// The feed replays every live approval on connect.
 		m.cache.ClearApprovals()
-		cmds := []tea.Cmd{m.loadSessions()}
+		m.cache.ClearGrants()
+		cmds := []tea.Cmd{m.loadSessions(), m.loadGrantDurations()}
 		if m.selected != "" {
 			cmds = append(cmds, m.loadTranscript(m.selected))
 		}
@@ -410,6 +421,19 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		m.modelsLoaded(msg)
 		return nil
 
+	case grantDurationsMsg:
+		// A daemon that cannot say offers no grants, the same as one with
+		// timed grants off.
+		m.grantDurations = nil
+		if msg.err == nil {
+			m.grantDurations = msg.list
+		}
+		return nil
+
+	case grantMsg:
+		m.grantDone(msg)
+		return nil
+
 	case proposalsMsg:
 		if msg.session != m.selected {
 			return nil
@@ -457,6 +481,13 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		return nil
 
 	case approvalFailedMsg:
+		// The daemon no longer has this approval waiting. The card was
+		// already dropped when it was answered, so there is nothing to put
+		// back and nothing to report.
+		if errors.Is(msg.err, ErrApprovalGone) {
+			delete(m.cache.answered, msg.ev.PendingID)
+			return nil
+		}
 		m.cache.restoreApproval(msg.root, msg.ev)
 		m.flash = "could not answer the approval: " + msg.err.Error()
 		return nil
@@ -553,20 +584,11 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 	if k.Alt && k.Type == tea.KeyRunes && (m.mode == modeInsert || m.mode == modeNormal) {
 		// alt+y/n/s/p answers an approval from INSERT without giving up
 		// the draft; a modifier cannot be typed by accident mid-sentence.
-		// y and n settle this one call and change no policy, so they
-		// answer at once. s and p change the policy past this call, so
-		// they still ask, and the question says what changes.
+		// Each answers at once, and the flash line says what was sent.
 		if m.mode == modeInsert && m.table == nil {
 			if root, ev, ok := m.cache.approvalFor(m.selected); ok {
-				ans, isKey, offered := answerFor(ev, string(k.Runes))
-				switch {
-				case isKey && offered && ans.Scope == policy.ScopeOnce:
-					return m.resolve(root, ev, ans)
-				case isKey && m.answer(root, ev, string(k.Runes)):
-					if m.confirm != nil {
-						m.confirm.back = modeInsert
-					}
-					return nil
+				if cmd, isKey := m.answer(root, ev, string(k.Runes)); isKey {
+					return cmd
 				}
 			}
 		}
@@ -598,6 +620,8 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 		return m.keyHistory(k)
 	case modeModels:
 		return m.keyModels(k)
+	case modeGrant:
+		return m.keyGrant(k)
 	}
 	if m.table != nil {
 		return m.keyView(k)
@@ -609,8 +633,8 @@ func (m *Model) keyNormal(k tea.KeyMsg) tea.Cmd {
 	// An approval on screen takes y/n/s/p first. It is only live here, in
 	// NORMAL: a y typed into the input must never be read as consent.
 	if root, ev, ok := m.cache.approvalFor(m.selected); ok {
-		if m.answer(root, ev, k.String()) {
-			return nil
+		if cmd, isKey := m.answer(root, ev, k.String()); isKey {
+			return cmd
 		}
 	}
 	if m.focused() == paneSidebar {
@@ -947,6 +971,8 @@ func (m *Model) command(line string) tea.Cmd {
 		return m.confirmDelete(len(args) > 0 && args[0] == "all")
 	case "clear", "compact", "context":
 		return m.slash(name)
+	case "grant":
+		return m.grantCommand(args)
 	case "model":
 		return m.openModels()
 	case "refine":
@@ -1074,34 +1100,30 @@ func answerFor(ev daemon.WireEvent, k string) (ans policy.Answer, ok, offered bo
 	return policy.Answer{}, false, false
 }
 
-// answer opens the modal that confirms an approval key, reporting whether k
-// was one.
-func (m *Model) answer(root string, ev daemon.WireEvent, k string) bool {
+// answer sends the answer an approval key gives, reporting whether k was an
+// approval key. A p on an ask with no pattern is swallowed, not typed.
+func (m *Model) answer(root string, ev daemon.WireEvent, k string) (tea.Cmd, bool) {
+	if k == "a" {
+		// a opens the duration picker. With no durations configured it is
+		// swallowed, as a p with no pattern is, so it never types into INSERT.
+		if len(m.grantDurations) == 0 {
+			return nil, true
+		}
+		return m.openGrantPicker(root, m.mode), true
+	}
 	ans, ok, offered := answerFor(ev, k)
-	if !ok || !offered {
-		return ok // a p never offered is swallowed, not typed
+	if !ok {
+		return nil, false
 	}
-	detail := []string{`matched policy rule "` + ev.Rule + `"`}
-	if ev.Origin != "" {
-		detail = append(detail, "asked by sub-agent "+short(ev.Origin))
+	if !offered {
+		return nil, true
 	}
-	switch ans.Scope {
-	case policy.ScopeSession:
-		detail = append(detail, "changes the policy: "+ev.Tool+" runs without asking for the rest of this session")
-	case policy.ScopePattern:
-		detail = append(detail, "changes the policy: writes an allow rule to your config")
-	}
-	m.confirm = &confirmState{
-		question: answerQuestion(ev, ans),
-		detail:   detail,
-		yes:      func() tea.Cmd { return m.resolve(root, ev, ans) },
-	}
-	m.mode = modeConfirm
-	return true
+	return m.resolve(root, ev, ans), true
 }
 
-// resolve sends a confirmed answer. The approval may have been answered
-// elsewhere while the modal was open; then there is nothing left to send.
+// resolve sends an approval answer. The approval may have been answered
+// elsewhere, or have expired, since it was shown; then there is nothing left
+// to send.
 func (m *Model) resolve(root string, ev daemon.WireEvent, ans policy.Answer) tea.Cmd {
 	if !m.cache.pending(root, ev.PendingID) {
 		m.flash = "that approval was already answered"
@@ -1650,19 +1672,6 @@ func (m *Model) ExitSummary() string {
 		return ""
 	}
 	return strings.Join(out, "\n\n") + "\n"
-}
-
-// answerQuestion is the modal's question for an approval key.
-func answerQuestion(ev daemon.WireEvent, ans policy.Answer) string {
-	switch {
-	case !ans.Allow:
-		return "Deny " + ev.Tool + "?"
-	case ans.Scope == policy.ScopeSession:
-		return "Allow " + ev.Tool + " for this session?"
-	case ans.Scope == policy.ScopePattern:
-		return "Allow once and propose " + ev.Pattern + " for review?"
-	}
-	return "Allow " + ev.Tool + " once?"
 }
 
 // capitalize upper-cases a sentence's first letter.

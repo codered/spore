@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"sync"
@@ -79,6 +80,26 @@ func (b *Broker) Ask(ctx context.Context, a policy.Ask) (policy.Answer, error) {
 		b.mu.Unlock()
 	}()
 
+	// The suspension may have been settled before this waiter existed: a grant
+	// sweep reads the row, finds no waiter, and resolves it through the guard.
+	// Its card would then have no one to answer it, so the settle is taken as
+	// the answer and no card is published. The check runs after the waiter is
+	// registered, so a settle that lands later is delivered through the waiter.
+	if a.Settled != nil {
+		if decision, settled := a.Settled(); settled {
+			b.mu.Lock()
+			_, stillWaiting := b.waiters[a.PendingID]
+			delete(b.waiters, a.PendingID)
+			b.mu.Unlock()
+			if !stillWaiting {
+				// An Answer claimed the waiter first and is committed to send
+				// into the buffered channel. Its value is the answer.
+				return <-ch, nil
+			}
+			return policy.Answer{Allow: decision == "allow", Scope: policy.ScopeOnce}, nil
+		}
+	}
+
 	b.hub.Publish(rootID, approvalEvent(a))
 
 	select {
@@ -109,10 +130,26 @@ func (b *Broker) Ask(ctx context.Context, a policy.Ask) (policy.Answer, error) {
 			})
 			return ans, nil
 		}
-		// The guard turns a deadline into a denial and records it; the broker
-		// only reports why it stopped waiting.
+		// The guard turns a deadline into a denial and records it. Clients
+		// still need to hear that the approval is gone, or it sits in their
+		// queue until someone answers a question that no longer applies.
+		b.hub.Publish(rootID, WireEvent{
+			Type: WireResolved, PendingID: a.PendingID, Tool: a.Tool,
+			Decision: DecisionExpired,
+		})
 		return policy.Answer{}, ctx.Err()
 	}
+}
+
+// Blocked implements policy.BlockReporter. It publishes a refusal by a deny
+// rule to the root's topic. Origin names the asking session when it is a
+// sub-agent, so the client can say which agent was refused.
+func (b *Broker) Blocked(rootID, sessionID, tool, rule, detail string) {
+	ev := WireEvent{Type: WireBlocked, Tool: tool, Rule: rule, Content: detail}
+	if sessionID != rootID {
+		ev.Origin = sessionID
+	}
+	b.hub.Publish(rootID, ev)
 }
 
 // Answer hands an answer to a waiting Ask, reporting whether one was there.
@@ -197,6 +234,10 @@ func approvalEvent(a policy.Ask) WireEvent {
 	}
 	return ev
 }
+
+// DecisionExpired is the decision a resolved event carries when the ask
+// stopped waiting before anyone answered it. No answer was recorded.
+const DecisionExpired = "expired"
 
 func decisionOf(a policy.Answer) string {
 	if a.Allow {
@@ -320,7 +361,17 @@ func (s *Server) handleResolveApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.guard.Resolve(r.Context(), sessionID, pendingID, ans); err != nil {
-		writeError(w, http.StatusConflict, "%v", err)
+		// A suspension that is no longer pending is a conflict, and a caller
+		// who may not answer is refused. Anything else is a failure on our
+		// side, and the client should not treat it as a decision already made.
+		switch {
+		case errors.Is(err, policy.ErrNotPending):
+			writeError(w, http.StatusConflict, "%v", err)
+		case errors.Is(err, policy.ErrNotAuthorized):
+			writeError(w, http.StatusForbidden, "%v", err)
+		default:
+			writeError(w, http.StatusInternalServerError, "%v", err)
+		}
 		return
 	}
 	s.hub.Publish(sessionID, WireEvent{Type: WireResolved, PendingID: pendingID, Decision: decisionOf(ans)})

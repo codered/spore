@@ -67,6 +67,13 @@ type Ask struct {
 	Profile string
 	// Deadline is when an unanswered ask is denied. Zero means none.
 	Deadline time.Time
+	// Settled reports whether the suspension was already closed by another
+	// path (a grant sweep, or an answer from a second client) before the
+	// approver registered its wait. When settled is true, decision is the
+	// closed row's state ("allow", "deny", ...). An approver that finds the
+	// row settled must answer with that decision and must not show a card
+	// nobody can answer. Nil means the caller does not check.
+	Settled func() (decision string, settled bool)
 }
 
 type Answer struct {
@@ -79,6 +86,13 @@ type Answer struct {
 // over SSE, and Plan 4's bridge with inline keyboard buttons.
 type Approver interface {
 	Ask(ctx context.Context, a Ask) (Answer, error)
+}
+
+// BlockReporter is implemented by an approver that shows refusals to the
+// human. The guard reports every deny-rule refusal through it, grant or not.
+// The guard finds it by type assertion, so no constructor changes.
+type BlockReporter interface {
+	Blocked(rootID, sessionID, tool, rule, detail string)
 }
 
 type sessionKey struct{}
@@ -123,10 +137,13 @@ type Guard struct {
 	engine   atomic.Pointer[Engine]
 	approver Approver
 	store    *store.Store
+	grants   grantTable
+	// now is the clock grant expiry is judged by. Tests replace it.
+	now func() time.Time
 }
 
 func NewGuard(inner Runner, e *Engine, ap Approver, st *store.Store) *Guard {
-	g := &Guard{inner: inner, approver: ap, store: st}
+	g := &Guard{inner: inner, approver: ap, store: st, now: time.Now}
 	g.engine.Store(e)
 	return g
 }
@@ -182,6 +199,16 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 
 	switch res.Decision {
 	case DecisionDeny:
+		// Every deny-rule refusal is reported to the root, grant or not, so
+		// the UI can say it was blocked by config. A root that cannot be
+		// read falls back to the session itself.
+		if br, ok := g.approver.(BlockReporter); ok {
+			root, err := rootOf(ctx, g.store, sess.ID)
+			if err != nil {
+				root = sess.ID
+			}
+			br.Blocked(root, sess.ID, call.Name, res.Rule, res.Detail)
+		}
 		// Deny is absolute and is never escalated to a human: offering an
 		// approval prompt here is exactly the lever prompt injection wants.
 		// A deny that carries a detail is one the model can recover from by
@@ -194,14 +221,40 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 		return g.inner.Run(ctx, call)
 	}
 
-	// From here the decision is ask.
-	if remembered, ok, err := rootScopedDecision(ctx, g.store, sess.ID, call.Name); err == nil && ok {
-		if remembered == string(DecisionAllow) {
-			sporetrace.RecordPolicy(ctx, "allow", "approved earlier this session")
-			return g.inner.Run(ctx, call)
+	// From here the decision is ask. The root is resolved once and used for
+	// the grant, the remembered answer and the approval's topic.
+	root, rootErr := rootOf(ctx, g.store, sess.ID)
+	if rootErr != nil {
+		root = sess.ID
+	}
+
+	// A timed grant covers every ask in the root's tree. It is checked before
+	// the remembered answer: "allow all" is the newer, broader instruction.
+	// The call is audited as "grant" and no pending row is written.
+	if _, live := g.GrantUntil(root); live {
+		sporetrace.RecordPolicy(ctx, "allow", "timed grant")
+		book, cancelBook := context.WithTimeout(context.WithoutCancel(ctx), bookkeepingTimeout)
+		_ = g.store.RecordApproval(book, sess.ID, call.Name, call.Input, "allow", "grant")
+		cancelBook()
+		return g.inner.Run(ctx, call)
+	}
+
+	// A remembered "always this session" answer is read under the root, so one
+	// answer covers a whole agent tree. Per-child scoping was rejected: a
+	// fan-out would ask once per child for the same tool, and a detached child
+	// has nobody attached to answer at all, so its ask would run out the
+	// approval timeout and deny -- turning background work into silent
+	// failure. The containment for the wider scope is the trust profile the
+	// whole tree shares, and the baseline deny set no approval overrides.
+	if rootErr == nil {
+		if remembered, ok, err := g.store.SessionDecision(ctx, root, call.Name); err == nil && ok {
+			if remembered == string(DecisionAllow) {
+				sporetrace.RecordPolicy(ctx, "allow", "approved earlier this session")
+				return g.inner.Run(ctx, call)
+			}
+			sporetrace.RecordPolicy(ctx, "deny", "declined earlier this session")
+			return denied(call.ID, "the user declined %s earlier in this session", call.Name)
 		}
-		sporetrace.RecordPolicy(ctx, "deny", "declined earlier this session")
-		return denied(call.ID, "the user declined %s earlier in this session", call.Name)
 	}
 
 	if g.approver == nil {
@@ -239,13 +292,11 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 	askCtx, cancel := context.WithTimeout(ctx, eng.ApprovalTimeout())
 	defer cancel()
 
-	// The approval must be published to the root's topic so clients actually
-	// subscribed to the human can see and answer it. If rootOf fails, fall
-	// back to the session's own id — an ask that reaches the wrong topic is
-	// recoverable, a failed turn is not.
-	rootID := sess.ID
-	if root, err := rootOf(ctx, g.store, sess.ID); err == nil {
-		rootID = root
+	// A grant that started while this ask was being written still covers it.
+	// The grant is set before the sweep of waiting asks, so this check only
+	// narrows the window between the first check and the ask.
+	if _, live := g.GrantUntil(root); live {
+		return g.runGrantedPending(ctx, sess.ID, call, pendingID)
 	}
 
 	answer, err := g.approver.Ask(askCtx, Ask{
@@ -255,9 +306,21 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 		Rule:      res.Rule,
 		PendingID: pendingID,
 		Pattern:   pattern,
-		RootID:    rootID,
-		Profile:   string(sess.Profile),
-		Deadline:  askDeadline(askCtx),
+		// The approval is published to the root's topic so clients actually
+		// subscribed to the human can see and answer it.
+		RootID:   root,
+		Profile:  string(sess.Profile),
+		Deadline: askDeadline(askCtx),
+		Settled: func() (string, bool) {
+			// A grant can start after the check above and its sweep can settle
+			// this row before the approver has a waiter. The approver calls
+			// this after it registers the waiter, so it cannot miss the settle.
+			state, err := g.store.PendingCallState(context.WithoutCancel(ctx), pendingID)
+			if err != nil || state == "" || state == "pending" {
+				return "", false
+			}
+			return state, true
+		},
 	})
 
 	// Bookkeeping writes use a context detached from the caller's. When a turn
@@ -310,7 +373,7 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 
 		// When the scope is "this session" and the root differs from the session
 		// the row belongs to, record a second approval row under the ROOT so
-		// rootScopedDecision finds it. This way one answer covers the tree.
+		// the root-scoped lookup finds it. This way one answer covers the tree.
 		if scope == ScopeSession {
 			if root, err := rootOf(book, g.store, sess.ID); err == nil && root != sess.ID {
 				_ = g.store.RecordApproval(book, root, call.Name, call.Input, string(decision), string(scope))
@@ -331,6 +394,35 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 		return denied(call.ID, "the user declined this %s call", call.Name)
 	}
 	sporetrace.RecordPolicy(ctx, "allow", "user approved ("+string(answer.Scope)+")")
+	return g.inner.Run(ctx, call)
+}
+
+// runGrantedPending settles a suspension a grant covers before anyone was
+// asked, then runs the call. A won claim writes the "grant" audit row. A lost
+// claim means another path closed the row first: when that path allowed the
+// call (a sweep through Guard.Resolve), the call runs and the resolver's own
+// audit row stands, so no second row is written. Any other outcome, a deny or
+// a store error, refuses the call.
+func (g *Guard) runGrantedPending(ctx context.Context, sessionID string, call provider.Block, pendingID int64) provider.Block {
+	book, cancelBook := context.WithTimeout(context.WithoutCancel(ctx), bookkeepingTimeout)
+	defer cancelBook()
+	claimed, err := g.store.ResolvePendingCall(book, pendingID, string(DecisionAllow))
+	if err != nil {
+		sporetrace.RecordPolicy(ctx, "deny", "grant: approval could not be settled")
+		return denied(call.ID, "the approval for %s could not be settled, so the call did not run. Ask again if it is still needed.", call.Name)
+	}
+	if !claimed {
+		state, err := g.store.PendingCallState(book, pendingID)
+		if err != nil || state != string(DecisionAllow) {
+			sporetrace.RecordPolicy(ctx, "deny", "grant: approval settled elsewhere")
+			return denied(call.ID, "the approval for %s was settled before the call could run, so it did not run. Ask again if it is still needed.", call.Name)
+		}
+		// Another path allowed this call and wrote its audit row already.
+		sporetrace.RecordPolicy(ctx, "allow", "timed grant: already allowed elsewhere")
+		return g.inner.Run(ctx, call)
+	}
+	_ = g.store.RecordApproval(book, sessionID, call.Name, call.Input, string(DecisionAllow), "grant")
+	sporetrace.RecordPolicy(ctx, "allow", "timed grant")
 	return g.inner.Run(ctx, call)
 }
 
@@ -450,6 +542,16 @@ func (g *Guard) PendingTree(ctx context.Context, sessionID string) ([]store.Pend
 	return g.store.PendingCallsTree(ctx, sessionID)
 }
 
+// ErrNotPending means the approval was already answered, or belongs to
+// another session. Callers that map errors to responses test for it with
+// errors.Is.
+var ErrNotPending = errors.New("no pending approval")
+
+// ErrNotAuthorized means the caller may not answer this approval: a session
+// that is not an ancestor of the asker, or a sub-agent answering its own
+// approval. It is a refusal, not a conflict, so callers map it to 403.
+var ErrNotAuthorized = errors.New("not authorized to answer this approval")
+
 // Resolve answers a pending approval by id. It is the out-of-band path used
 // when the answer arrives from somewhere other than the Approver that asked —
 // a second client, or a process that restarted while the request was open.
@@ -476,7 +578,7 @@ func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, 
 				return err
 			}
 			if !ok {
-				return fmt.Errorf("session %s may not answer approvals for session %s", sessionID, p.SessionID)
+				return fmt.Errorf("session %s may not answer approvals for session %s: %w", sessionID, p.SessionID, ErrNotAuthorized)
 			}
 			owner = p.SessionID
 		} else {
@@ -489,7 +591,7 @@ func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, 
 				return err
 			}
 			if len(ancestors) > 0 {
-				return fmt.Errorf("a sub-agent may not answer its own approval")
+				return fmt.Errorf("a sub-agent may not answer its own approval: %w", ErrNotAuthorized)
 			}
 		}
 	}
@@ -508,11 +610,11 @@ func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, 
 		return err
 	}
 	if !won {
-		return fmt.Errorf("no pending call %d in session %s (already answered, or another session's)", pendingID, sessionID)
+		return fmt.Errorf("no pending call %d in session %s (already answered, or another session's): %w", pendingID, sessionID, ErrNotPending)
 	}
 	// When the scope is "this session" and the root differs from the session
 	// the row belongs to, record a second approval row under the ROOT so
-	// rootScopedDecision finds it. Do this after the claim succeeds so we know
+	// the root-scoped lookup finds it. Do this after the claim succeeds so we know
 	// the answer was actually recorded. If this write fails, follow the
 	// convention for learned rules: the tree simply asks again next time.
 	if ans.Scope == ScopeSession {
@@ -567,21 +669,6 @@ func isAncestor(ctx context.Context, st *store.Store, answerer, target string) (
 		}
 	}
 	return false, nil
-}
-
-// rootScopedDecision looks up a remembered "always this session" answer under
-// the root of the chain, so one answer covers a whole agent tree. Per-child
-// scoping was rejected: a fan-out would ask once per child for the same tool,
-// and a detached child has nobody attached to answer at all, so its ask would
-// run out the approval timeout and deny -- turning background work into
-// silent failure. The containment for the wider scope is the trust profile
-// the whole tree shares, and the baseline deny set no approval overrides.
-func rootScopedDecision(ctx context.Context, st *store.Store, sessionID, tool string) (string, bool, error) {
-	root, err := rootOf(ctx, st, sessionID)
-	if err != nil {
-		return "", false, err
-	}
-	return st.SessionDecision(ctx, root, tool)
 }
 
 // askDeadline is the moment the approval context expires, or zero.

@@ -173,18 +173,42 @@ func TestEndToEndDeniedCallNeverReachesTheBuiltin(t *testing.T) {
 	post := postJSON(t, ts.URL+"/api/sessions/"+id+"/messages", map[string]string{"text": "read /etc/passwd"})
 	post.Body.Close()
 
-	events := readSSE(t, r, 5) // turn_started, tool_call, tool_result (error), text, turn_done
+	events := readSSE(t, r, 6) // turn_started, tool_call, blocked, tool_result (error), text, turn_done
 	for _, ev := range events {
 		if ev.Type == WireApproval {
 			t.Fatal("a denied call produced an approval prompt; deny must never be escalated to a human")
 		}
 	}
-	if !events[2].IsError {
-		t.Fatalf("the out-of-workspace read was not refused: %+v", events[2])
+	// blocked is published straight to the hub while tool_call travels the
+	// agent's event channel, so its position relative to tool_call is not
+	// fixed. Find the events by type and require the refusal before the turn ends.
+	blocked := eventOfType(events, WireBlocked)
+	result := eventOfType(events, WireToolResult)
+	if blocked < 0 || result < 0 {
+		t.Fatalf("want a blocked event and a tool result, got %+v", events)
 	}
-	if !strings.Contains(events[2].Content, "denied by policy") {
-		t.Errorf("refusal text = %q, want it to name the policy", events[2].Content)
+	if done := eventOfType(events, WireTurnDone); done < 0 || blocked > done {
+		t.Errorf("blocked must arrive before turn_done: %+v", events)
 	}
+	if events[blocked].Rule != "fs_*(path outside workspace)" {
+		t.Fatalf("the refusal was not reported as blocked by config: %+v", events[blocked])
+	}
+	if !events[result].IsError {
+		t.Fatalf("the out-of-workspace read was not refused: %+v", events[result])
+	}
+	if !strings.Contains(events[result].Content, "denied by policy") {
+		t.Errorf("refusal text = %q, want it to name the policy", events[result].Content)
+	}
+}
+
+// eventOfType is the index of the first event of typ, or -1 when none has it.
+func eventOfType(events []WireEvent, typ string) int {
+	for i, ev := range events {
+		if ev.Type == typ {
+			return i
+		}
+	}
+	return -1
 }
 
 // The full approval round trip: a turn suspends, the approval arrives over
@@ -432,12 +456,22 @@ ask = ["fs_write"]
 	post := postJSON(t, ts.URL+"/api/sessions/"+id+"/messages", map[string]string{"text": "read the absolute path"})
 	post.Body.Close()
 
-	events := readSSE(t, r, 5) // turn_started, tool_call, tool_result, text, turn_done
-	if !events[2].IsError {
-		t.Fatalf("a read outside the session's own workspace (but inside the ceiling) was allowed: %+v", events[2])
+	events := readSSE(t, r, 6) // turn_started, tool_call, blocked, tool_result, text, turn_done
+	// As in the denied-call test, blocked and the tool result are found by
+	// type: their order is not fixed, but both must arrive before turn_done.
+	blocked := eventOfType(events, WireBlocked)
+	result := eventOfType(events, WireToolResult)
+	if blocked < 0 || result < 0 {
+		t.Fatalf("want a blocked event and a tool result, got %+v", events)
 	}
-	if !strings.Contains(events[2].Content, "path outside workspace") {
-		t.Errorf("refusal text = %q, want it to name the path-outside-workspace rule", events[2].Content)
+	if done := eventOfType(events, WireTurnDone); done < 0 || blocked > done {
+		t.Errorf("blocked must arrive before turn_done: %+v", events)
+	}
+	if !events[result].IsError {
+		t.Fatalf("a read outside the session's own workspace (but inside the ceiling) was allowed: %+v", events[result])
+	}
+	if !strings.Contains(events[result].Content, "path outside workspace") {
+		t.Errorf("refusal text = %q, want it to name the path-outside-workspace rule", events[result].Content)
 	}
 	if _, err := os.ReadFile(secretPath); err != nil {
 		t.Fatalf("the source file should be untouched: %v", err)

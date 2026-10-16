@@ -890,6 +890,21 @@ func (s *Store) PendingCallByID(ctx context.Context, id int64) (PendingCall, boo
 	return p, true, nil
 }
 
+// PendingCallState returns a suspension's state: "pending", or the decision
+// that closed it. A missing row reports "" with no error, so a caller that
+// only acts on "allow" refuses an unknown id.
+func (s *Store) PendingCallState(ctx context.Context, id int64) (string, error) {
+	var state string
+	err := s.db.QueryRowContext(ctx, `SELECT state FROM pending_calls WHERE id = ?`, id).Scan(&state)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read pending call %d state: %w", id, err)
+	}
+	return state, nil
+}
+
 // ResolvePendingCall closes a suspension with the decision that ended it:
 // allow, deny, timeout or error. The state guard makes it idempotent — a
 // second call for an already-answered suspension changes nothing. The bool

@@ -34,6 +34,14 @@ type Engine struct {
 	base     ruleset
 	profiles map[Profile]ruleset
 	timeout  time.Duration
+	// grants holds the timed-grant choices in config order. Each keeps the
+	// text the operator wrote, so a lookup matches that text and nothing else.
+	grants []grantChoice
+}
+
+type grantChoice struct {
+	text string
+	d    time.Duration
 }
 
 func parseAll(d Decision, srcs []string) ([]Rule, error) {
@@ -64,6 +72,13 @@ func NewEngine(cfg config.PolicyConfig) (*Engine, error) {
 		base:     base,
 		profiles: map[Profile]ruleset{},
 		timeout:  timeout,
+	}
+	for _, g := range cfg.GrantDurations {
+		d, err := time.ParseDuration(g)
+		if err != nil {
+			return nil, fmt.Errorf("policy.grant_durations %q: %w", g, err)
+		}
+		e.grants = append(e.grants, grantChoice{text: g, d: d})
 	}
 	for name, p := range cfg.Profiles {
 		def := p.Default
@@ -163,6 +178,37 @@ func tagged(rs []Rule, source string) []Rule {
 
 func (e *Engine) Workspace() string              { return e.env.Workspace }
 func (e *Engine) ApprovalTimeout() time.Duration { return e.timeout }
+
+// GrantDurations returns the configured timed-grant durations in config order.
+func (e *Engine) GrantDurations() []time.Duration {
+	out := make([]time.Duration, 0, len(e.grants))
+	for _, g := range e.grants {
+		out = append(out, g.d)
+	}
+	return out
+}
+
+// GrantChoices returns the configured timed-grant strings in config order, as
+// the client must send them. Error messages list these, not the durations: a
+// duration has no single spelling, so "1h" and "60m" are different choices.
+func (e *Engine) GrantChoices() []string {
+	out := make([]string, 0, len(e.grants))
+	for _, g := range e.grants {
+		out = append(out, g.text)
+	}
+	return out
+}
+
+// GrantDuration returns the duration for s when s is exactly one of the
+// configured strings. "60m" does not match "1h": the choice is the text.
+func (e *Engine) GrantDuration(s string) (time.Duration, bool) {
+	for _, g := range e.grants {
+		if g.text == s {
+			return g.d, true
+		}
+	}
+	return 0, false
+}
 
 // ruleset is the rules a session on profile p is evaluated against: its own,
 // or the base set when no profile of that name is configured. Evaluate makes

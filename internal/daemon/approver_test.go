@@ -3,11 +3,14 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/store"
 )
@@ -515,5 +518,311 @@ func TestReplayedApprovalOffersTheStoredPattern(t *testing.T) {
 	}
 	if evs[1].Pattern != "" {
 		t.Errorf("a call stored with no pattern replayed %q; the option must stay hidden", evs[1].Pattern)
+	}
+}
+
+// A timed-out ask tells the root's clients it expired, so the approval
+// leaves their queue. The decision carries no allow or deny.
+func TestAskTimeoutPublishesExpired(t *testing.T) {
+	h := NewHub()
+	b := NewBroker(h)
+	events, stop := h.Subscribe("s1")
+	defer stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := b.Ask(ctx, policy.Ask{SessionID: "s1", Tool: "shell_exec", PendingID: 11})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Ask returned %v, want context.DeadlineExceeded", err)
+	}
+	assertExpiredResolved(t, events, 11, "shell_exec")
+}
+
+func TestAskCancelPublishesExpired(t *testing.T) {
+	h := NewHub()
+	b := NewBroker(h)
+	events, stop := h.Subscribe("s1")
+	defer stop()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.Ask(ctx, policy.Ask{SessionID: "s1", Tool: "fs_write", PendingID: 12})
+		done <- err
+	}()
+	// Wait for the ask to publish itself before cancelling it.
+	select {
+	case <-events:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ask published no approval event")
+	}
+	cancel()
+
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Ask returned %v, want context.Canceled", err)
+	}
+	assertExpiredResolved(t, events, 12, "fs_write")
+}
+
+// An answered ask publishes exactly one resolved event, and it is the
+// answer, never "expired".
+func TestAnsweredAskPublishesOnce(t *testing.T) {
+	h := NewHub()
+	b := NewBroker(h)
+	events, stop := h.Subscribe("s1")
+	defer stop()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.Ask(context.Background(), policy.Ask{SessionID: "s1", Tool: "fs_write", PendingID: 13})
+		done <- err
+	}()
+	waitForBrokerWaiter(t, b, 13)
+	if !b.Answer("s1", 13, policy.Answer{Allow: true, Scope: policy.ScopeOnce}) {
+		t.Fatal("Answer reported no waiter")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("Ask returned %v", err)
+	}
+
+	var resolved []WireEvent
+	for len(events) > 0 {
+		if ev := <-events; ev.Type == WireResolved {
+			resolved = append(resolved, ev)
+		}
+	}
+	if len(resolved) != 1 {
+		t.Fatalf("got %d resolved events, want exactly 1: %+v", len(resolved), resolved)
+	}
+	if resolved[0].Decision != "allow" {
+		t.Errorf("resolved decision = %q, want \"allow\"", resolved[0].Decision)
+	}
+}
+
+func assertExpiredResolved(t *testing.T, events <-chan WireEvent, pendingID int64, tool string) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-events:
+			if ev.Type != WireResolved {
+				continue
+			}
+			want := WireEvent{Type: WireResolved, PendingID: pendingID, Tool: tool, Decision: DecisionExpired}
+			if ev.PendingID != want.PendingID || ev.Tool != want.Tool || ev.Decision != want.Decision {
+				t.Fatalf("resolved event = %+v, want %+v", ev, want)
+			}
+			return
+		case <-deadline:
+			t.Fatal("no resolved event was published for the expired ask")
+		}
+	}
+}
+
+func waitForBrokerWaiter(t *testing.T, b *Broker, id int64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		b.mu.Lock()
+		_, ok := b.waiters[id]
+		b.mu.Unlock()
+		if ok {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("no waiter registered for pending %d", id)
+}
+
+// A resolve for a suspension that is no longer pending is a conflict; a
+// store failure is a server error, not a decision the client already made.
+func TestResolveApprovalStatus(t *testing.T) {
+	s, ts := newTestServer(t)
+	engine, err := policy.NewEngine(config.Default().Policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.guard = policy.NewGuard(nil, engine, s.Approver(), s.Store())
+
+	res := postJSON(t, ts.URL+"/api/sessions", map[string]string{"title": "status"})
+	var sess SessionJSON
+	if err := json.NewDecoder(res.Body).Decode(&sess); err != nil {
+		t.Fatalf("decode session: %v", err)
+	}
+	res.Body.Close()
+
+	ctx := context.Background()
+	pendingID, err := s.Store().AddPendingCall(ctx, store.PendingCall{
+		SessionID: sess.ID, ToolUseID: "c1", Tool: "fs_write",
+		ArgsJSON: []byte(`{"path":"x"}`), Profile: "local", Rule: "fs_write",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Store().ResolvePendingCall(ctx, pendingID, "allow"); err != nil {
+		t.Fatal(err)
+	}
+
+	url := fmt.Sprintf("%s/api/sessions/%s/approvals/%d", ts.URL, sess.ID, pendingID)
+	conflict := postJSON(t, url, map[string]any{"allow": true, "scope": "once"})
+	defer conflict.Body.Close()
+	if conflict.StatusCode != http.StatusConflict {
+		t.Errorf("already-resolved status = %d, want 409", conflict.StatusCode)
+	}
+
+	// Breaking the approvals table makes the claim fail after the session and
+	// the pending row are read, so the handler sees a store error, not a
+	// missing suspension.
+	pending2, err := s.Store().AddPendingCall(ctx, store.PendingCall{
+		SessionID: sess.ID, ToolUseID: "c2", Tool: "fs_write",
+		ArgsJSON: []byte(`{"path":"y"}`), Profile: "local", Rule: "fs_write",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Store().DB().ExecContext(ctx, `DROP TABLE approvals`); err != nil {
+		t.Fatal(err)
+	}
+	broken := postJSON(t, fmt.Sprintf("%s/api/sessions/%s/approvals/%d", ts.URL, sess.ID, pending2),
+		map[string]any{"allow": true, "scope": "once"})
+	defer broken.Body.Close()
+	if broken.StatusCode != http.StatusInternalServerError {
+		t.Errorf("store failure status = %d, want 500", broken.StatusCode)
+	}
+}
+
+// A sub-agent may not answer an approval raised by its own session. The
+// refusal is a 403, not a conflict and not a server error.
+func TestSubAgentSelfApprovalIsForbidden(t *testing.T) {
+	s, ts := newTestServer(t)
+	engine, err := policy.NewEngine(config.Default().Policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.guard = policy.NewGuard(nil, engine, s.Approver(), s.Store())
+
+	ctx := context.Background()
+	parent, err := s.Store().CreateSession(ctx, "parent", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := s.Store().CreateChildSession(ctx, "child", "", parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingID, err := s.Store().AddPendingCall(ctx, store.PendingCall{
+		SessionID: child, ToolUseID: "c1", Tool: "fs_write",
+		ArgsJSON: []byte(`{"path":"x"}`), Profile: "local", Rule: "fs_write",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res := postJSON(t, fmt.Sprintf("%s/api/sessions/%s/approvals/%d", ts.URL, child, pendingID),
+		map[string]any{"allow": true, "scope": "once"})
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Errorf("sub-agent self-approval status = %d, want 403", res.StatusCode)
+	}
+}
+
+func TestBrokerBlockedPublishes(t *testing.T) {
+	h := NewHub()
+	b := NewBroker(h)
+	events, stop := h.Subscribe("root")
+	defer stop()
+
+	next := func() WireEvent {
+		t.Helper()
+		select {
+		case ev := <-events:
+			return ev
+		case <-time.After(2 * time.Second):
+			t.Fatal("Blocked published nothing")
+			return WireEvent{}
+		}
+	}
+
+	// A sub-agent's refusal names the agent as its origin.
+	b.Blocked("root", "child", "shell_exec", "shell_exec(matches curl)", "")
+	ev := next()
+	if ev.Type != WireBlocked || ev.Tool != "shell_exec" || ev.Rule != "shell_exec(matches curl)" {
+		t.Errorf("published %+v, want a blocked event for shell_exec", ev)
+	}
+	if ev.Origin != "child" || ev.Content != "" {
+		t.Errorf("origin = %q content = %q, want child and no detail", ev.Origin, ev.Content)
+	}
+
+	// The root's own refusal has no origin, and its detail travels in Content.
+	b.Blocked("root", "root", "mcp__srv__read", "mcp__*(any path outside workspace)", "path /etc/passwd is outside")
+	ev = next()
+	if ev.Origin != "" || ev.Content != "path /etc/passwd is outside" {
+		t.Errorf("published %+v, want no origin and the detail in content", ev)
+	}
+}
+
+// A suspension settled before the broker has a waiter (a grant sweep found no
+// waiter and resolved it through the guard) is answered by that settle. No
+// approval card is published, because no one could answer it.
+func TestBrokerSettledBeforeTheWaitAnswersWithoutACard(t *testing.T) {
+	for _, tc := range []struct {
+		state string
+		want  bool
+	}{{"allow", true}, {"deny", false}, {"timeout", false}} {
+		t.Run(tc.state, func(t *testing.T) {
+			h := NewHub()
+			b := NewBroker(h)
+			events, stop := h.Subscribe("s1")
+			defer stop()
+
+			ans, err := b.Ask(context.Background(), policy.Ask{
+				SessionID: "s1", Tool: "shell_exec", PendingID: 9,
+				Settled: func() (string, bool) { return tc.state, true },
+			})
+			if err != nil {
+				t.Fatalf("Ask returned %v", err)
+			}
+			if ans.Allow != tc.want || ans.Scope != policy.ScopeOnce {
+				t.Errorf("Ask returned %+v, want Allow=%v scope once", ans, tc.want)
+			}
+			select {
+			case ev := <-events:
+				t.Errorf("a settled ask published %+v, want no approval card", ev)
+			default:
+			}
+			if b.Answer("s1", 9, policy.Answer{Allow: true}) {
+				t.Error("a settled ask left a waiter behind")
+			}
+		})
+	}
+}
+
+// A settle that reports nothing pending leaves the ask waiting and carded as
+// before, so an unsettled row still reaches a human.
+func TestBrokerUnsettledAskStillPublishes(t *testing.T) {
+	h := NewHub()
+	b := NewBroker(h)
+	events, stop := h.Subscribe("s1")
+	defer stop()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.Ask(context.Background(), policy.Ask{
+			SessionID: "s1", Tool: "shell_exec", PendingID: 10,
+			Settled: func() (string, bool) { return "", false },
+		})
+		done <- err
+	}()
+	select {
+	case ev := <-events:
+		if ev.Type != WireApproval || ev.PendingID != 10 {
+			t.Fatalf("published %+v, want an approval for pending 10", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("an unsettled ask published no approval card")
+	}
+	b.Answer("s1", 10, policy.Answer{Allow: true})
+	if err := <-done; err != nil {
+		t.Fatalf("Ask returned %v", err)
 	}
 }
