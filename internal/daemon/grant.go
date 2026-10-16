@@ -50,7 +50,10 @@ func (s *Server) handleStartGrant(w http.ResponseWriter, r *http.Request) {
 	// is covered by the grant instead of waiting on a card.
 	s.guard.StartGrant(id, until)
 	s.hub.Publish(id, WireEvent{Type: WireGrant, ExpiresAt: expiresAt(until)})
-	s.sweepGrantedAsks(r.Context(), id)
+	// The sweep settles rows through the store. A client that disconnects
+	// now must not cancel it half way and leave a waiting ask pending, so it
+	// runs on a context that keeps the request's values but not its cancel.
+	s.sweepGrantedAsks(context.WithoutCancel(r.Context()), id)
 	writeJSON(w, http.StatusOK, map[string]string{"expires_at": expiresAt(until)})
 }
 
