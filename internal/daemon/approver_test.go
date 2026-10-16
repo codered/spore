@@ -725,3 +725,38 @@ func TestSubAgentSelfApprovalIsForbidden(t *testing.T) {
 		t.Errorf("sub-agent self-approval status = %d, want 403", res.StatusCode)
 	}
 }
+
+func TestBrokerBlockedPublishes(t *testing.T) {
+	h := NewHub()
+	b := NewBroker(h)
+	events, stop := h.Subscribe("root")
+	defer stop()
+
+	next := func() WireEvent {
+		t.Helper()
+		select {
+		case ev := <-events:
+			return ev
+		case <-time.After(2 * time.Second):
+			t.Fatal("Blocked published nothing")
+			return WireEvent{}
+		}
+	}
+
+	// A sub-agent's refusal names the agent as its origin.
+	b.Blocked("root", "child", "shell_exec", "shell_exec(matches curl)", "")
+	ev := next()
+	if ev.Type != WireBlocked || ev.Tool != "shell_exec" || ev.Rule != "shell_exec(matches curl)" {
+		t.Errorf("published %+v, want a blocked event for shell_exec", ev)
+	}
+	if ev.Origin != "child" || ev.Content != "" {
+		t.Errorf("origin = %q content = %q, want child and no detail", ev.Origin, ev.Content)
+	}
+
+	// The root's own refusal has no origin, and its detail travels in Content.
+	b.Blocked("root", "root", "mcp__srv__read", "mcp__*(any path outside workspace)", "path /etc/passwd is outside")
+	ev = next()
+	if ev.Origin != "" || ev.Content != "path /etc/passwd is outside" {
+		t.Errorf("published %+v, want no origin and the detail in content", ev)
+	}
+}

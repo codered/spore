@@ -121,6 +121,17 @@ func (b *Broker) Ask(ctx context.Context, a policy.Ask) (policy.Answer, error) {
 	}
 }
 
+// Blocked implements policy.BlockReporter. It publishes a refusal by a deny
+// rule to the root's topic. Origin names the asking session when it is a
+// sub-agent, so the client can say which agent was refused.
+func (b *Broker) Blocked(rootID, sessionID, tool, rule, detail string) {
+	ev := WireEvent{Type: WireBlocked, Tool: tool, Rule: rule, Content: detail}
+	if sessionID != rootID {
+		ev.Origin = sessionID
+	}
+	b.hub.Publish(rootID, ev)
+}
+
 // Answer hands an answer to a waiting Ask, reporting whether one was there.
 // False means the daemon restarted (or the turn was abandoned) since the
 // suspension was written, and the caller should use Guard.Resolve instead.

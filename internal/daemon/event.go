@@ -28,6 +28,12 @@ const (
 	// WireJobNote is a note spore wrote into the chat, such as "job 1 ran",
 	// carried in Text. It is not part of any turn.
 	WireJobNote = "job_note"
+	// WireBlocked says a deny rule refused a call. It is live only and
+	// carries the tool and rule; Content holds the detail when there is one.
+	WireBlocked = "blocked"
+	// WireGrant says a timed grant started or ended on a root session.
+	// ExpiresAt is empty when it ended.
+	WireGrant = "grant"
 )
 
 // WireEvent is one server-sent event. It is comparable on purpose — tests

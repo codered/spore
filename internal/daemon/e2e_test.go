@@ -173,17 +173,20 @@ func TestEndToEndDeniedCallNeverReachesTheBuiltin(t *testing.T) {
 	post := postJSON(t, ts.URL+"/api/sessions/"+id+"/messages", map[string]string{"text": "read /etc/passwd"})
 	post.Body.Close()
 
-	events := readSSE(t, r, 5) // turn_started, tool_call, tool_result (error), text, turn_done
+	events := readSSE(t, r, 6) // turn_started, tool_call, blocked, tool_result (error), text, turn_done
 	for _, ev := range events {
 		if ev.Type == WireApproval {
 			t.Fatal("a denied call produced an approval prompt; deny must never be escalated to a human")
 		}
 	}
-	if !events[2].IsError {
-		t.Fatalf("the out-of-workspace read was not refused: %+v", events[2])
+	if events[2].Type != WireBlocked || events[2].Rule != "fs_*(path outside workspace)" {
+		t.Fatalf("the refusal was not reported as blocked by config: %+v", events[2])
 	}
-	if !strings.Contains(events[2].Content, "denied by policy") {
-		t.Errorf("refusal text = %q, want it to name the policy", events[2].Content)
+	if !events[3].IsError {
+		t.Fatalf("the out-of-workspace read was not refused: %+v", events[3])
+	}
+	if !strings.Contains(events[3].Content, "denied by policy") {
+		t.Errorf("refusal text = %q, want it to name the policy", events[3].Content)
 	}
 }
 
@@ -432,12 +435,15 @@ ask = ["fs_write"]
 	post := postJSON(t, ts.URL+"/api/sessions/"+id+"/messages", map[string]string{"text": "read the absolute path"})
 	post.Body.Close()
 
-	events := readSSE(t, r, 5) // turn_started, tool_call, tool_result, text, turn_done
-	if !events[2].IsError {
-		t.Fatalf("a read outside the session's own workspace (but inside the ceiling) was allowed: %+v", events[2])
+	events := readSSE(t, r, 6) // turn_started, tool_call, blocked, tool_result, text, turn_done
+	if events[2].Type != WireBlocked {
+		t.Fatalf("the refusal was not reported as blocked by config: %+v", events[2])
 	}
-	if !strings.Contains(events[2].Content, "path outside workspace") {
-		t.Errorf("refusal text = %q, want it to name the path-outside-workspace rule", events[2].Content)
+	if !events[3].IsError {
+		t.Fatalf("a read outside the session's own workspace (but inside the ceiling) was allowed: %+v", events[3])
+	}
+	if !strings.Contains(events[3].Content, "path outside workspace") {
+		t.Errorf("refusal text = %q, want it to name the path-outside-workspace rule", events[3].Content)
 	}
 	if _, err := os.ReadFile(secretPath); err != nil {
 		t.Fatalf("the source file should be untouched: %v", err)
