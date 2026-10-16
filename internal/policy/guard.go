@@ -450,6 +450,11 @@ func (g *Guard) PendingTree(ctx context.Context, sessionID string) ([]store.Pend
 	return g.store.PendingCallsTree(ctx, sessionID)
 }
 
+// ErrNotPending means the approval was already answered, or belongs to
+// another session. Callers that map errors to responses test for it with
+// errors.Is.
+var ErrNotPending = errors.New("no pending approval")
+
 // Resolve answers a pending approval by id. It is the out-of-band path used
 // when the answer arrives from somewhere other than the Approver that asked —
 // a second client, or a process that restarted while the request was open.
@@ -508,7 +513,7 @@ func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, 
 		return err
 	}
 	if !won {
-		return fmt.Errorf("no pending call %d in session %s (already answered, or another session's)", pendingID, sessionID)
+		return fmt.Errorf("no pending call %d in session %s (already answered, or another session's): %w", pendingID, sessionID, ErrNotPending)
 	}
 	// When the scope is "this session" and the root differs from the session
 	// the row belongs to, record a second approval row under the ROOT so

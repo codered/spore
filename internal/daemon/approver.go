@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"sync"
@@ -109,8 +110,13 @@ func (b *Broker) Ask(ctx context.Context, a policy.Ask) (policy.Answer, error) {
 			})
 			return ans, nil
 		}
-		// The guard turns a deadline into a denial and records it; the broker
-		// only reports why it stopped waiting.
+		// The guard turns a deadline into a denial and records it. Clients
+		// still need to hear that the approval is gone, or it sits in their
+		// queue until someone answers a question that no longer applies.
+		b.hub.Publish(rootID, WireEvent{
+			Type: WireResolved, PendingID: a.PendingID, Tool: a.Tool,
+			Decision: DecisionExpired,
+		})
 		return policy.Answer{}, ctx.Err()
 	}
 }
@@ -197,6 +203,10 @@ func approvalEvent(a policy.Ask) WireEvent {
 	}
 	return ev
 }
+
+// DecisionExpired is the decision a resolved event carries when the ask
+// stopped waiting before anyone answered it. No answer was recorded.
+const DecisionExpired = "expired"
 
 func decisionOf(a policy.Answer) string {
 	if a.Allow {
@@ -320,7 +330,14 @@ func (s *Server) handleResolveApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.guard.Resolve(r.Context(), sessionID, pendingID, ans); err != nil {
-		writeError(w, http.StatusConflict, "%v", err)
+		// Only a suspension that is no longer pending is a conflict. Anything
+		// else is a failure on our side, and the client should not treat it
+		// as a decision that was already made.
+		if errors.Is(err, policy.ErrNotPending) {
+			writeError(w, http.StatusConflict, "%v", err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
 	}
 	s.hub.Publish(sessionID, WireEvent{Type: WireResolved, PendingID: pendingID, Decision: decisionOf(ans)})

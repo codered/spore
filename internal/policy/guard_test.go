@@ -979,3 +979,39 @@ func TestRunStoresThePatternItOffers(t *testing.T) {
 		t.Errorf("stored pattern = %q (%v %v), want the offered %q", p.Pattern, found, err, ask.Pattern)
 	}
 }
+
+// Resolving an approval that is already answered returns ErrNotPending, so
+// the HTTP handler can answer 409 instead of 500.
+func TestResolveNotPendingSentinel(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	sid, err := st.CreateSession(ctx, "test session", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingID, err := st.AddPendingCall(ctx, store.PendingCall{
+		SessionID: sid,
+		ToolUseID: "c1",
+		Tool:      "fs_read",
+		ArgsJSON:  []byte(`{"path":"/etc/passwd"}`),
+		Profile:   string(ProfileRemote),
+		Rule:      "policy.deny",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	guard := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{}), nil, st)
+	if err := guard.Resolve(ctx, sid, pendingID, Answer{Allow: true, Scope: ScopeOnce}); err != nil {
+		t.Fatalf("first Resolve failed: %v", err)
+	}
+	err = guard.Resolve(ctx, sid, pendingID, Answer{Allow: false, Scope: ScopeOnce})
+	if !errors.Is(err, ErrNotPending) {
+		t.Fatalf("second Resolve error = %v, want one wrapping ErrNotPending", err)
+	}
+}

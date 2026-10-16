@@ -3,11 +3,14 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/store"
 )
@@ -515,5 +518,173 @@ func TestReplayedApprovalOffersTheStoredPattern(t *testing.T) {
 	}
 	if evs[1].Pattern != "" {
 		t.Errorf("a call stored with no pattern replayed %q; the option must stay hidden", evs[1].Pattern)
+	}
+}
+
+// A timed-out ask tells the root's clients it expired, so the approval
+// leaves their queue. The decision carries no allow or deny.
+func TestAskTimeoutPublishesExpired(t *testing.T) {
+	h := NewHub()
+	b := NewBroker(h)
+	events, stop := h.Subscribe("s1")
+	defer stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := b.Ask(ctx, policy.Ask{SessionID: "s1", Tool: "shell_exec", PendingID: 11})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Ask returned %v, want context.DeadlineExceeded", err)
+	}
+	assertExpiredResolved(t, events, 11, "shell_exec")
+}
+
+func TestAskCancelPublishesExpired(t *testing.T) {
+	h := NewHub()
+	b := NewBroker(h)
+	events, stop := h.Subscribe("s1")
+	defer stop()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.Ask(ctx, policy.Ask{SessionID: "s1", Tool: "fs_write", PendingID: 12})
+		done <- err
+	}()
+	// Wait for the ask to publish itself before cancelling it.
+	select {
+	case <-events:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ask published no approval event")
+	}
+	cancel()
+
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Ask returned %v, want context.Canceled", err)
+	}
+	assertExpiredResolved(t, events, 12, "fs_write")
+}
+
+// An answered ask publishes exactly one resolved event, and it is the
+// answer, never "expired".
+func TestAnsweredAskPublishesOnce(t *testing.T) {
+	h := NewHub()
+	b := NewBroker(h)
+	events, stop := h.Subscribe("s1")
+	defer stop()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.Ask(context.Background(), policy.Ask{SessionID: "s1", Tool: "fs_write", PendingID: 13})
+		done <- err
+	}()
+	waitForBrokerWaiter(t, b, 13)
+	if !b.Answer("s1", 13, policy.Answer{Allow: true, Scope: policy.ScopeOnce}) {
+		t.Fatal("Answer reported no waiter")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("Ask returned %v", err)
+	}
+
+	var resolved []WireEvent
+	for len(events) > 0 {
+		if ev := <-events; ev.Type == WireResolved {
+			resolved = append(resolved, ev)
+		}
+	}
+	if len(resolved) != 1 {
+		t.Fatalf("got %d resolved events, want exactly 1: %+v", len(resolved), resolved)
+	}
+	if resolved[0].Decision != "allow" {
+		t.Errorf("resolved decision = %q, want \"allow\"", resolved[0].Decision)
+	}
+}
+
+func assertExpiredResolved(t *testing.T, events <-chan WireEvent, pendingID int64, tool string) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-events:
+			if ev.Type != WireResolved {
+				continue
+			}
+			want := WireEvent{Type: WireResolved, PendingID: pendingID, Tool: tool, Decision: DecisionExpired}
+			if ev.PendingID != want.PendingID || ev.Tool != want.Tool || ev.Decision != want.Decision {
+				t.Fatalf("resolved event = %+v, want %+v", ev, want)
+			}
+			return
+		case <-deadline:
+			t.Fatal("no resolved event was published for the expired ask")
+		}
+	}
+}
+
+func waitForBrokerWaiter(t *testing.T, b *Broker, id int64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		b.mu.Lock()
+		_, ok := b.waiters[id]
+		b.mu.Unlock()
+		if ok {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("no waiter registered for pending %d", id)
+}
+
+// A resolve for a suspension that is no longer pending is a conflict; a
+// store failure is a server error, not a decision the client already made.
+func TestResolveApprovalStatus(t *testing.T) {
+	s, ts := newTestServer(t)
+	engine, err := policy.NewEngine(config.Default().Policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.guard = policy.NewGuard(nil, engine, s.Approver(), s.Store())
+
+	res := postJSON(t, ts.URL+"/api/sessions", map[string]string{"title": "status"})
+	var sess SessionJSON
+	json.NewDecoder(res.Body).Decode(&sess)
+	res.Body.Close()
+
+	ctx := context.Background()
+	pendingID, err := s.Store().AddPendingCall(ctx, store.PendingCall{
+		SessionID: sess.ID, ToolUseID: "c1", Tool: "fs_write",
+		ArgsJSON: []byte(`{"path":"x"}`), Profile: "local", Rule: "fs_write",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Store().ResolvePendingCall(ctx, pendingID, "allow"); err != nil {
+		t.Fatal(err)
+	}
+
+	url := fmt.Sprintf("%s/api/sessions/%s/approvals/%d", ts.URL, sess.ID, pendingID)
+	conflict := postJSON(t, url, map[string]any{"allow": true, "scope": "once"})
+	defer conflict.Body.Close()
+	if conflict.StatusCode != http.StatusConflict {
+		t.Errorf("already-resolved status = %d, want 409", conflict.StatusCode)
+	}
+
+	// Breaking the approvals table makes the claim fail after the session and
+	// the pending row are read, so the handler sees a store error, not a
+	// missing suspension.
+	pending2, err := s.Store().AddPendingCall(ctx, store.PendingCall{
+		SessionID: sess.ID, ToolUseID: "c2", Tool: "fs_write",
+		ArgsJSON: []byte(`{"path":"y"}`), Profile: "local", Rule: "fs_write",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Store().DB().ExecContext(ctx, `DROP TABLE approvals`); err != nil {
+		t.Fatal(err)
+	}
+	broken := postJSON(t, fmt.Sprintf("%s/api/sessions/%s/approvals/%d", ts.URL, sess.ID, pending2),
+		map[string]any{"allow": true, "scope": "once"})
+	defer broken.Body.Close()
+	if broken.StatusCode != http.StatusInternalServerError {
+		t.Errorf("store failure status = %d, want 500", broken.StatusCode)
 	}
 }
