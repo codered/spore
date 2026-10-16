@@ -225,3 +225,25 @@ func TestStartGrantFailureFlashes(t *testing.T) {
 		t.Fatal("the card went away after a failed grant")
 	}
 }
+
+// A reconnect drops the countdown, because a grant that ended while the stream
+// was down sends nothing. A grant still running comes back on the replay.
+func TestReconnectClearsAndRestoresGrantCountdown(t *testing.T) {
+	fb := &fakeBackend{}
+	m := newGrantModel(t, fb, "s1")
+	live := daemon.WireEvent{Session: "s1", Type: daemon.WireGrant, ExpiresAt: fixedNow().Add(14*time.Minute + 32*time.Second).Format(time.RFC3339)}
+	feed(m, live)
+	if !strings.Contains(m.sessionFacts(), "grant 14:32") {
+		t.Fatalf("header = %q, want the countdown before the reconnect", m.sessionFacts())
+	}
+
+	run(m, connectedMsg{})
+	if strings.Contains(m.sessionFacts(), "grant") {
+		t.Fatal("the countdown survived a reconnect with no replay")
+	}
+
+	feed(m, live)
+	if !strings.Contains(m.sessionFacts(), "grant 14:32") {
+		t.Fatalf("header = %q, want the replayed countdown back", m.sessionFacts())
+	}
+}

@@ -390,6 +390,15 @@ func (c *cache) ClearApprovals() {
 	}
 }
 
+// ClearGrants forgets every timed grant. The global feed replays the live
+// grants on connect, so a grant that ended while the stream was down is
+// dropped here and one still running is set again by its replay.
+func (c *cache) ClearGrants() {
+	for _, sv := range c.sessions {
+		sv.grantUntil = time.Time{}
+	}
+}
+
 func (c *cache) markAnswered(root string, pendingID int64) {
 	c.answered[pendingID] = true
 	c.get(root).dropApproval(pendingID)

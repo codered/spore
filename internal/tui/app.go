@@ -334,6 +334,7 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		m.reconnecting = false
 		// The feed replays every live approval on connect.
 		m.cache.ClearApprovals()
+		m.cache.ClearGrants()
 		cmds := []tea.Cmd{m.loadSessions(), m.loadGrantDurations()}
 		if m.selected != "" {
 			cmds = append(cmds, m.loadTranscript(m.selected))
