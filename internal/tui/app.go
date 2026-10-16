@@ -29,10 +29,11 @@ const (
 	modeConfirm
 	modeHistory
 	modeModels
+	modeGrant
 )
 
 func (m mode) String() string {
-	return [...]string{"NORMAL", "INSERT", "COMMAND", "FILTER", "CONFIRM", "HISTORY", "MODELS"}[m]
+	return [...]string{"NORMAL", "INSERT", "COMMAND", "FILTER", "CONFIRM", "HISTORY", "MODELS", "GRANT"}[m]
 }
 
 // pane is which half of the chat screen NORMAL-mode keys drive.
@@ -123,7 +124,7 @@ type Options struct {
 }
 
 // commandNames are the `:` commands, for completion.
-var commandNames = []string{"agents", "chat", "clear", "compact", "companion", "context", "delete", "jobs", "model", "new", "q", "quit", "refine", "refinements", "sessions", "skills", "usage"}
+var commandNames = []string{"agents", "chat", "clear", "compact", "companion", "context", "delete", "grant", "jobs", "model", "new", "q", "quit", "refine", "refinements", "sessions", "skills", "usage"}
 
 // confirmState is the modal on screen. yes and alt run on the model's
 // goroutine when the key is pressed, so they may change the model before
@@ -216,6 +217,12 @@ type Model struct {
 	// the companion session is selected; nil anywhere else.
 	proposals []daemon.ProposalJSON
 
+	// grantDurations are the durations a timed grant may be started for,
+	// fetched on connect; empty when grants are off. grantPick is the
+	// picker on screen, nil unless mode is modeGrant.
+	grantDurations []string
+	grantPick      *grantPicker
+
 	history []string
 	histIdx int
 	draft   string
@@ -293,7 +300,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // the working line's spinner every frame, or an approval's countdown every
 // second. At most one tick is in flight, and it lapses once nothing moves.
 func (m *Model) armTick() tea.Cmd {
-	if m.ticking || m.table != nil || m.selected == "" || m.cache.State(m.selected) == daemon.SessionIdle {
+	// A live grant counts down on screen, so it keeps the tick going too.
+	if m.ticking || m.table != nil || m.selected == "" ||
+		(m.cache.State(m.selected) == daemon.SessionIdle && m.grantLeft() <= 0) {
 		return nil
 	}
 	m.ticking = true
@@ -325,7 +334,7 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		m.reconnecting = false
 		// The feed replays every live approval on connect.
 		m.cache.ClearApprovals()
-		cmds := []tea.Cmd{m.loadSessions()}
+		cmds := []tea.Cmd{m.loadSessions(), m.loadGrantDurations()}
 		if m.selected != "" {
 			cmds = append(cmds, m.loadTranscript(m.selected))
 		}
@@ -409,6 +418,19 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 
 	case modelsMsg:
 		m.modelsLoaded(msg)
+		return nil
+
+	case grantDurationsMsg:
+		// A daemon that cannot say offers no grants, the same as one with
+		// timed grants off.
+		m.grantDurations = nil
+		if msg.err == nil {
+			m.grantDurations = msg.list
+		}
+		return nil
+
+	case grantMsg:
+		m.grantDone(msg)
 		return nil
 
 	case proposalsMsg:
@@ -597,6 +619,8 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 		return m.keyHistory(k)
 	case modeModels:
 		return m.keyModels(k)
+	case modeGrant:
+		return m.keyGrant(k)
 	}
 	if m.table != nil {
 		return m.keyView(k)
@@ -946,6 +970,8 @@ func (m *Model) command(line string) tea.Cmd {
 		return m.confirmDelete(len(args) > 0 && args[0] == "all")
 	case "clear", "compact", "context":
 		return m.slash(name)
+	case "grant":
+		return m.grantCommand(args)
 	case "model":
 		return m.openModels()
 	case "refine":
@@ -1076,6 +1102,14 @@ func answerFor(ev daemon.WireEvent, k string) (ans policy.Answer, ok, offered bo
 // answer sends the answer an approval key gives, reporting whether k was an
 // approval key. A p on an ask with no pattern is swallowed, not typed.
 func (m *Model) answer(root string, ev daemon.WireEvent, k string) (tea.Cmd, bool) {
+	if k == "a" {
+		// a opens the duration picker. With no durations configured it is
+		// swallowed, as a p with no pattern is, so it never types into INSERT.
+		if len(m.grantDurations) == 0 {
+			return nil, true
+		}
+		return m.openGrantPicker(root, m.mode), true
+	}
 	ans, ok, offered := answerFor(ev, k)
 	if !ok {
 		return nil, false

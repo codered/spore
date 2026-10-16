@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/codered/spore/internal/daemon"
 	"github.com/codered/spore/internal/policy"
@@ -165,6 +166,21 @@ func (b tuiBackend) Proposals(ctx context.Context) ([]daemon.ProposalJSON, error
 
 func (b tuiBackend) AnswerProposal(ctx context.Context, id int64, choice string) (string, error) {
 	return b.c.answerProposal(ctx, id, choice)
+}
+
+func (b tuiBackend) StartGrant(ctx context.Context, id, duration string) (time.Time, error) {
+	return b.c.startGrant(ctx, id, duration)
+}
+
+func (b tuiBackend) EndGrant(ctx context.Context, id string) error {
+	return b.c.endGrant(ctx, id)
+}
+
+// GrantDurations reads the list from /api/policy. An older daemon has no
+// such field, so the list is empty and the TUI offers no grants.
+func (b tuiBackend) GrantDurations(ctx context.Context) ([]string, error) {
+	out, err := b.Policy(ctx)
+	return out.GrantDurations, err
 }
 
 func (b tuiBackend) Skills(ctx context.Context, sessionID string) (daemon.SkillsJSON, error) {

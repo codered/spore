@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/codered/spore/internal/daemon"
 	"github.com/codered/spore/internal/policy"
@@ -48,4 +49,13 @@ type Backend interface {
 	// AnswerProposal presses one of a proposal's buttons and returns the
 	// line the daemon answers with.
 	AnswerProposal(ctx context.Context, id int64, choice string) (string, error)
+	// StartGrant lets calls that policy would ask about run without asking,
+	// on root session id, for duration (one of GrantDurations). It returns
+	// when the grant ends.
+	StartGrant(ctx context.Context, id, duration string) (time.Time, error)
+	// EndGrant ends the root session's timed grant, if it has one.
+	EndGrant(ctx context.Context, id string) error
+	// GrantDurations is the list of durations a grant may be started for;
+	// empty when timed grants are off.
+	GrantDurations(ctx context.Context) ([]string, error)
 }

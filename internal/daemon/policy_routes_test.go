@@ -195,3 +195,26 @@ func TestRevokeRefusesBaselineAndConfigRules(t *testing.T) {
 		t.Errorf("oversized body = %d, want 400", code)
 	}
 }
+
+// The TUI reads the grant choices from GET /api/policy, so the list must be
+// the engine's, in config order, and an empty list must be [] rather than null.
+func TestPolicyListsGrantDurations(t *testing.T) {
+	s, ts := newTestServer(t)
+	attachPolicy(t, s)
+	code, body := send(t, "GET", ts.URL+"/api/policy", nil)
+	var got PolicyJSON
+	if code != 200 || json.Unmarshal([]byte(body), &got) != nil {
+		t.Fatalf("GET = %d %s", code, body)
+	}
+	if strings.Join(got.GrantDurations, ",") != "5m,15m,30m,1h" {
+		t.Errorf("grant_durations = %v, want the configured 5m,15m,30m,1h", got.GrantDurations)
+	}
+
+	s, ts = newTestServer(t)
+	s.cfg.Policy.GrantDurations = nil
+	attachPolicy(t, s)
+	_, body = send(t, "GET", ts.URL+"/api/policy", nil)
+	if !strings.Contains(body, `"grant_durations":[]`) {
+		t.Errorf("grants off must send an empty list, got %s", body)
+	}
+}

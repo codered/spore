@@ -71,6 +71,35 @@ type fakeBackend struct {
 	proposalFetches int
 	answers         []string
 	companionArgs   [][]string
+
+	grantDurations []string
+	grantErr       error
+	grants         []string
+	grantEnds      []string
+}
+
+// StartGrant records the grant as the daemon would: the root and the duration.
+func (f *fakeBackend) StartGrant(_ context.Context, id, duration string) (time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.grants = append(f.grants, id+":"+duration)
+	if f.grantErr != nil {
+		return time.Time{}, f.grantErr
+	}
+	return fixedNow().Add(15 * time.Minute), nil
+}
+
+func (f *fakeBackend) EndGrant(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.grantEnds = append(f.grantEnds, id)
+	return nil
+}
+
+func (f *fakeBackend) GrantDurations(context.Context) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.grantDurations...), nil
 }
 
 func (f *fakeBackend) Companion(_ context.Context, args []string) (string, error) {

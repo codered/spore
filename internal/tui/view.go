@@ -190,6 +190,9 @@ func (m *Model) View() string {
 	if m.mode == modeModels && m.models != nil {
 		body = placeOver(body, m.modelsView(), m.width)
 	}
+	if m.mode == modeGrant && m.grantPick != nil {
+		body = placeOver(body, m.grantView(), m.width)
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), body, m.statusView())
 }
 

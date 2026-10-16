@@ -126,6 +126,9 @@ func (m *Model) sessionFacts() string {
 	if sv.ctxTokens > 0 {
 		out = append(out, "ctx "+humanTokens(sv.ctxTokens))
 	}
+	if left := m.grantLeft(); left > 0 {
+		out = append(out, "grant "+grantCountdown(left))
+	}
 	if m.opts.ShowCost && sv.cost > 0 {
 		out = append(out, fmt.Sprintf("$%.2f", sv.cost))
 	}
@@ -232,6 +235,8 @@ func (m *Model) keyHints(room int) string {
 		parts = historyParts()
 	case modeModels:
 		parts = modelsParts()
+	case modeGrant:
+		parts = grantParts()
 	case modeConfirm:
 		if m.confirm == nil {
 			return ""

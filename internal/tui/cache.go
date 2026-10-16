@@ -26,6 +26,9 @@ type sessionView struct {
 	ctxTokens int
 	cost      float64
 	started   time.Time
+	// grantUntil is when the root's timed grant ends; zero when none is live.
+	// Only the root carries it: a sub-agent's calls run under its root's grant.
+	grantUntil time.Time
 }
 
 func (sv *sessionView) last() *block {
@@ -208,6 +211,10 @@ func (c *cache) Apply(ev daemon.WireEvent) string {
 		if !known || sv.info.UpdatedAt.IsZero() {
 			sv.info.UpdatedAt = c.now()
 		}
+	case daemon.WireGrant:
+		grantEvent(sv, ev)
+	case daemon.WireBlocked:
+		sv.add(kindNotice, blockedNotice(ev))
 	case daemon.WireAgentState:
 		sv.working = ev.State == "running"
 		if !sv.working {
@@ -219,6 +226,19 @@ func (c *cache) Apply(ev daemon.WireEvent) string {
 		}
 	}
 	return id
+}
+
+// blockedNotice says a deny rule refused a call. Content, when the event
+// carries it, is the detail that follows.
+func blockedNotice(ev daemon.WireEvent) string {
+	s := "blocked by config: " + visible(ev.Tool)
+	if ev.Rule != "" {
+		s += " (rule " + visible(ev.Rule) + ")"
+	}
+	if ev.Content != "" {
+		s += " · " + visible(oneLine(ev.Content))
+	}
+	return s
 }
 
 // keep sets *field to v unless v is empty: an event that leaves a field out
@@ -396,6 +416,29 @@ func (c *cache) restoreApproval(root string, ev daemon.WireEvent) {
 	delete(c.answered, ev.PendingID)
 	sv := c.get(root)
 	sv.approvals = append(sv.approvals, ev)
+}
+
+// rootOf is the root session id above id: id itself when it has no known
+// parent. A sub-agent's grant and approvals belong to its root.
+func (c *cache) rootOf(id string) string {
+	// A parent chain cannot be longer than the number of sessions; the bound
+	// keeps a corrupt cycle from looping forever.
+	for range len(c.sessions) {
+		sv, ok := c.sessions[id]
+		if !ok || sv.info.ParentID == "" {
+			return id
+		}
+		id = sv.info.ParentID
+	}
+	return id
+}
+
+// grantOf is when the grant covering id ends, zero when none does.
+func (c *cache) grantOf(id string) time.Time {
+	if sv, ok := c.sessions[c.rootOf(id)]; ok {
+		return sv.grantUntil
+	}
+	return time.Time{}
 }
 
 // remove forgets a deleted session.
