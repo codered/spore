@@ -760,3 +760,69 @@ func TestBrokerBlockedPublishes(t *testing.T) {
 		t.Errorf("published %+v, want no origin and the detail in content", ev)
 	}
 }
+
+// A suspension settled before the broker has a waiter (a grant sweep found no
+// waiter and resolved it through the guard) is answered by that settle. No
+// approval card is published, because no one could answer it.
+func TestBrokerSettledBeforeTheWaitAnswersWithoutACard(t *testing.T) {
+	for _, tc := range []struct {
+		state string
+		want  bool
+	}{{"allow", true}, {"deny", false}, {"timeout", false}} {
+		t.Run(tc.state, func(t *testing.T) {
+			h := NewHub()
+			b := NewBroker(h)
+			events, stop := h.Subscribe("s1")
+			defer stop()
+
+			ans, err := b.Ask(context.Background(), policy.Ask{
+				SessionID: "s1", Tool: "shell_exec", PendingID: 9,
+				Settled: func() (string, bool) { return tc.state, true },
+			})
+			if err != nil {
+				t.Fatalf("Ask returned %v", err)
+			}
+			if ans.Allow != tc.want || ans.Scope != policy.ScopeOnce {
+				t.Errorf("Ask returned %+v, want Allow=%v scope once", ans, tc.want)
+			}
+			select {
+			case ev := <-events:
+				t.Errorf("a settled ask published %+v, want no approval card", ev)
+			default:
+			}
+			if b.Answer("s1", 9, policy.Answer{Allow: true}) {
+				t.Error("a settled ask left a waiter behind")
+			}
+		})
+	}
+}
+
+// A settle that reports nothing pending leaves the ask waiting and carded as
+// before, so an unsettled row still reaches a human.
+func TestBrokerUnsettledAskStillPublishes(t *testing.T) {
+	h := NewHub()
+	b := NewBroker(h)
+	events, stop := h.Subscribe("s1")
+	defer stop()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.Ask(context.Background(), policy.Ask{
+			SessionID: "s1", Tool: "shell_exec", PendingID: 10,
+			Settled: func() (string, bool) { return "", false },
+		})
+		done <- err
+	}()
+	select {
+	case ev := <-events:
+		if ev.Type != WireApproval || ev.PendingID != 10 {
+			t.Fatalf("published %+v, want an approval for pending 10", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("an unsettled ask published no approval card")
+	}
+	b.Answer("s1", 10, policy.Answer{Allow: true})
+	if err := <-done; err != nil {
+		t.Fatalf("Ask returned %v", err)
+	}
+}

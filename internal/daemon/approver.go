@@ -80,6 +80,26 @@ func (b *Broker) Ask(ctx context.Context, a policy.Ask) (policy.Answer, error) {
 		b.mu.Unlock()
 	}()
 
+	// The suspension may have been settled before this waiter existed: a grant
+	// sweep reads the row, finds no waiter, and resolves it through the guard.
+	// Its card would then have no one to answer it, so the settle is taken as
+	// the answer and no card is published. The check runs after the waiter is
+	// registered, so a settle that lands later is delivered through the waiter.
+	if a.Settled != nil {
+		if decision, settled := a.Settled(); settled {
+			b.mu.Lock()
+			_, stillWaiting := b.waiters[a.PendingID]
+			delete(b.waiters, a.PendingID)
+			b.mu.Unlock()
+			if !stillWaiting {
+				// An Answer claimed the waiter first and is committed to send
+				// into the buffered channel. Its value is the answer.
+				return <-ch, nil
+			}
+			return policy.Answer{Allow: decision == "allow", Scope: policy.ScopeOnce}, nil
+		}
+	}
+
 	b.hub.Publish(rootID, approvalEvent(a))
 
 	select {

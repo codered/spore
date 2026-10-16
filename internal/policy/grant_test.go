@@ -298,3 +298,63 @@ func TestBlockedReported(t *testing.T) {
 		t.Error("a deny must never prompt")
 	}
 }
+
+// settleFirstApprover resolves the suspension through Guard.Resolve before it
+// checks Settled, which is the sweep-before-waiter race: the row is settled
+// and no one is waiting. It answers the way the broker does.
+type settleFirstApprover struct {
+	g     *Guard
+	allow bool
+	asked int
+}
+
+func (a *settleFirstApprover) Ask(ctx context.Context, ask Ask) (Answer, error) {
+	a.asked++
+	if err := a.g.Resolve(ctx, ask.SessionID, ask.PendingID, Answer{Allow: a.allow, Scope: ScopeOnce}); err != nil {
+		return Answer{}, err
+	}
+	state, settled := ask.Settled()
+	if !settled {
+		return Answer{}, fmt.Errorf("the sweep settled pending %d but Settled reported nothing", ask.PendingID)
+	}
+	return Answer{Allow: state == string(DecisionAllow), Scope: ScopeOnce}, nil
+}
+
+// A grant sweep that settles the row before the approver waits must not run
+// the call twice or write a second audit row. An allow runs the call once,
+// with the sweep's own audit row; a deny refuses it.
+func TestSettledBeforeTheWaitRunsOnceOnAllow(t *testing.T) {
+	ap := &settleFirstApprover{allow: true}
+	g, inner, st, sid, _ := grantFixture(t, config.PolicyConfig{Ask: []string{"shell_exec"}}, ap)
+	ap.g = g
+
+	before := approvalCount(t, st, sid)
+	got := g.Run(grantCtx(sid), toolCall("shell_exec", "c1", `{"command":"ls"}`))
+	if got.IsError {
+		t.Fatalf("settled-allow call errored: %q", got.Content)
+	}
+	if len(inner.calls) != 1 {
+		t.Errorf("inner ran %d times, want 1", len(inner.calls))
+	}
+	if added := approvalCount(t, st, sid) - before; added != 1 {
+		t.Errorf("settled-allow wrote %d audit rows, want 1 (the resolver's)", added)
+	}
+}
+
+func TestSettledBeforeTheWaitRefusesOnDeny(t *testing.T) {
+	ap := &settleFirstApprover{allow: false}
+	g, inner, st, sid, _ := grantFixture(t, config.PolicyConfig{Ask: []string{"shell_exec"}}, ap)
+	ap.g = g
+
+	before := approvalCount(t, st, sid)
+	got := g.Run(grantCtx(sid), toolCall("shell_exec", "c1", `{"command":"ls"}`))
+	if !got.IsError {
+		t.Errorf("settled-deny call ran: %q", got.Content)
+	}
+	if len(inner.calls) != 0 {
+		t.Errorf("inner ran %d times for a denied call, want 0", len(inner.calls))
+	}
+	if added := approvalCount(t, st, sid) - before; added != 1 {
+		t.Errorf("settled-deny wrote %d audit rows, want 1 (the resolver's)", added)
+	}
+}

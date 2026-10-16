@@ -67,6 +67,13 @@ type Ask struct {
 	Profile string
 	// Deadline is when an unanswered ask is denied. Zero means none.
 	Deadline time.Time
+	// Settled reports whether the suspension was already closed by another
+	// path (a grant sweep, or an answer from a second client) before the
+	// approver registered its wait. When settled is true, decision is the
+	// closed row's state ("allow", "deny", ...). An approver that finds the
+	// row settled must answer with that decision and must not show a card
+	// nobody can answer. Nil means the caller does not check.
+	Settled func() (decision string, settled bool)
 }
 
 type Answer struct {
@@ -304,6 +311,16 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 		RootID:   root,
 		Profile:  string(sess.Profile),
 		Deadline: askDeadline(askCtx),
+		Settled: func() (string, bool) {
+			// A grant can start after the check above and its sweep can settle
+			// this row before the approver has a waiter. The approver calls
+			// this after it registers the waiter, so it cannot miss the settle.
+			state, err := g.store.PendingCallState(context.WithoutCancel(ctx), pendingID)
+			if err != nil || state == "" || state == "pending" {
+				return "", false
+			}
+			return state, true
+		},
 	})
 
 	// Bookkeeping writes use a context detached from the caller's. When a turn
