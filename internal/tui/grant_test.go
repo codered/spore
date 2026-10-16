@@ -247,3 +247,20 @@ func TestReconnectClearsAndRestoresGrantCountdown(t *testing.T) {
 		t.Fatalf("header = %q, want the replayed countdown back", m.sessionFacts())
 	}
 }
+
+// A reconnect asks the daemon for the grant durations again, and the new list
+// is the one the picker offers.
+func TestReconnectRefetchesGrantDurations(t *testing.T) {
+	fb := &fakeBackend{}
+	m := newGrantModel(t, fb, "s1")
+	before := fb.grantDurationCalls
+
+	fb.grantDurations = []string{"10m"}
+	run(m, connectedMsg{})
+	if fb.grantDurationCalls != before+1 {
+		t.Fatalf("GrantDurations called %d times across a reconnect, want %d", fb.grantDurationCalls, before+1)
+	}
+	if strings.Join(m.grantDurations, ",") != "10m" {
+		t.Fatalf("grantDurations = %v after the reconnect, want the new list [10m]", m.grantDurations)
+	}
+}

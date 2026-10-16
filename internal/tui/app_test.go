@@ -73,9 +73,12 @@ type fakeBackend struct {
 	companionArgs   [][]string
 
 	grantDurations []string
-	grantErr       error
-	grants         []string
-	grantEnds      []string
+	// grantDurationCalls counts GrantDurations calls, so a test can see that
+	// a reconnect asked the daemon again.
+	grantDurationCalls int
+	grantErr           error
+	grants             []string
+	grantEnds          []string
 }
 
 // StartGrant records the grant as the daemon would: the root and the duration.
@@ -99,6 +102,7 @@ func (f *fakeBackend) EndGrant(_ context.Context, id string) error {
 func (f *fakeBackend) GrantDurations(context.Context) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.grantDurationCalls++
 	return append([]string(nil), f.grantDurations...), nil
 }
 
