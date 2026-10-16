@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // This file turns the interpreter's failures into errors a model can act on.
@@ -106,16 +107,76 @@ var untypedShimRE = regexp.MustCompile(`untyped (\w+) does not implement main\.`
 // removes; the import may be aliased.
 var parseDirRE = regexp.MustCompile(`package \w+ "go/parser" has no symbol ParseDir`)
 
+// undefinedRE matches a bare name the program calls but never declares.
+var undefinedRE = regexp.MustCompile(`undefined: (\w+)`)
+
+// sporeSymbolRE matches a spore.X the package does not export; the import
+// may be aliased.
+var sporeSymbolRE = regexp.MustCompile(`package \w+ "spore" has no symbol (\w+)`)
+
 // explainError makes a compile, parse or runtime error easier to act on:
 // it explains a failed inference on the supplied min or max, a call to
-// ParseDir, which go_run does not offer, and quotes the line the error
-// names. src is the program as the model wrote it.
-func explainError(src, msg string) string {
+// ParseDir, which go_run does not offer, and a tool called as a Go
+// function, and quotes the line the error names. src is the program as the
+// model wrote it; tools holds every tool name spore.Call reaches.
+func explainError(src, msg string, tools map[string]string) string {
 	msg = untypedShimRE.ReplaceAllString(msg,
 		"min and max cannot infer a type from untyped $1 constants alone here; give one argument a type, e.g. float64(1.5)")
 	msg = parseDirRE.ReplaceAllLiteralString(msg,
 		"go/parser.ParseDir is not available in go_run: list files with spore.Glob and parse each with parser.ParseFile, passing the text from spore.ReadFile")
+	if hint := toolHint(msg, tools); hint != "" {
+		first, rest, found := strings.Cut(msg, "\n")
+		msg = first + "\n" + hint
+		if found {
+			msg += "\n" + rest
+		}
+	}
 	return quoteLine(src, msg)
+}
+
+// toolHint explains a tool called as a Go function: agent_spawn(...) or
+// spore.agent_spawn(...), or a helper invented from a tool's name, such as
+// spore.AgentResult. The prompt lists each tool as name(arg: type), and a
+// small model reads that as a function. Only the error's first line counts.
+// It returns "" when the error is about something else.
+func toolHint(msg string, tools map[string]string) string {
+	first, _, _ := strings.Cut(msg, "\n")
+	if m := undefinedRE.FindStringSubmatch(first); m != nil {
+		if _, ok := tools[m[1]]; ok {
+			return callHint(m[1])
+		}
+		return ""
+	}
+	m := sporeSymbolRE.FindStringSubmatch(first)
+	if m == nil {
+		return ""
+	}
+	for _, name := range []string{m[1], snakeCase(m[1])} {
+		if _, ok := tools[name]; ok {
+			return callHint(name)
+		}
+	}
+	return "The spore package has only the helpers the prompt lists. Call any other tool with spore.Call(name, map[string]any{...}), the tool's arguments as the map."
+}
+
+// callHint shows the one way to call tool from a program.
+func callHint(tool string) string {
+	return fmt.Sprintf("%[1]s is a tool, not a Go function. Call it as spore.Call(%[1]q, map[string]any{...}), the tool's arguments as the map; it returns (string, error). Print spore.Help(%[1]q) to see the arguments.", tool)
+}
+
+// snakeCase turns AgentResult into agent_result.
+func snakeCase(s string) string {
+	var b strings.Builder
+	for i, r := range s {
+		if unicode.IsUpper(r) {
+			if i > 0 {
+				b.WriteByte('_')
+			}
+			r = unicode.ToLower(r)
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // yaegi names the file main.go, _.go or nothing, depending on the error.

@@ -395,6 +395,7 @@ func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Eve
 				out <- Event{Type: EvText, Text: ev.Text}
 			case provider.EventToolCall:
 				call := *ev.Block
+				call.Input = repairInput(call.Input)
 				if why := invalidInput(call); why != "" {
 					// Stored, sent and shown as {}: one invalid RawMessage
 					// fails every later json.Marshal of the conversation.
@@ -531,6 +532,57 @@ func (a *Agent) runTools(ctx context.Context, calls []provider.Block, invalid ma
 		out <- Event{Type: EvToolResult, Block: &b}
 	}
 	return results
+}
+
+// repairInput returns in with raw control characters inside its strings
+// escaped, when that is the only thing that makes it invalid JSON. Local
+// models escape newlines and quotes in a go_run program but can leave its
+// tab indentation as raw tab bytes, which strict JSON refuses. Any other
+// input comes back unchanged.
+func repairInput(in json.RawMessage) json.RawMessage {
+	if len(in) == 0 || json.Valid(in) {
+		return in
+	}
+	if fixed := repairControlChars(in); json.Valid(fixed) {
+		return fixed
+	}
+	return in
+}
+
+// repairControlChars escapes every byte below 0x20 that sits inside a JSON
+// string. Bytes outside strings are whitespace or errors and are kept as
+// they are.
+func repairControlChars(in []byte) []byte {
+	out := make([]byte, 0, len(in)+16)
+	inString, escaped := false, false
+	for _, c := range in {
+		switch {
+		case escaped:
+			escaped = false
+		case inString && c == '\\':
+			escaped = true
+		case c == '"':
+			inString = !inString
+		case inString && c < 0x20:
+			out = append(out, controlEscape(c)...)
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// controlEscape is the JSON escape for control byte c.
+func controlEscape(c byte) string {
+	switch c {
+	case '\t':
+		return `\t`
+	case '\n':
+		return `\n`
+	case '\r':
+		return `\r`
+	}
+	return fmt.Sprintf(`\u%04x`, c)
 }
 
 // invalidInput explains why a call's arguments cannot be used, or returns ""

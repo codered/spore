@@ -156,3 +156,52 @@ func TestQuoteLine(t *testing.T) {
 		}
 	}
 }
+
+// A small local model read the prompt's tool listing, agent_spawn(prompt:
+// string), as a Go function and called it bare. Told only "undefined:
+// agent_spawn", it sent the same program back three times out of three; told
+// the spore.Call form, it switched at once. The error must name that form.
+func TestToolCalledAsAFunctionNamesSporeCall(t *testing.T) {
+	o := opts()
+	o.Docs = map[string]string{"agent_spawn": "doc", "agent_result": "doc"}
+	cases := map[string]struct{ body, want string }{
+		"bare": {`func main() {
+	id := agent_spawn("hi")
+	fmt.Println(id)
+}`, `spore.Call("agent_spawn", map[string]any{`},
+		"selector": {`func main() {
+	id, _ := spore.agent_spawn("hi")
+	fmt.Println(id)
+}`, `spore.Call("agent_spawn", map[string]any{`},
+		"invented helper": {`func main() {
+	r, _ := spore.AgentResult("x")
+	fmt.Println(r)
+}`, `spore.Call("agent_result", map[string]any{`},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Run(context.Background(), prog(c.body, "fmt", "spore"), &fakeRunner{}, o)
+			if err == nil {
+				t.Fatal("the program ran; want a compile error")
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("error = %q, want it to contain %q", err, c.want)
+			}
+		})
+	}
+}
+
+// A name that is no tool gets no tool hint, and an unknown spore symbol that
+// matches no tool points at the helpers and spore.Call in general.
+func TestUndefinedNamesThatAreNotToolsGetNoToolHint(t *testing.T) {
+	o := opts()
+	o.Docs = map[string]string{"agent_spawn": "doc"}
+	_, err := Run(context.Background(), prog(`func main() { fmt.Println(nope()) }`, "fmt"), &fakeRunner{}, o)
+	if err == nil || strings.Contains(err.Error(), "spore.Call") {
+		t.Errorf("error = %v, want an undefined-name error with no spore.Call hint", err)
+	}
+	_, err = Run(context.Background(), prog(`func main() { s, _ := spore.Frobnicate("x"); fmt.Println(s) }`, "fmt", "spore"), &fakeRunner{}, o)
+	if err == nil || !strings.Contains(err.Error(), "spore.Call(") || strings.Contains(err.Error(), `spore.Call("`) {
+		t.Errorf("error = %v, want a general pointer to spore.Call with no tool named", err)
+	}
+}
