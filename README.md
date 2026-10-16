@@ -477,9 +477,14 @@ Code mode wins by a large margin when a task needs many tool calls. For one
 or two lookups, tools mode is faster. Switch with `[kernel] mode = "tools"`.
 These are small samples from one model, so read them as an indication only.
 
+Some small models call tools well but write go_run programs badly: they call
+a tool as a Go function, or invent spore helpers. Put those models in tools
+mode alone with `tools_models`, a regexp over `provider/model` refs.
+
 ```toml
 [kernel]
 mode                = "code"   # or "tools"
+tools_models        = "LFM2\\.5"   # these models get every tool directly
 timeout_seconds     = 60       # time spent waiting on an approval is not counted
 max_timeout_seconds = 300
 ceiling_seconds     = 1800     # wall-clock limit, approvals included

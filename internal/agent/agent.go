@@ -192,8 +192,15 @@ func (a *Agent) Snapshot(ctx context.Context, sessionID string) (Snapshot, error
 	if a.Facts != nil {
 		snap.Facts = a.Facts.Facts()
 	}
-	if a.Tools != nil && a.Cfg.Kernel.Mode == config.KernelModeCode {
-		snap.Kernel = kernel.Reference(a.Tools.Specs())
+	if a.Tools != nil {
+		mode, err := a.kernelMode(ctx, sessionID)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		snap.Mode = mode
+		if mode == config.KernelModeCode {
+			snap.Kernel = kernel.Reference(a.Tools.Specs())
+		}
 	}
 	if a.Skills != nil {
 		// The directory is resolved the same way the skill tools resolve it,
@@ -338,6 +345,22 @@ func (a *Agent) modelFor(ctx context.Context, sessionID, site string) (ref strin
 	return a.Router.Model(router.SiteChat), false, nil
 }
 
+// kernelMode returns the kernel mode for the session's turns: tools mode
+// when kernel.tools_models matches the session's model, otherwise
+// kernel.mode. Only Snapshot calls it: the request builder reads
+// Snapshot.Mode, so the size compaction measures is the size the model is
+// sent, and one round never mixes two modes.
+func (a *Agent) kernelMode(ctx context.Context, sessionID string) (string, error) {
+	if a.Cfg.Kernel.ToolsModels == "" {
+		return a.Cfg.Kernel.Mode, nil
+	}
+	ref, _, err := a.modelFor(ctx, sessionID, router.SiteChat)
+	if err != nil {
+		return "", err
+	}
+	return a.Cfg.Kernel.ModeFor(ref), nil
+}
+
 func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Event) error {
 	limit := a.Cfg.Context.MaxRoundTrips
 	for i := 0; limit == 0 || i < limit; i++ {
@@ -355,7 +378,7 @@ func (a *Agent) loop(ctx context.Context, sessionID, site string, out chan<- Eve
 		req := Assemble(snap, a.Cfg.Context)
 		if a.Tools != nil {
 			req.Tools = a.Tools.Specs()
-			if a.Cfg.Kernel.Mode == config.KernelModeCode {
+			if snap.Mode == config.KernelModeCode {
 				req.Tools = onlyKernel(req.Tools)
 			}
 		}

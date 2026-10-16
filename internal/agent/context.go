@@ -40,7 +40,12 @@ type Snapshot struct {
 	// Kernel is the go_run section: the spore package and every tool a
 	// program can reach. Empty outside code mode. It is a pure function of
 	// the tool set, so it rides in the cached prefix.
-	Kernel   string
+	Kernel string
+	// Mode is the kernel mode this snapshot was built for. The request
+	// builder uses it, so the prompt and the tool list always agree, even
+	// when /model changes the session's model during the round. Empty when
+	// the agent has no tools.
+	Mode     string
 	Messages []provider.Message
 }
 
