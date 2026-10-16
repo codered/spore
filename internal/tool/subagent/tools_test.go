@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codered/spore/internal/tool"
 )
@@ -84,5 +85,48 @@ func TestToolSchemasAreValidJSON(t *testing.T) {
 		if err := json.Unmarshal(schema, &obj); err != nil {
 			t.Errorf("%s.Schema() returned invalid JSON: %v", tl.Name(), err)
 		}
+	}
+}
+
+// wait_seconds is the model's choice, bounded by the config: unset takes
+// the default, a negative means no wait, and anything above the cap is
+// cut to the cap. A default above the cap is cut too.
+func TestResultWaitIsClampedToTheConfig(t *testing.T) {
+	n := func(v int) *int { return &v }
+	cases := []struct {
+		name      string
+		requested *int
+		def, max  int
+		want      time.Duration
+	}{
+		{"unset takes the default", nil, 60, 300, 60 * time.Second},
+		{"a request inside the cap", n(10), 60, 300, 10 * time.Second},
+		{"a request above the cap", n(900), 60, 300, 300 * time.Second},
+		{"zero does not wait", n(0), 60, 300, 0},
+		{"a negative does not wait", n(-5), 60, 300, 0},
+		{"a default above the cap", nil, 600, 300, 300 * time.Second},
+	}
+	for _, c := range cases {
+		if got := resultWait(c.requested, c.def, c.max); got != c.want {
+			t.Errorf("%s: resultWait = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// After a wait runs out, the model must learn to call again, not to spawn
+// the same work again.
+func TestStillRunningSaysToCallAgain(t *testing.T) {
+	msg := stillRunning("abc", 60*time.Second, 75*time.Second)
+	for _, want := range []string{"abc", "still running", "agent_result again", "Do not spawn"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message %q lacks %q", msg, want)
+		}
+	}
+}
+
+func TestAgentResultDescriptionSaysItWaits(t *testing.T) {
+	d := (&resultTool{}).Description()
+	if !strings.Contains(d, "Waits") {
+		t.Errorf("description %q does not say that the tool waits", d)
 	}
 }

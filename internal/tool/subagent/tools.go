@@ -128,14 +128,17 @@ type resultTool struct{ sup *subagent.Supervisor }
 func (t *resultTool) Name() string { return "agent_result" }
 
 func (t *resultTool) Description() string {
-	return "Read a spawned sub-agent's state, and its answer once it has finished."
+	return "Waits for a spawned sub-agent to finish, then returns its answer. " +
+		"It waits up to wait_seconds; if the sub-agent is still running then, call agent_result again. " +
+		"Never spawn the same work again while it runs."
 }
 
 func (t *resultTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
 	  "type": "object",
 	  "properties": {
-	    "id": {"type": "string", "description": "The sub-agent id agent_spawn returned."}
+	    "id": {"type": "string", "description": "The sub-agent id agent_spawn returned."},
+	    "wait_seconds": {"type": "integer", "description": "How long to wait for the sub-agent to finish. Omit it for the default; 0 returns at once."}
 	  },
 	  "required": ["id"]
 	}`)
@@ -147,7 +150,8 @@ func (t *resultTool) ReadOnly() bool { return false }
 
 func (t *resultTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var in struct {
-		ID string `json:"id"`
+		ID          string `json:"id"`
+		WaitSeconds *int   `json:"wait_seconds"`
 	}
 	if err := json.Unmarshal(args, &in); err != nil {
 		return "", fmt.Errorf("agent_result: %w", err)
@@ -155,13 +159,15 @@ func (t *resultTool) Call(ctx context.Context, args json.RawMessage) (string, er
 	if in.ID == "" {
 		return "", fmt.Errorf("agent_result: id is required")
 	}
-	st, err := t.sup.Result(ctx, in.ID)
+	def, max := t.sup.ResultWait()
+	wait := resultWait(in.WaitSeconds, def, max)
+	st, err := t.sup.Wait(ctx, in.ID, wait)
 	if err != nil {
 		return "", err
 	}
 	switch st.State {
 	case "running":
-		return fmt.Sprintf("sub-agent %s is still running (%s so far)", st.ID, time.Since(st.Started).Round(time.Second)), nil
+		return stillRunning(st.ID, wait, time.Since(st.Started)), nil
 	case "done":
 		if st.Result == "" {
 			return fmt.Sprintf("sub-agent %s finished without a reply", st.ID), nil
@@ -170,4 +176,27 @@ func (t *resultTool) Call(ctx context.Context, args json.RawMessage) (string, er
 	default:
 		return fmt.Sprintf("sub-agent %s %s: %s", st.ID, st.State, st.Error), nil
 	}
+}
+
+// resultWait is the wait for one agent_result call: the model's request, or
+// def when it names none, never more than max and never negative.
+func resultWait(requested *int, def, max int) time.Duration {
+	secs := def
+	if requested != nil {
+		secs = *requested
+	}
+	secs = min(secs, max)
+	if secs < 0 {
+		secs = 0
+	}
+	return time.Duration(secs) * time.Second
+}
+
+// stillRunning tells the model that a wait ran out. A small model that
+// reads "still running" alone polls at once, or spawns the work again.
+func stillRunning(id string, waited, elapsed time.Duration) string {
+	if waited == 0 {
+		return fmt.Sprintf("sub-agent %s is still running (%s so far). Call agent_result again to wait for it. Do not spawn it again.", id, elapsed.Round(time.Second))
+	}
+	return fmt.Sprintf("sub-agent %s is still running after a %s wait (%s so far). Call agent_result again to keep waiting. Do not spawn it again.", id, waited.Round(time.Second), elapsed.Round(time.Second))
 }

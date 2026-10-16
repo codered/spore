@@ -585,3 +585,106 @@ func TestObserverHearsACancelledChildSettleOnce(t *testing.T) {
 		t.Fatalf("settled = %v, want exactly one interrupted", settled)
 	}
 }
+
+// A model in tools mode can wait for a child only by calling agent_result
+// again. LFM2.5 called it 20 times in 25 seconds, and then spawned the same
+// children again. Wait must block until the child finishes.
+func TestWaitReturnsWhenTheChildFinishes(t *testing.T) {
+	release := make(chan struct{})
+	r := &releaseRunner{release: release, reply: "91"}
+	sup, st := testSupervisor(t, config.SubagentConfig{MaxDepth: 2, MaxCostUSD: 1, MaxConcurrent: 4}, r)
+	sup.AllowDetached(true)
+	parent := parentSession(t, st)
+	id, err := sup.Spawn(ctxFor(parent), parent, "13 x 7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.AfterFunc(50*time.Millisecond, func() { close(release) })
+
+	start := time.Now()
+	got, err := sup.Wait(context.Background(), id, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != store.RunDone || got.Result != "91" {
+		t.Errorf("Wait = %+v, want done with 91", got)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("Wait took %v; it must return when the child finishes, not at the limit", d)
+	}
+}
+
+func TestWaitGivesUpAtTheLimit(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	r := &releaseRunner{release: release, reply: "late"}
+	sup, st := testSupervisor(t, config.SubagentConfig{MaxDepth: 2, MaxCostUSD: 1, MaxConcurrent: 4}, r)
+	sup.AllowDetached(true)
+	parent := parentSession(t, st)
+	id, err := sup.Spawn(ctxFor(parent), parent, "slow")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	got, err := sup.Wait(context.Background(), id, 50*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != store.RunRunning {
+		t.Errorf("State = %q, want running after the limit", got.State)
+	}
+	if d := time.Since(start); d < 50*time.Millisecond {
+		t.Errorf("Wait returned after %v, before the 50ms limit", d)
+	}
+}
+
+// A stop must end the wait at once: the user's stop button and esc work
+// through the turn's context.
+func TestWaitStopsWhenTheTurnStops(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	r := &releaseRunner{release: release, reply: "late"}
+	sup, st := testSupervisor(t, config.SubagentConfig{MaxDepth: 2, MaxCostUSD: 1, MaxConcurrent: 4}, r)
+	sup.AllowDetached(true)
+	parent := parentSession(t, st)
+	id, err := sup.Spawn(ctxFor(parent), parent, "slow")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(20*time.Millisecond, cancel)
+	start := time.Now()
+	if _, err := sup.Wait(ctx, id, 5*time.Second); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("Wait took %v after the turn stopped", d)
+	}
+}
+
+func TestWaitOnAFinishedChildReturnsAtOnce(t *testing.T) {
+	r := &releaseRunner{release: make(chan struct{}), reply: "11"}
+	close(r.release)
+	sup, st := testSupervisor(t, config.SubagentConfig{MaxDepth: 2, MaxCostUSD: 1, MaxConcurrent: 4}, r)
+	sup.AllowDetached(true)
+	parent := parentSession(t, st)
+	id, err := sup.Spawn(ctxFor(parent), parent, "5th prime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, sup, id, store.RunDone)
+
+	start := time.Now()
+	got, err := sup.Wait(context.Background(), id, 5*time.Second)
+	if err != nil || got.Result != "11" {
+		t.Fatalf("Wait = %+v, %v; want 11", got, err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("Wait on a finished child took %v", d)
+	}
+	if _, err := sup.Wait(context.Background(), "no-such-id", time.Second); err == nil {
+		t.Error("Wait on an unknown id returned no error")
+	}
+}

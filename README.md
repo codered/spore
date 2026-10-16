@@ -303,7 +303,7 @@ costs the parent a paragraph of context instead of fifty tool results.
 | --- | --- |
 | `agent_run` | Run a sub-agent and wait for its answer. |
 | `agent_spawn` | Start one in the background, keep working, and collect it later. Needs the daemon. |
-| `agent_result` | A spawned child's state (`running`, `done`, `failed`, `interrupted`), cost, and its answer once done. |
+| `agent_result` | Waits for a spawned child to finish (`result_wait_seconds`, or the model's `wait_seconds`), then returns its answer. If the child is still running after the wait, it says so and the model calls again. |
 
 **What they are for:**
 
@@ -325,6 +325,8 @@ costs the parent a paragraph of context instead of fifty tool results.
 max_depth      = 2      # a top-level session spawns; its children cannot
 max_cost_usd   = 1.00   # ceiling for the whole tree, every agent summed
 max_concurrent = 4      # children running at once under one root
+result_wait_seconds     = 60    # how long agent_result waits by default
+result_max_wait_seconds = 300   # the longest wait a model may ask for
 ```
 
 `max_cost_usd` covers the whole tree, because depth alone does not stop a wide
