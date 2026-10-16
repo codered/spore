@@ -330,14 +330,17 @@ func (s *Server) handleResolveApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.guard.Resolve(r.Context(), sessionID, pendingID, ans); err != nil {
-		// Only a suspension that is no longer pending is a conflict. Anything
-		// else is a failure on our side, and the client should not treat it
-		// as a decision that was already made.
-		if errors.Is(err, policy.ErrNotPending) {
+		// A suspension that is no longer pending is a conflict, and a caller
+		// who may not answer is refused. Anything else is a failure on our
+		// side, and the client should not treat it as a decision already made.
+		switch {
+		case errors.Is(err, policy.ErrNotPending):
 			writeError(w, http.StatusConflict, "%v", err)
-			return
+		case errors.Is(err, policy.ErrNotAuthorized):
+			writeError(w, http.StatusForbidden, "%v", err)
+		default:
+			writeError(w, http.StatusInternalServerError, "%v", err)
 		}
-		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
 	}
 	s.hub.Publish(sessionID, WireEvent{Type: WireResolved, PendingID: pendingID, Decision: decisionOf(ans)})

@@ -1015,3 +1015,46 @@ func TestResolveNotPendingSentinel(t *testing.T) {
 		t.Fatalf("second Resolve error = %v, want one wrapping ErrNotPending", err)
 	}
 }
+
+// The two refusals in Guard.Resolve wrap ErrNotAuthorized, so the handler
+// can answer 403 for them.
+func TestResolveRefusalsWrapNotAuthorized(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "spore.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	parent, err := st.CreateSession(ctx, "parent", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := st.CreateChildSession(ctx, "child", "", parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := st.CreateSession(ctx, "other", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	childPending, err := st.AddPendingCall(ctx, store.PendingCall{
+		SessionID: child, ToolUseID: "c1", Tool: "fs_read",
+		ArgsJSON: []byte(`{}`), Profile: string(ProfileRemote), Rule: "policy.deny",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := NewGuard(&recordingRunner{}, engine(t, config.PolicyConfig{}), nil, st)
+
+	// The child answering its own approval.
+	err = guard.Resolve(ctx, child, childPending, Answer{Allow: true, Scope: ScopeOnce})
+	if !errors.Is(err, ErrNotAuthorized) {
+		t.Errorf("sub-agent self-approval error = %v, want one wrapping ErrNotAuthorized", err)
+	}
+	// An unrelated session answering the child's approval.
+	err = guard.Resolve(ctx, other, childPending, Answer{Allow: true, Scope: ScopeOnce})
+	if !errors.Is(err, ErrNotAuthorized) {
+		t.Errorf("foreign session error = %v, want one wrapping ErrNotAuthorized", err)
+	}
+}

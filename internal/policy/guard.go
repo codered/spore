@@ -455,6 +455,11 @@ func (g *Guard) PendingTree(ctx context.Context, sessionID string) ([]store.Pend
 // errors.Is.
 var ErrNotPending = errors.New("no pending approval")
 
+// ErrNotAuthorized means the caller may not answer this approval: a session
+// that is not an ancestor of the asker, or a sub-agent answering its own
+// approval. It is a refusal, not a conflict, so callers map it to 403.
+var ErrNotAuthorized = errors.New("not authorized to answer this approval")
+
 // Resolve answers a pending approval by id. It is the out-of-band path used
 // when the answer arrives from somewhere other than the Approver that asked —
 // a second client, or a process that restarted while the request was open.
@@ -481,7 +486,7 @@ func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, 
 				return err
 			}
 			if !ok {
-				return fmt.Errorf("session %s may not answer approvals for session %s", sessionID, p.SessionID)
+				return fmt.Errorf("session %s may not answer approvals for session %s: %w", sessionID, p.SessionID, ErrNotAuthorized)
 			}
 			owner = p.SessionID
 		} else {
@@ -494,7 +499,7 @@ func (g *Guard) Resolve(ctx context.Context, sessionID string, pendingID int64, 
 				return err
 			}
 			if len(ancestors) > 0 {
-				return fmt.Errorf("a sub-agent may not answer its own approval")
+				return fmt.Errorf("a sub-agent may not answer its own approval: %w", ErrNotAuthorized)
 			}
 		}
 	}

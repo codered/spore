@@ -646,7 +646,9 @@ func TestResolveApprovalStatus(t *testing.T) {
 
 	res := postJSON(t, ts.URL+"/api/sessions", map[string]string{"title": "status"})
 	var sess SessionJSON
-	json.NewDecoder(res.Body).Decode(&sess)
+	if err := json.NewDecoder(res.Body).Decode(&sess); err != nil {
+		t.Fatalf("decode session: %v", err)
+	}
 	res.Body.Close()
 
 	ctx := context.Background()
@@ -686,5 +688,40 @@ func TestResolveApprovalStatus(t *testing.T) {
 	defer broken.Body.Close()
 	if broken.StatusCode != http.StatusInternalServerError {
 		t.Errorf("store failure status = %d, want 500", broken.StatusCode)
+	}
+}
+
+// A sub-agent may not answer an approval raised by its own session. The
+// refusal is a 403, not a conflict and not a server error.
+func TestSubAgentSelfApprovalIsForbidden(t *testing.T) {
+	s, ts := newTestServer(t)
+	engine, err := policy.NewEngine(config.Default().Policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.guard = policy.NewGuard(nil, engine, s.Approver(), s.Store())
+
+	ctx := context.Background()
+	parent, err := s.Store().CreateSession(ctx, "parent", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := s.Store().CreateChildSession(ctx, "child", "", parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingID, err := s.Store().AddPendingCall(ctx, store.PendingCall{
+		SessionID: child, ToolUseID: "c1", Tool: "fs_write",
+		ArgsJSON: []byte(`{"path":"x"}`), Profile: "local", Rule: "fs_write",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res := postJSON(t, fmt.Sprintf("%s/api/sessions/%s/approvals/%d", ts.URL, child, pendingID),
+		map[string]any{"allow": true, "scope": "once"})
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Errorf("sub-agent self-approval status = %d, want 403", res.StatusCode)
 	}
 }
