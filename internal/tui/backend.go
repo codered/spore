@@ -2,10 +2,15 @@ package tui
 
 import (
 	"context"
+	"errors"
 
 	"github.com/codered/spore/internal/daemon"
 	"github.com/codered/spore/internal/policy"
 )
+
+// ErrApprovalGone is what Resolve returns when the daemon no longer has the
+// approval waiting: it was answered, or it expired.
+var ErrApprovalGone = errors.New("that approval is no longer waiting")
 
 // Backend is the daemon as the interface sees it. cmd/spore adapts its HTTP
 // client to it; tests use a fake. Events returns once the stream is open and

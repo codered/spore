@@ -165,7 +165,9 @@ func (c *cache) Apply(ev daemon.WireEvent) string {
 		sv.approvals = append(sv.approvals, ev)
 	case daemon.WireResolved:
 		sv.dropApproval(ev.PendingID)
-		if !c.answered[ev.PendingID] {
+		// An ask that stopped waiting was never answered by anyone, so there
+		// is nothing to report.
+		if !c.answered[ev.PendingID] && ev.Decision != daemon.DecisionExpired {
 			sv.add(kindNotice, fmt.Sprintf("approval for %s answered elsewhere: %s", ev.Tool, ev.Decision))
 		}
 		delete(c.answered, ev.PendingID)
@@ -388,11 +390,12 @@ func (c *cache) pending(root string, pendingID int64) bool {
 }
 
 // restoreApproval puts back an approval whose answer failed to send, so the
-// overlay stays up and the human can try again.
+// card can be tried again. It goes to the back of the queue: a card that
+// keeps failing must not hold up the ones behind it.
 func (c *cache) restoreApproval(root string, ev daemon.WireEvent) {
 	delete(c.answered, ev.PendingID)
 	sv := c.get(root)
-	sv.approvals = append([]daemon.WireEvent{ev}, sv.approvals...)
+	sv.approvals = append(sv.approvals, ev)
 }
 
 // remove forgets a deleted session.

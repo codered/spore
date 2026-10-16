@@ -151,25 +151,15 @@ func approvalModel(t *testing.T) (*fakeBackend, *Model) {
 	return fb, m
 }
 
-func TestAnApprovalKeyAsksBeforeAnswering(t *testing.T) {
-	cases := map[string]string{
-		"y": "Allow shell once?",
-		"n": "Deny shell?",
-		"s": "Allow shell for this session?",
-		"p": "Allow once and propose shell:go * for review?",
-	}
-	for key, question := range cases {
+func TestAnApprovalKeyAnswersAtOnce(t *testing.T) {
+	for _, key := range []string{"y", "n", "s", "p"} {
 		fb, m := approvalModel(t)
 		press(m, key)
-		if len(fb.resolved) != 0 {
-			t.Fatalf("[%s] answered before confirming: %v", key, fb.resolved)
-		}
-		if m.mode != modeConfirm || !strings.Contains(m.View(), question) {
-			t.Fatalf("[%s] no modal asking %q", key, question)
-		}
-		press(m, "y")
 		if len(fb.resolved) != 1 {
-			t.Fatalf("[%s] confirming resolved %v", key, fb.resolved)
+			t.Fatalf("[%s] resolved %v, want one answer", key, fb.resolved)
+		}
+		if m.mode == modeConfirm || m.confirm != nil {
+			t.Fatalf("[%s] opened the confirm modal", key)
 		}
 		for _, b := range m.cache.get("s1").blocks {
 			if b.kind == kindNotice {
@@ -182,20 +172,8 @@ func TestAnApprovalKeyAsksBeforeAnswering(t *testing.T) {
 	}
 }
 
-func TestEscInTheModalLeavesTheApprovalUnanswered(t *testing.T) {
+func TestAnApprovalAnsweredElsewhereSendsNothing(t *testing.T) {
 	fb, m := approvalModel(t)
-	press(m, "y", "esc")
-	if len(fb.resolved) != 0 || m.mode != modeNormal {
-		t.Fatalf("esc resolved %v, mode %s", fb.resolved, m.mode)
-	}
-	if _, _, ok := m.cache.approvalFor("s1"); !ok {
-		t.Fatal("cancelling the modal dropped the approval")
-	}
-}
-
-func TestConfirmingAnApprovalAnsweredElsewhereSendsNothing(t *testing.T) {
-	fb, m := approvalModel(t)
-	press(m, "y")
 	feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireResolved, PendingID: 7})
 	press(m, "y")
 	if len(fb.resolved) != 0 {
@@ -203,11 +181,11 @@ func TestConfirmingAnApprovalAnsweredElsewhereSendsNothing(t *testing.T) {
 	}
 }
 
-func TestTheScreenFitsTheTerminalWithTheModalOpen(t *testing.T) {
+func TestTheScreenFitsTheTerminalWithAnApprovalOn(t *testing.T) {
 	for _, w := range []int{60, 80, 100, 120, 160} {
 		_, m := approvalModel(t)
 		run(m, tea.WindowSizeMsg{Width: w, Height: 30})
-		press(m, "p")
+		press(m, "alt+esc")
 		lines := strings.Split(m.View(), "\n")
 		if len(lines) != 30 {
 			t.Errorf("[%d] %d rows, want 30", w, len(lines))
@@ -217,8 +195,8 @@ func TestTheScreenFitsTheTerminalWithTheModalOpen(t *testing.T) {
 				t.Errorf("[%d] row %d is %d cells: %q", w, i, lipgloss.Width(l), ansi.Strip(l))
 			}
 		}
-		if !strings.Contains(ansi.Strip(m.View()), "Allow once and propose") {
-			t.Errorf("[%d] the modal is not on screen", w)
+		if !strings.Contains(ansi.Strip(m.View()), "y allow once") {
+			t.Errorf("[%d] the approval keys are not on screen", w)
 		}
 	}
 }

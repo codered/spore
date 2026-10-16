@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -457,6 +458,13 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		return nil
 
 	case approvalFailedMsg:
+		// The daemon no longer has this approval waiting. The card was
+		// already dropped when it was answered, so there is nothing to put
+		// back and nothing to report.
+		if errors.Is(msg.err, ErrApprovalGone) {
+			delete(m.cache.answered, msg.ev.PendingID)
+			return nil
+		}
 		m.cache.restoreApproval(msg.root, msg.ev)
 		m.flash = "could not answer the approval: " + msg.err.Error()
 		return nil
@@ -553,20 +561,11 @@ func (m *Model) handleKey(k tea.KeyMsg) tea.Cmd {
 	if k.Alt && k.Type == tea.KeyRunes && (m.mode == modeInsert || m.mode == modeNormal) {
 		// alt+y/n/s/p answers an approval from INSERT without giving up
 		// the draft; a modifier cannot be typed by accident mid-sentence.
-		// y and n settle this one call and change no policy, so they
-		// answer at once. s and p change the policy past this call, so
-		// they still ask, and the question says what changes.
+		// Each answers at once, and the flash line says what was sent.
 		if m.mode == modeInsert && m.table == nil {
 			if root, ev, ok := m.cache.approvalFor(m.selected); ok {
-				ans, isKey, offered := answerFor(ev, string(k.Runes))
-				switch {
-				case isKey && offered && ans.Scope == policy.ScopeOnce:
-					return m.resolve(root, ev, ans)
-				case isKey && m.answer(root, ev, string(k.Runes)):
-					if m.confirm != nil {
-						m.confirm.back = modeInsert
-					}
-					return nil
+				if cmd, isKey := m.answer(root, ev, string(k.Runes)); isKey {
+					return cmd
 				}
 			}
 		}
@@ -609,8 +608,8 @@ func (m *Model) keyNormal(k tea.KeyMsg) tea.Cmd {
 	// An approval on screen takes y/n/s/p first. It is only live here, in
 	// NORMAL: a y typed into the input must never be read as consent.
 	if root, ev, ok := m.cache.approvalFor(m.selected); ok {
-		if m.answer(root, ev, k.String()) {
-			return nil
+		if cmd, isKey := m.answer(root, ev, k.String()); isKey {
+			return cmd
 		}
 	}
 	if m.focused() == paneSidebar {
@@ -1074,34 +1073,22 @@ func answerFor(ev daemon.WireEvent, k string) (ans policy.Answer, ok, offered bo
 	return policy.Answer{}, false, false
 }
 
-// answer opens the modal that confirms an approval key, reporting whether k
-// was one.
-func (m *Model) answer(root string, ev daemon.WireEvent, k string) bool {
+// answer sends the answer an approval key gives, reporting whether k was an
+// approval key. A p on an ask with no pattern is swallowed, not typed.
+func (m *Model) answer(root string, ev daemon.WireEvent, k string) (tea.Cmd, bool) {
 	ans, ok, offered := answerFor(ev, k)
-	if !ok || !offered {
-		return ok // a p never offered is swallowed, not typed
+	if !ok {
+		return nil, false
 	}
-	detail := []string{`matched policy rule "` + ev.Rule + `"`}
-	if ev.Origin != "" {
-		detail = append(detail, "asked by sub-agent "+short(ev.Origin))
+	if !offered {
+		return nil, true
 	}
-	switch ans.Scope {
-	case policy.ScopeSession:
-		detail = append(detail, "changes the policy: "+ev.Tool+" runs without asking for the rest of this session")
-	case policy.ScopePattern:
-		detail = append(detail, "changes the policy: writes an allow rule to your config")
-	}
-	m.confirm = &confirmState{
-		question: answerQuestion(ev, ans),
-		detail:   detail,
-		yes:      func() tea.Cmd { return m.resolve(root, ev, ans) },
-	}
-	m.mode = modeConfirm
-	return true
+	return m.resolve(root, ev, ans), true
 }
 
-// resolve sends a confirmed answer. The approval may have been answered
-// elsewhere while the modal was open; then there is nothing left to send.
+// resolve sends an approval answer. The approval may have been answered
+// elsewhere, or have expired, since it was shown; then there is nothing left
+// to send.
 func (m *Model) resolve(root string, ev daemon.WireEvent, ans policy.Answer) tea.Cmd {
 	if !m.cache.pending(root, ev.PendingID) {
 		m.flash = "that approval was already answered"
@@ -1650,19 +1637,6 @@ func (m *Model) ExitSummary() string {
 		return ""
 	}
 	return strings.Join(out, "\n\n") + "\n"
-}
-
-// answerQuestion is the modal's question for an approval key.
-func answerQuestion(ev daemon.WireEvent, ans policy.Answer) string {
-	switch {
-	case !ans.Allow:
-		return "Deny " + ev.Tool + "?"
-	case ans.Scope == policy.ScopeSession:
-		return "Allow " + ev.Tool + " for this session?"
-	case ans.Scope == policy.ScopePattern:
-		return "Allow once and propose " + ev.Pattern + " for review?"
-	}
-	return "Allow " + ev.Tool + " once?"
 }
 
 // capitalize upper-cases a sentence's first letter.

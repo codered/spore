@@ -317,7 +317,8 @@ function apply(ev) {
       break;
     case "resolved":
       dropApprovals(r, (a) => a.pending_id === ev.pending_id);
-      if (!S.answered.has(ev.pending_id) && isOpen) {
+      // An expired ask was never answered, so it is not a decision to report.
+      if (!S.answered.has(ev.pending_id) && ev.decision !== "expired" && isOpen) {
         addNote("approval for " + (ev.tool || "a tool") + " answered elsewhere: " + ev.decision);
       }
       S.answered.delete(ev.pending_id);

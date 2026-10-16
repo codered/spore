@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/codered/spore/internal/daemon"
+	"github.com/codered/spore/internal/policy"
 )
 
 func card(m *Model) string { return ansi.Strip(m.approvalCard(100, 40)) }
@@ -278,69 +280,104 @@ func TestShortPaneKeepsTheCardsKeys(t *testing.T) {
 
 func altKey(r rune) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: true} }
 
-// While typing, alt+y and alt+n answer at once: they settle this one call
-// and change no policy, and a modifier cannot be typed by accident. The
-// draft stays.
-func TestAltYAndAltNAnswerAtOnceFromInsert(t *testing.T) {
+// Each approval key answers on the first press, from NORMAL and from INSERT
+// (alt+key). None opens a confirm modal, and the mode is kept, so a draft
+// typed in INSERT stays put.
+func TestApprovalKeysActAtOnce(t *testing.T) {
 	for _, tc := range []struct {
-		key  rune
-		want string
-	}{{'y', "s1:1:true"}, {'n', "s1:1:false"}} {
-		fb := &fakeBackend{}
-		m := newTestModel(t, fb, "s1")
-		feed(m, wev("s1", daemon.WireTurnStarted),
-			daemon.WireEvent{Session: "s1", Type: daemon.WireApproval, PendingID: 1, Tool: "shell_exec", Args: `{}`})
-		typeText(m, "half a thought")
-		run(m, altKey(tc.key))
-		if m.confirm != nil || m.mode != modeInsert {
-			t.Fatalf("alt+%c asked first: mode %v", tc.key, m.mode)
-		}
-		if len(fb.resolved) != 1 || fb.resolved[0] != tc.want {
-			t.Fatalf("alt+%c resolved %v, want %s", tc.key, fb.resolved, tc.want)
-		}
-		if m.input.Value() != "half a thought" || m.waiting() {
-			t.Fatalf("alt+%c: input %q, waiting %v", tc.key, m.input.Value(), m.waiting())
+		key   string
+		scope policy.Scope
+		allow bool
+	}{{"y", policy.ScopeOnce, true}, {"n", policy.ScopeOnce, false}, {"s", policy.ScopeSession, true}, {"p", policy.ScopePattern, true}} {
+		for _, insert := range []bool{false, true} {
+			fb := &fakeBackend{}
+			m := newTestModel(t, fb, "s1")
+			feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireApproval, PendingID: 1, Tool: "shell_exec",
+				Args: `{}`, Pattern: "shell_exec(go test*)"})
+			if insert {
+				typeText(m, "draft")
+				run(m, altKey(rune(tc.key[0])))
+			} else {
+				press(m, "alt+esc", tc.key)
+			}
+			want := fmt.Sprintf("s1:1:%t", tc.allow)
+			if len(fb.resolved) != 1 || fb.resolved[0] != want || fb.resolvedScopes[0] != tc.scope {
+				t.Fatalf("key %s insert=%v resolved %v scopes %v, want %s %s", tc.key, insert, fb.resolved, fb.resolvedScopes, want, tc.scope)
+			}
+			if m.confirm != nil || m.mode == modeConfirm {
+				t.Fatalf("key %s insert=%v opened the confirm modal", tc.key, insert)
+			}
+			if insert && (m.mode != modeInsert || m.input.Value() != "draft") {
+				t.Fatalf("key %s: mode %v, input %q; want INSERT with the draft", tc.key, m.mode, m.input.Value())
+			}
 		}
 	}
 }
 
-// alt+s and alt+p change the policy past this call, so they still ask, and
-// the question says what changes. Answering returns to INSERT with the draft.
-func TestAltSAndAltPAskBecauseTheyChangePolicy(t *testing.T) {
-	for _, tc := range []struct {
-		key  rune
-		note string
-	}{{'s', "for the rest of this session"}, {'p', "writes an allow rule to your config"}} {
-		fb := &fakeBackend{}
-		m := newTestModel(t, fb, "s1")
-		feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireApproval, PendingID: 1, Tool: "shell_exec",
-			Args: `{}`, Pattern: "shell_exec(go test*)"})
-		typeText(m, "draft")
-		run(m, altKey(tc.key))
-		if m.mode != modeConfirm || len(fb.resolved) != 0 {
-			t.Fatalf("alt+%c: mode %v, resolved %v; want the confirm modal", tc.key, m.mode, fb.resolved)
-		}
-		if v := ansi.Strip(m.View()); !strings.Contains(v, tc.note) {
-			t.Fatalf("alt+%c modal does not say %q:\n%s", tc.key, tc.note, v)
-		}
-		press(m, "y")
-		if len(fb.resolved) != 1 {
-			t.Fatalf("alt+%c then y resolved %v", tc.key, fb.resolved)
-		}
-		if m.mode != modeInsert || m.input.Value() != "draft" {
-			t.Fatalf("after alt+%c: mode %v, input %q", tc.key, m.mode, m.input.Value())
-		}
+// An ask that stopped waiting (timeout, stopped turn) leaves the queue
+// with no notice. An answer elsewhere still gets one.
+func TestExpiredResolvedIsQuiet(t *testing.T) {
+	m, _, _ := clockModel(t)
+	approvalOn(m, daemon.WireEvent{Tool: "shell_exec", PendingID: 3})
+	feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireResolved, PendingID: 3, Decision: daemon.DecisionExpired})
+	if _, _, ok := m.cache.approvalFor("s1"); ok {
+		t.Fatal("expired approval is still queued")
+	}
+	if n := noticeCount(m.cache.get("s1")); n != 0 {
+		t.Fatalf("expired approval left %d notices", n)
+	}
+
+	approvalOn(m, daemon.WireEvent{Tool: "shell_exec", PendingID: 4})
+	feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireResolved, PendingID: 4, Decision: "allow"})
+	if _, _, ok := m.cache.approvalFor("s1"); ok {
+		t.Fatal("answered approval is still queued")
+	}
+	if n := noticeCount(m.cache.get("s1")); n != 1 {
+		t.Fatalf("answered elsewhere left %d notices, want 1", n)
 	}
 }
 
-func TestAltKeyCancelledReturnsToInsert(t *testing.T) {
-	fb := &fakeBackend{}
+func noticeCount(sv *sessionView) int {
+	n := 0
+	for _, b := range sv.blocks {
+		if b.kind == kindNotice {
+			n++
+		}
+	}
+	return n
+}
+
+// An answer the daemon refuses because the approval is gone drops the card
+// without a flash that says the answer failed.
+func TestResolveGoneDropsCard(t *testing.T) {
+	fb, m := approvalModel(t)
+	fb.resolveErr = fmt.Errorf("x: %w", ErrApprovalGone)
+	press(m, "y")
+	if _, _, ok := m.cache.approvalFor("s1"); ok {
+		t.Fatal("gone approval is still queued")
+	}
+	if strings.Contains(m.flash, "could not answer") {
+		t.Fatalf("flash = %q", m.flash)
+	}
+}
+
+// Any other failure puts the card back at the BACK of the queue, so a card
+// that cannot be answered does not block the live ones.
+func TestResolveFailureRestoresAtBack(t *testing.T) {
+	fb := &fakeBackend{resolveErr: errors.New("connection refused")}
 	m := newTestModel(t, fb, "s1")
-	feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireApproval, PendingID: 1, Tool: "shell_exec", Args: `{}`})
-	run(m, altKey('s'))
-	press(m, "esc")
-	if m.mode != modeInsert || len(fb.resolved) != 0 {
-		t.Fatalf("mode %v, resolved %v; want INSERT and nothing sent", m.mode, fb.resolved)
+	feed(m, daemon.WireEvent{Session: "s1", Type: daemon.WireApproval, PendingID: 1, Tool: "a", Args: `{}`},
+		daemon.WireEvent{Session: "s1", Type: daemon.WireApproval, PendingID: 2, Tool: "b", Args: `{}`})
+	press(m, "alt+esc", "y")
+	var got []int64
+	for _, a := range m.cache.get("s1").approvals {
+		got = append(got, a.PendingID)
+	}
+	if fmt.Sprint(got) != "[2 1]" {
+		t.Fatalf("queue after failed answer = %v, want [2 1]", got)
+	}
+	if !strings.Contains(m.flash, "connection refused") {
+		t.Fatalf("flash = %q, want the error", m.flash)
 	}
 }
 

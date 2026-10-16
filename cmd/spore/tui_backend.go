@@ -66,7 +66,13 @@ func (b tuiBackend) Send(ctx context.Context, id, text string) error { return b.
 func (b tuiBackend) Stop(ctx context.Context, id string) error { return b.c.stop(ctx, id) }
 
 func (b tuiBackend) Resolve(ctx context.Context, id string, pendingID int64, ans policy.Answer) error {
-	return b.c.resolve(ctx, id, pendingID, ans)
+	err := b.c.resolve(ctx, id, pendingID, ans)
+	// 404 and 409 both mean the daemon has no such approval waiting.
+	var he *httpError
+	if errors.As(err, &he) && (he.Status == http.StatusNotFound || he.Status == http.StatusConflict) {
+		return tui.ErrApprovalGone
+	}
+	return err
 }
 
 func (b tuiBackend) CancelAgent(ctx context.Context, parent, child string) error {

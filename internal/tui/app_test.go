@@ -22,16 +22,17 @@ import (
 
 // fakeBackend records every call the model makes.
 type fakeBackend struct {
-	mu          sync.Mutex
-	sent        []string
-	stopped     []string
-	resolved    []string
-	cancelled   []string
-	sendErr     error
-	resolveErr  error
-	created     string
-	sessions    []daemon.SessionJSON
-	transcripts map[string]daemon.TranscriptJSON
+	mu             sync.Mutex
+	sent           []string
+	stopped        []string
+	resolved       []string
+	resolvedScopes []policy.Scope
+	cancelled      []string
+	sendErr        error
+	resolveErr     error
+	created        string
+	sessions       []daemon.SessionJSON
+	transcripts    map[string]daemon.TranscriptJSON
 
 	skills        daemon.SkillsJSON
 	agents        daemon.AgentsJSON
@@ -151,6 +152,7 @@ func (f *fakeBackend) Resolve(_ context.Context, id string, pendingID int64, ans
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resolved = append(f.resolved, fmt.Sprintf("%s:%d:%t", id, pendingID, ans.Allow))
+	f.resolvedScopes = append(f.resolvedScopes, ans.Scope)
 	return f.resolveErr
 }
 func (f *fakeBackend) CancelAgent(_ context.Context, parent, child string) error {

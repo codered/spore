@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/tui"
 )
 
@@ -70,5 +71,29 @@ func TestRollbackRoundReportsWhatWasNotUndone(t *testing.T) {
 	body = `{"round_id":"approval-1","rolled_back":[{"kind":"policy.allow","target":"x"}],"stale":[],"failed":[]}`
 	if err := b.RollbackRound(context.Background(), "s1", "approval-1"); err != nil {
 		t.Fatalf("clean rollback: err = %v", err)
+	}
+}
+
+// Only a 404 or 409 from the resolve endpoint means the approval is gone; a
+// refusal or a server failure is a real failure and keeps the card.
+func TestTUIBackendResolveGone(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		gone   bool
+	}{{http.StatusConflict, true}, {http.StatusNotFound, true}, {http.StatusInternalServerError, false}} {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(tc.status)
+			_, _ = w.Write([]byte(`{"error":"nope"}`))
+		}))
+		c := newClient(strings.TrimPrefix(ts.URL, "http://"))
+		err := tuiBackend{c: c}.Resolve(context.Background(), "s1", 1, policy.Answer{Allow: true, Scope: policy.ScopeOnce})
+		ts.Close()
+		if err == nil {
+			t.Fatalf("status %d: no error", tc.status)
+		}
+		if got := errors.Is(err, tui.ErrApprovalGone); got != tc.gone {
+			t.Fatalf("status %d: ErrApprovalGone = %v, want %v (err %v)", tc.status, got, tc.gone, err)
+		}
 	}
 }
