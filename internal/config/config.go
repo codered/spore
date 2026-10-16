@@ -76,6 +76,13 @@ type SubagentConfig struct {
 	// unbounded spawn batch reaches provider rate limits long before it
 	// reaches the cost ceiling.
 	MaxConcurrent int `toml:"max_concurrent"`
+	// ResultWaitSeconds is how long agent_result waits for a running child
+	// when the model names no wait. A model in tools mode can wait only by
+	// calling again, so without a wait it calls once a second.
+	ResultWaitSeconds int `toml:"result_wait_seconds"`
+	// ResultMaxWaitSeconds caps the wait a model may ask for, and the
+	// default too.
+	ResultMaxWaitSeconds int `toml:"result_max_wait_seconds"`
 }
 
 // RefineConfig drives continual refinement: the reviewer pass that turns what
@@ -1037,6 +1044,12 @@ func Load(path string) (*Config, error) {
 	if cfg.Subagents.MaxConcurrent == 0 {
 		cfg.Subagents.MaxConcurrent = 4
 	}
+	if cfg.Subagents.ResultWaitSeconds == 0 {
+		cfg.Subagents.ResultWaitSeconds = 60
+	}
+	if cfg.Subagents.ResultMaxWaitSeconds == 0 {
+		cfg.Subagents.ResultMaxWaitSeconds = 300
+	}
 	// Zero means "not set in the file", as for [subagents].
 	if cfg.Refine.IdleMinutes == 0 {
 		cfg.Refine.IdleMinutes = 10
@@ -1165,6 +1178,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Subagents.MaxDepth < 0 || c.Subagents.MaxCostUSD < 0 || c.Subagents.MaxConcurrent < 0 {
 		return fmt.Errorf("subagents: max_depth, max_cost_usd and max_concurrent must not be negative")
+	}
+	if c.Subagents.ResultWaitSeconds < 0 || c.Subagents.ResultMaxWaitSeconds < 0 {
+		return fmt.Errorf("subagents: result_wait_seconds and result_max_wait_seconds must not be negative")
 	}
 	if c.Refine.IdleMinutes < 0 || c.Refine.MaxEdits < 0 {
 		return fmt.Errorf("refine: idle_minutes and max_edits must not be negative")

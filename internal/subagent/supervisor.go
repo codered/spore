@@ -64,6 +64,9 @@ type child struct {
 	depth  int
 	start  time.Time
 	root   string
+	// done is closed after a detached child's final state is written. It
+	// is nil for a child that agent_run waits on in the same turn.
+	done chan struct{}
 }
 
 type Supervisor struct {
@@ -336,6 +339,33 @@ func (s *Supervisor) finish(ctx context.Context, childID, state, result, errText
 	}
 }
 
+// Wait returns one child's status after the child finishes, or after limit
+// if it is still running then. A child that is not running returns at
+// once. A cancelled ctx (the turn was stopped) ends the wait with its
+// error.
+func (s *Supervisor) Wait(ctx context.Context, childID string, limit time.Duration) (Status, error) {
+	s.mu.Lock()
+	c := s.running[childID]
+	s.mu.Unlock()
+	if c != nil && c.done != nil && limit > 0 {
+		timer := time.NewTimer(limit)
+		defer timer.Stop()
+		select {
+		case <-c.done:
+		case <-timer.C:
+		case <-ctx.Done():
+			return Status{}, ctx.Err()
+		}
+	}
+	return s.Result(ctx, childID)
+}
+
+// ResultWait returns the configured default and maximum agent_result wait,
+// in seconds.
+func (s *Supervisor) ResultWait() (def, max int) {
+	return s.cfg.ResultWaitSeconds, s.cfg.ResultMaxWaitSeconds
+}
+
 // Result reads one child's status, live or finished.
 func (s *Supervisor) Result(ctx context.Context, childID string) (Status, error) {
 	run, ok, err := s.store.SubagentRun(ctx, childID)
@@ -423,7 +453,8 @@ func (s *Supervisor) SpawnModel(ctx context.Context, parentID, prompt, model str
 	// work is defined not to be bound by. WithoutCancel keeps the policy
 	// session value, so the child keeps the same trust.
 	bg, cancel := context.WithCancel(context.WithoutCancel(childCtx))
-	err = s.tryTrack(ctx, childID, root, &child{cancel: cancel, prompt: prompt, depth: depth, start: time.Now().UTC(), root: root})
+	done := make(chan struct{})
+	err = s.tryTrack(ctx, childID, root, &child{cancel: cancel, prompt: prompt, depth: depth, start: time.Now().UTC(), root: root, done: done})
 	if err != nil {
 		s.finish(context.Background(), childID, store.RunFailed, "", err.Error())
 		cancel()
@@ -433,6 +464,10 @@ func (s *Supervisor) SpawnModel(ctx context.Context, parentID, prompt, model str
 	go func() {
 		defer cancel()
 		defer s.untrack(childID)
+		// Deferred last, so it runs first: after finish has written the
+		// final state, and before untrack. A waiter that wakes reads the
+		// final state.
+		defer close(done)
 		ch, err := runner.RunSite(bg, childID, prompt, router.SiteSubagent)
 		if err != nil {
 			s.finish(bg, childID, store.RunFailed, "", err.Error())
