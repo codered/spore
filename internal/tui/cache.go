@@ -82,13 +82,15 @@ func (sv *sessionView) dropLastUser(text string) {
 	}
 }
 
-func (sv *sessionView) dropApproval(pendingID int64) {
+// dropApproval removes the queued approval and reports whether one was there.
+func (sv *sessionView) dropApproval(pendingID int64) bool {
 	for i, a := range sv.approvals {
 		if a.PendingID == pendingID {
 			sv.approvals = append(sv.approvals[:i], sv.approvals[i+1:]...)
-			return
+			return true
 		}
 	}
+	return false
 }
 
 func (sv *sessionView) dropApprovalsWhere(match func(daemon.WireEvent) bool) {
@@ -167,10 +169,12 @@ func (c *cache) Apply(ev daemon.WireEvent) string {
 		}
 		sv.approvals = append(sv.approvals, ev)
 	case daemon.WireResolved:
-		sv.dropApproval(ev.PendingID)
-		// An ask that stopped waiting was never answered by anyone, so there
-		// is nothing to report.
-		if !c.answered[ev.PendingID] && ev.Decision != daemon.DecisionExpired {
+		queued := sv.dropApproval(ev.PendingID)
+		// Only an approval this session still had queued was answered
+		// elsewhere. A repeat resolved for one already dropped (the grant
+		// sweep and the waiter can both announce it) is quiet. So is an ask
+		// that stopped waiting, since nobody answered it.
+		if queued && !c.answered[ev.PendingID] && ev.Decision != daemon.DecisionExpired {
 			sv.add(kindNotice, fmt.Sprintf("approval for %s answered elsewhere: %s", ev.Tool, ev.Decision))
 		}
 		delete(c.answered, ev.PendingID)

@@ -105,14 +105,28 @@ func (s *Server) sweepGrantedAsks(ctx context.Context, root string) {
 		if s.broker.Answer(root, p.ID, ans) {
 			continue
 		}
-		if err := s.guard.Resolve(ctx, root, p.ID, ans); err != nil {
+		if err := s.settleSwept(ctx, root, p.ID, ans); err != nil {
 			if !errors.Is(err, policy.ErrNotPending) {
 				slog.Warn("grant sweep: resolve approval", "session", root, "pending", p.ID, "err", err)
 			}
-			continue
 		}
-		s.hub.Publish(root, WireEvent{Type: WireResolved, PendingID: p.ID, Decision: decisionOf(ans)})
 	}
+}
+
+// settleSwept records a sweep answer through the guard for a row with no
+// waiter when the first Answer was tried. A waiter can still register between
+// that Answer and the guard's commit: its Settled read sees the row pending
+// and it publishes a card. Nothing else would answer that waiter, so Answer
+// runs again after the commit. A waiter that registers after the commit reads
+// the settled row instead. Answer deletes the waiter under the lock, so at most
+// one delivery happens. Its bool is ignored because a miss is the normal case.
+func (s *Server) settleSwept(ctx context.Context, root string, pendingID int64, ans policy.Answer) error {
+	if err := s.guard.Resolve(ctx, root, pendingID, ans); err != nil {
+		return err
+	}
+	s.hub.Publish(root, WireEvent{Type: WireResolved, PendingID: pendingID, Decision: decisionOf(ans)})
+	s.broker.Answer(root, pendingID, ans)
+	return nil
 }
 
 // grantEvents is the live grant of one root, for a client attaching to that

@@ -296,3 +296,85 @@ func TestGrantUnknownSessionIs404(t *testing.T) {
 		t.Fatalf("status = %d, want 404", status)
 	}
 }
+
+// A waiter that registers after the sweep's first Answer missed, and before the
+// guard commits, reads its row as pending and publishes a card. The post-commit
+// Answer in settleSwept must deliver the allow to it, once.
+func TestGrantSweepAnswersWaiterRegisteredDuringResolve(t *testing.T) {
+	s, ts := newTestServer(t)
+	attachPolicy(t, s)
+	ctx := context.Background()
+	root := startSession(t, ts.URL)
+	row, err := s.store.AddPendingCall(ctx, store.PendingCall{SessionID: root, Tool: "fs_write", ArgsJSON: []byte(`{}`), Profile: "local", Rule: "fs_write"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, stop := s.hub.Subscribe(root)
+	defer stop()
+
+	type result struct {
+		ans policy.Answer
+		err error
+	}
+	asks := make(chan result, 1)
+	start := time.Now()
+	go func() {
+		// The Settled read lands before the commit, so it reports pending.
+		ans, err := s.Approver().Ask(ctx, policy.Ask{
+			SessionID: root, RootID: root, Tool: "fs_write", PendingID: row, Rule: "fs_write",
+			Deadline: start.Add(time.Minute),
+			Settled:  func() (string, bool) { return "", false },
+		})
+		asks <- result{ans, err}
+	}()
+	waitForWaiter(t, s, row)
+	// The card is published only after the waiter is registered and the read
+	// was taken, so the commit below happens inside that window.
+	awaitEvent(t, events, WireApproval, row)
+
+	if err := s.settleSwept(ctx, root, row, policy.Answer{Allow: true, Scope: policy.ScopeOnce}); err != nil {
+		t.Fatalf("settleSwept: %v", err)
+	}
+	select {
+	case r := <-asks:
+		if r.err != nil || !r.ans.Allow {
+			t.Errorf("waiter got %+v err %v, want allow", r.ans, r.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the waiter registered during the resolve was never answered")
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("answer took %v, want well before the one-minute deadline", elapsed)
+	}
+	// The waiter took the one delivery, so a further Answer finds nothing.
+	if s.broker.Answer(root, row, policy.Answer{Allow: true, Scope: policy.ScopeOnce}) {
+		t.Error("a second Answer delivered to an approval already answered")
+	}
+	state, err := s.store.PendingCallState(ctx, row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != "allow" {
+		t.Errorf("row state = %q, want allow", state)
+	}
+	// Two resolved events go out, one from the sweep and one from the waiter.
+	// The TUI and web client must treat the second as a no-op.
+	for i := 0; i < 2; i++ {
+		awaitEvent(t, events, WireResolved, row)
+	}
+}
+
+// awaitEvent reads until an event of typ for pendingID arrives.
+func awaitEvent(t *testing.T, events <-chan WireEvent, typ string, pendingID int64) WireEvent {
+	t.Helper()
+	for {
+		select {
+		case ev := <-events:
+			if ev.Type == typ && ev.PendingID == pendingID {
+				return ev
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("no %s event for pending %d", typ, pendingID)
+		}
+	}
+}

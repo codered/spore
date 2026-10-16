@@ -316,9 +316,11 @@ function apply(ev) {
       if (!r.approvals.some((a) => a.pending_id === ev.pending_id)) r.approvals.push(ev);
       break;
     case "resolved":
-      dropApprovals(r, (a) => a.pending_id === ev.pending_id);
-      // An expired ask was never answered, so it is not a decision to report.
-      if (!S.answered.has(ev.pending_id) && ev.decision !== "expired" && isOpen) {
+      const queued = dropApprovals(r, (a) => a.pending_id === ev.pending_id);
+      // Only an approval still queued here was answered elsewhere. A repeat
+      // resolved for one already dropped is quiet, and so is an expired ask,
+      // which nobody answered.
+      if (queued && !S.answered.has(ev.pending_id) && ev.decision !== "expired" && isOpen) {
         addNote("approval for " + (ev.tool || "a tool") + " answered elsewhere: " + ev.decision);
       }
       S.answered.delete(ev.pending_id);
