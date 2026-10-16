@@ -346,12 +346,12 @@ func (a *Agent) modelFor(ctx context.Context, sessionID, site string) (ref strin
 }
 
 // kernelMode returns the kernel mode for the session's turns: tools mode
-// when kernel.tools_models matches the session's model, otherwise
+// when kernel.tools_models lists the session's model, otherwise
 // kernel.mode. Only Snapshot calls it: the request builder reads
 // Snapshot.Mode, so the size compaction measures is the size the model is
 // sent, and one round never mixes two modes.
 func (a *Agent) kernelMode(ctx context.Context, sessionID string) (string, error) {
-	if a.Cfg.Kernel.ToolsModels == "" {
+	if len(a.Cfg.Kernel.ToolsModels) == 0 {
 		return a.Cfg.Kernel.Mode, nil
 	}
 	ref, _, err := a.modelFor(ctx, sessionID, router.SiteChat)

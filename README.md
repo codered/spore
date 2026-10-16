@@ -479,12 +479,13 @@ These are small samples from one model, so read them as an indication only.
 
 Some small models call tools well but write go_run programs badly: they call
 a tool as a Go function, or invent spore helpers. Put those models in tools
-mode alone with `tools_models`, a regexp over `provider/model` refs.
+mode alone with `tools_models`: list each one as a full `provider/model` ref,
+or as the model id alone. Names must match exactly.
 
 ```toml
 [kernel]
 mode                = "code"   # or "tools"
-tools_models        = "LFM2\\.5"   # these models get every tool directly
+tools_models        = ["studio/unsloth/LFM2.5-24B-A2B-GGUF"]   # these models get every tool directly
 timeout_seconds     = 60       # time spent waiting on an approval is not counted
 max_timeout_seconds = 300
 ceiling_seconds     = 1800     # wall-clock limit, approvals included
