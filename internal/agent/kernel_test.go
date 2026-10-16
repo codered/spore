@@ -78,14 +78,14 @@ func TestKernelSectionCountsTowardTheSnapshotSize(t *testing.T) {
 	}
 }
 
-// runOnceOn runs one turn in code mode, with tools_models set to pattern,
+// runOnceOn runs one turn in code mode, with tools_models set to listed,
 // on a session whose chat model is ref ("" keeps the default).
-func runOnceOn(t *testing.T, pattern, ref string) (provider.Request, *Agent, string) {
+func runOnceOn(t *testing.T, listed []string, ref string) (provider.Request, *Agent, string) {
 	t.Helper()
 	script := provider.NewScript(provider.ScriptTurn{Text: "done"})
 	a, st := harness(t, script, kernelTools{})
 	a.Cfg.Kernel.Mode = config.KernelModeCode
-	a.Cfg.Kernel.ToolsModels = pattern
+	a.Cfg.Kernel.ToolsModels = listed
 	ctx := context.Background()
 	sid, _ := st.CreateSession(ctx, "t", "")
 	if ref != "" {
@@ -106,11 +106,11 @@ func runOnceOn(t *testing.T, pattern, ref string) (provider.Request, *Agent, str
 }
 
 // LFM2.5 calls a native tool correctly but writes go_run programs that
-// call tools as bare functions. A model that tools_models matches must get
+// call tools as bare functions. A model that tools_models lists must get
 // every tool directly and no go_run reference; any other model keeps code
 // mode.
 func TestToolsModelsPutsAMatchingSessionModelInToolsMode(t *testing.T) {
-	req, a, sid := runOnceOn(t, "model-b", "test/model-b")
+	req, a, sid := runOnceOn(t, []string{"test/model-b"}, "test/model-b")
 	if len(req.Tools) != 3 {
 		t.Fatalf("tools = %+v, want all three", req.Tools)
 	}
@@ -128,7 +128,7 @@ func TestToolsModelsPutsAMatchingSessionModelInToolsMode(t *testing.T) {
 }
 
 func TestToolsModelsLeavesOtherModelsInCodeMode(t *testing.T) {
-	req, _, _ := runOnceOn(t, "model-b", "")
+	req, _, _ := runOnceOn(t, []string{"test/model-b"}, "")
 	if len(req.Tools) != 1 || req.Tools[0].Name != "go_run" {
 		t.Fatalf("tools = %+v, want only go_run", req.Tools)
 	}
@@ -147,7 +147,7 @@ func TestSwitchingModeKeepsHistoryFromTheOtherMode(t *testing.T) {
 	)
 	a, st := harness(t, script, kernelTools{})
 	a.Cfg.Kernel.Mode = config.KernelModeCode
-	a.Cfg.Kernel.ToolsModels = "model-b"
+	a.Cfg.Kernel.ToolsModels = []string{"test/model-b"}
 	ctx := context.Background()
 	sid, _ := st.CreateSession(ctx, "t", "")
 	if err := st.SetSessionModel(ctx, sid, "chat", "test/model-b"); err != nil {
@@ -193,7 +193,7 @@ func TestSwitchingModeKeepsHistoryFromTheOtherMode(t *testing.T) {
 // round. A /model switch between two reads would otherwise send the go_run
 // reference with every tool, or go_run alone with no reference.
 func TestSnapshotRecordsTheModeItUsed(t *testing.T) {
-	_, a, sid := runOnceOn(t, "model-b", "test/model-b")
+	_, a, sid := runOnceOn(t, []string{"test/model-b"}, "test/model-b")
 	snap, err := a.Snapshot(context.Background(), sid)
 	if err != nil {
 		t.Fatal(err)

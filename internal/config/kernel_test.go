@@ -1,6 +1,7 @@
 package config
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -8,7 +9,7 @@ import (
 func TestKernelDefaultsFillIn(t *testing.T) {
 	cfg := loadTestConfig(t, "")
 	want := KernelConfig{Mode: KernelModeCode, TimeoutSeconds: 60, MaxTimeoutSeconds: 300, CeilingSeconds: 1800, HelperMaxBytes: 4 << 20}
-	if cfg.Kernel != want {
+	if !reflect.DeepEqual(cfg.Kernel, want) {
 		t.Errorf("kernel defaults = %+v, want %+v", cfg.Kernel, want)
 	}
 }
@@ -36,13 +37,22 @@ func TestKernelRejectsNegativeNumbers(t *testing.T) {
 	}
 }
 
-func TestKernelToolsModelsForcesToolsModeForAMatch(t *testing.T) {
-	cfg := loadTestConfig(t, "[kernel]\ntools_models = \"LFM2\\\\.5\"\n")
-	if got := cfg.Kernel.ModeFor("studio/unsloth/LFM2.5-24B-A2B-GGUF"); got != KernelModeTools {
-		t.Errorf("ModeFor(LFM) = %q, want %q", got, KernelModeTools)
+// tools_models is a plain list of model names: no regexp, so nothing to
+// escape. An entry names the full provider/model ref or the model id alone.
+func TestKernelToolsModelsForcesToolsModeForAListedModel(t *testing.T) {
+	cfg := loadTestConfig(t, "[kernel]\ntools_models = [\"studio/unsloth/LFM2.5-24B-A2B-GGUF\", \"gemma-4-e2b-qat\"]\n")
+	for _, ref := range []string{"studio/unsloth/LFM2.5-24B-A2B-GGUF", "jetson/gemma-4-e2b-qat"} {
+		if got := cfg.Kernel.ModeFor(ref); got != KernelModeTools {
+			t.Errorf("ModeFor(%q) = %q, want %q", ref, got, KernelModeTools)
+		}
 	}
-	if got := cfg.Kernel.ModeFor("studio/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF"); got != KernelModeCode {
-		t.Errorf("ModeFor(Qwen) = %q, want %q", got, KernelModeCode)
+	for _, ref := range []string{
+		"studio/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
+		"studio/unsloth/LFM2.5-24B-A2B-GGUF-Q8", // a different model, not a prefix match
+	} {
+		if got := cfg.Kernel.ModeFor(ref); got != KernelModeCode {
+			t.Errorf("ModeFor(%q) = %q, want %q", ref, got, KernelModeCode)
+		}
 	}
 }
 
@@ -57,9 +67,19 @@ func TestKernelToolsModelsUnsetLeavesModeAlone(t *testing.T) {
 	}
 }
 
-func TestKernelRejectsABadToolsModelsRegexp(t *testing.T) {
-	_, err := loadTestConfigErr(t, "[kernel]\ntools_models = \"(\"\n")
+func TestKernelRejectsAnEmptyToolsModelsEntry(t *testing.T) {
+	_, err := loadTestConfigErr(t, "[kernel]\ntools_models = [\"a/b\", \" \"]\n")
 	if err == nil || !strings.Contains(err.Error(), "kernel.tools_models") {
 		t.Fatalf("err = %v, want one naming kernel.tools_models", err)
+	}
+}
+
+// The first form of tools_models was a regexp string. A config still
+// written that way must fail to load, naming the key, not silently match
+// nothing.
+func TestKernelToolsModelsAsAStringIsRefused(t *testing.T) {
+	_, err := loadTestConfigErr(t, "[kernel]\ntools_models = \"LFM2\\\\.5\"\n")
+	if err == nil || !strings.Contains(err.Error(), "tools_models") {
+		t.Fatalf("err = %v, want one naming tools_models", err)
 	}
 }

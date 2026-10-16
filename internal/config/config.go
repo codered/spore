@@ -430,11 +430,11 @@ const (
 // KernelConfig configures go_run, the Go kernel.
 type KernelConfig struct {
 	Mode string `toml:"mode"`
-	// ToolsModels is a regexp over provider/model refs. A turn on a
-	// matching model runs in tools mode, whatever Mode says. Use it for a
-	// model that calls tools well but writes go_run programs badly. Unset
-	// matches no model.
-	ToolsModels string `toml:"tools_models"`
+	// ToolsModels lists the models that run in tools mode, whatever Mode
+	// says. Use it for a model that calls tools well but writes go_run
+	// programs badly. An entry is a full provider/model ref or the model id
+	// alone, matched exactly.
+	ToolsModels []string `toml:"tools_models"`
 	// TimeoutSeconds is the default interpreter budget for one program. Time
 	// spent inside a spore.* helper (an approval wait included) is not
 	// charged to it.
@@ -447,11 +447,12 @@ type KernelConfig struct {
 	HelperMaxBytes int `toml:"helper_max_bytes"`
 }
 
-// ModeFor returns the kernel mode for a turn on the model ref. Validate
-// has compiled ToolsModels already, so a compile error here means no match.
+// ModeFor returns the kernel mode for a turn on the model ref, which is
+// provider/model. ToolsModels can name the ref or the model id alone.
 func (k KernelConfig) ModeFor(ref string) string {
-	if k.ToolsModels != "" {
-		if ok, err := regexp.MatchString(k.ToolsModels, ref); err == nil && ok {
+	_, model, _ := strings.Cut(ref, "/")
+	for _, m := range k.ToolsModels {
+		if m == ref || m == model {
 			return KernelModeTools
 		}
 	}
@@ -1154,9 +1155,9 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("kernel.mode must be %s or %s, got %q", KernelModeCode, KernelModeTools, c.Kernel.Mode)
 	}
-	if c.Kernel.ToolsModels != "" {
-		if _, err := regexp.Compile(c.Kernel.ToolsModels); err != nil {
-			return fmt.Errorf("kernel.tools_models: %w", err)
+	for i, m := range c.Kernel.ToolsModels {
+		if strings.TrimSpace(m) == "" {
+			return fmt.Errorf("kernel.tools_models: entry %d is empty; give a provider/model ref or a model id", i+1)
 		}
 	}
 	if c.Kernel.TimeoutSeconds < 0 || c.Kernel.MaxTimeoutSeconds < 0 || c.Kernel.CeilingSeconds < 0 || c.Kernel.HelperMaxBytes < 0 {
