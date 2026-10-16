@@ -1018,3 +1018,43 @@ list_timeout = "`+tc.value+`"
 		}
 	}
 }
+
+func TestDefaultGrantDurations(t *testing.T) {
+	want := []string{"5m", "15m", "30m", "1h"}
+	if got := Default().Policy.GrantDurations; !slices.Equal(got, want) {
+		t.Errorf("default grant_durations = %v, want %v", got, want)
+	}
+	p := write(t, "default_model = \"a/b\"\n[policy]\nworkspace = \"~\"\n")
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Policy.GrantDurations; !slices.Equal(got, want) {
+		t.Errorf("omitted key loaded as %v, want the default %v", got, want)
+	}
+}
+
+func TestGrantDurationsExplicitEmpty(t *testing.T) {
+	p := write(t, "default_model = \"a/b\"\n[policy]\ngrant_durations = []\n")
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Policy.GrantDurations) != 0 {
+		t.Errorf("explicit empty grant_durations loaded as %v, want none", cfg.Policy.GrantDurations)
+	}
+}
+
+func TestGrantDurationsInvalid(t *testing.T) {
+	for _, list := range []string{`["5m", "soon"]`, `["0s"]`, `["-5m"]`} {
+		p := write(t, "default_model = \"a/b\"\n[policy]\ngrant_durations = "+list+"\n")
+		_, err := Load(p)
+		if err == nil {
+			t.Errorf("Load accepted grant_durations = %s", list)
+			continue
+		}
+		if !strings.Contains(err.Error(), "policy.grant_durations") {
+			t.Errorf("grant_durations = %s: error %q does not name policy.grant_durations", list, err)
+		}
+	}
+}

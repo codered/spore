@@ -375,6 +375,9 @@ type PolicyConfig struct {
 	// ApprovalTimeout is a Go duration; an approval nobody answers within it
 	// is denied and reported back to the model.
 	ApprovalTimeout string `toml:"approval_timeout"`
+	// GrantDurations lists the Go durations a timed grant may be started
+	// for. An explicit empty list turns timed grants off.
+	GrantDurations []string `toml:"grant_durations"`
 	// MaxOutput caps a single tool result in bytes before truncation.
 	MaxOutput int      `toml:"max_output"`
 	Allow     []string `toml:"allow"`
@@ -750,6 +753,7 @@ func Default() *Config {
 			Workspace:       home,
 			Default:         "ask",
 			ApprovalTimeout: "5m",
+			GrantDurations:  []string{"5m", "15m", "30m", "1h"},
 			MaxOutput:       30_000,
 			Allow:           []string{"fs_read", "fs_list", "fs_glob", "fs_grep", "web_*", "schedule_list", "job_output", "schedule_notify", "recall_search", "skill_load", "refine", "self_note", "interest_update", "companion_feedback"},
 			Ask:             []string{"fs_write", "fs_edit", "shell_exec", "schedule_create", "schedule_cancel", "mcp__*", "memory", "skill_install", "agent_note"},
@@ -1141,6 +1145,15 @@ func (c *Config) Validate() error {
 	}
 	if _, err := time.ParseDuration(c.Policy.ApprovalTimeout); err != nil {
 		return fmt.Errorf("policy.approval_timeout %q: %w", c.Policy.ApprovalTimeout, err)
+	}
+	for _, g := range c.Policy.GrantDurations {
+		d, err := time.ParseDuration(g)
+		if err != nil {
+			return fmt.Errorf("policy.grant_durations %q: %w", g, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("policy.grant_durations %q must be positive", g)
+		}
 	}
 	for name, p := range c.Policy.Profiles {
 		switch p.Default {
