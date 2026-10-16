@@ -37,6 +37,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	for _, ev := range s.pendingApprovalEvents(r.Context(), id) {
 		writeSSE(w, flusher, ev)
 	}
+	for _, ev := range s.grantEvents(id) {
+		writeSSE(w, flusher, ev)
+	}
 
 	streamSSE(w, flusher, r.Context().Done(), events)
 }
@@ -87,6 +90,9 @@ func (s *Server) handleAllEvents(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	for _, ev := range s.allPendingApprovalEvents(r.Context()) {
+		writeSSE(w, flusher, ev)
+	}
+	for _, ev := range s.allGrantEvents() {
 		writeSSE(w, flusher, ev)
 	}
 	streamSSE(w, flusher, r.Context().Done(), events)

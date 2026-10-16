@@ -200,6 +200,8 @@ func (s *Server) buildMux() *http.ServeMux {
 	api("DELETE /api/sessions/{id}/agents/{child}", s.handleCancelAgent)
 	api("GET /api/sessions/{id}/approvals", s.handleListApprovals)
 	api("POST /api/sessions/{id}/approvals/{pending}", s.handleResolveApproval)
+	api("POST /api/sessions/{id}/grant", s.handleStartGrant)
+	api("DELETE /api/sessions/{id}/grant", s.handleEndGrant)
 	api("GET /api/jobs", s.handleListJobs)
 	api("POST /api/companion/proposals/{id}", s.handleAnswerProposal)
 	api("GET /api/companion/status", s.handleCompanionStatus)

@@ -188,6 +188,17 @@ func (e *Engine) GrantDurations() []time.Duration {
 	return out
 }
 
+// GrantChoices returns the configured timed-grant strings in config order, as
+// the client must send them. Error messages list these, not the durations: a
+// duration has no single spelling, so "1h" and "60m" are different choices.
+func (e *Engine) GrantChoices() []string {
+	out := make([]string, 0, len(e.grants))
+	for _, g := range e.grants {
+		out = append(out, g.text)
+	}
+	return out
+}
+
 // GrantDuration returns the duration for s when s is exactly one of the
 // configured strings. "60m" does not match "1h": the choice is the text.
 func (e *Engine) GrantDuration(s string) (time.Duration, bool) {

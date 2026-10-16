@@ -46,3 +46,21 @@ func (g *Guard) GrantUntil(root string) (time.Time, bool) {
 	}
 	return until, true
 }
+
+// Grants returns every live grant keyed by root session id. Expired grants are
+// left out and removed. Clients attaching to the global feed use it to learn
+// which roots are granted.
+func (g *Guard) Grants() map[string]time.Time {
+	g.grants.mu.Lock()
+	defer g.grants.mu.Unlock()
+	now := g.now()
+	out := make(map[string]time.Time, len(g.grants.until))
+	for root, until := range g.grants.until {
+		if !now.Before(until) {
+			delete(g.grants.until, root)
+			continue
+		}
+		out[root] = until
+	}
+	return out
+}
