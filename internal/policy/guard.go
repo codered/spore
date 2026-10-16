@@ -381,16 +381,28 @@ func (g *Guard) Run(ctx context.Context, call provider.Block) provider.Block {
 }
 
 // runGrantedPending settles a suspension a grant covers before anyone was
-// asked, then runs the call. The claim decides the outcome: if another path
-// answered the row first, the call does not run, because its answer is not
-// known here. A failed claim leaves the row pending for the sweep or expiry.
+// asked, then runs the call. A won claim writes the "grant" audit row. A lost
+// claim means another path closed the row first: when that path allowed the
+// call (a sweep through Guard.Resolve), the call runs and the resolver's own
+// audit row stands, so no second row is written. Any other outcome, a deny or
+// a store error, refuses the call.
 func (g *Guard) runGrantedPending(ctx context.Context, sessionID string, call provider.Block, pendingID int64) provider.Block {
 	book, cancelBook := context.WithTimeout(context.WithoutCancel(ctx), bookkeepingTimeout)
 	defer cancelBook()
 	claimed, err := g.store.ResolvePendingCall(book, pendingID, string(DecisionAllow))
-	if err != nil || !claimed {
-		sporetrace.RecordPolicy(ctx, "deny", "grant: approval settled elsewhere")
-		return denied(call.ID, "the approval for %s was settled before the call could run, so it did not run. Ask again if it is still needed.", call.Name)
+	if err != nil {
+		sporetrace.RecordPolicy(ctx, "deny", "grant: approval could not be settled")
+		return denied(call.ID, "the approval for %s could not be settled, so the call did not run. Ask again if it is still needed.", call.Name)
+	}
+	if !claimed {
+		state, err := g.store.PendingCallState(book, pendingID)
+		if err != nil || state != string(DecisionAllow) {
+			sporetrace.RecordPolicy(ctx, "deny", "grant: approval settled elsewhere")
+			return denied(call.ID, "the approval for %s was settled before the call could run, so it did not run. Ask again if it is still needed.", call.Name)
+		}
+		// Another path allowed this call and wrote its audit row already.
+		sporetrace.RecordPolicy(ctx, "allow", "timed grant: already allowed elsewhere")
+		return g.inner.Run(ctx, call)
 	}
 	_ = g.store.RecordApproval(book, sessionID, call.Name, call.Input, string(DecisionAllow), "grant")
 	sporetrace.RecordPolicy(ctx, "allow", "timed grant")

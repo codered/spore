@@ -215,6 +215,36 @@ func TestGrantedPendingClaimsOrRefuses(t *testing.T) {
 	if !got.IsError || len(inner.calls) != 1 {
 		t.Errorf("a row answered elsewhere ran the call: %+v (inner ran %d)", got, len(inner.calls))
 	}
+
+	// A row a sweep allowed through Guard.Resolve: the call runs, and the
+	// resolver's audit row is the only one for it.
+	id3, err := st.AddPendingCall(ctx, store.PendingCall{SessionID: sid, ToolUseID: "c3", Tool: "shell_exec", ArgsJSON: call.Input, Profile: string(ProfileLocal)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := approvalCount(t, st, sid)
+	if err := g.Resolve(ctx, sid, id3, Answer{Allow: true, Scope: ScopeOnce}); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if after := approvalCount(t, st, sid); after != before+1 {
+		t.Fatalf("Resolve wrote %d audit rows, want 1", after-before)
+	}
+	got = g.runGrantedPending(grantCtx(sid), sid, toolCall("shell_exec", "c3", `{"command":"ls"}`), id3)
+	if got.IsError || len(inner.calls) != 2 {
+		t.Errorf("a row allowed elsewhere did not run: %+v (inner ran %d)", got, len(inner.calls))
+	}
+	if after := approvalCount(t, st, sid); after != before+1 {
+		t.Errorf("the grant wrote a second audit row for an allow the resolver already recorded: %d rows added", after-before)
+	}
+}
+
+func approvalCount(t *testing.T, st *store.Store, sid string) int {
+	t.Helper()
+	rows, err := st.Approvals(context.Background(), sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(rows)
 }
 
 // blockRecorder is a recording approver that also reports blocks.
