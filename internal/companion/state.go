@@ -17,6 +17,9 @@ const (
 	StateLastResult     = "last_reflection_result"
 	StateFailures       = "reflection_failures"
 	StateFingerprint    = "last_fingerprint"
+	// StateLastDigestDay is the local day (2006-01-02) the morning digest
+	// was last sent.
+	StateLastDigestDay = "last_digest_day"
 )
 
 // LoadBudget is the governor's budget: the stored value, or start when none
@@ -74,7 +77,8 @@ func SetPausedUntil(ctx context.Context, st *store.Store, t time.Time) error {
 }
 
 // SpentToday counts the messages started since local midnight that count
-// against the daily budget: all but alerts, which have their own allowance.
+// against the daily budget. Alerts have their own allowance, and the digest
+// and the nudges folded into it cost nothing.
 func SpentToday(ctx context.Context, st *store.Store, now time.Time, loc *time.Location) (int, error) {
 	rows, err := st.OutreachSince(ctx, LocalDayStart(now, loc))
 	if err != nil {
@@ -82,7 +86,7 @@ func SpentToday(ctx context.Context, st *store.Store, now time.Time, loc *time.L
 	}
 	n := 0
 	for _, o := range rows {
-		if o.Kind != store.OutreachAlert {
+		if o.Kind != store.OutreachAlert && o.Kind != store.OutreachDigest && o.Channel != store.OutreachChannelDigest {
 			n++
 		}
 	}

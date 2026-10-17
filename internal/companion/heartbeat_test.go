@@ -106,6 +106,11 @@ func newHeartbeat(t *testing.T) *hbFixture {
 		},
 		Now: func() time.Time { return fx.now },
 	}
+	// A fresh store is due its digest on every tick. Mark today's as sent so
+	// the tests from before the digest stay outside its slot.
+	if err := st.SetCompanionState(context.Background(), companion.StateLastDigestDay, fx.now.In(time.UTC).Format("2006-01-02")); err != nil {
+		t.Fatal(err)
+	}
 	return fx
 }
 
@@ -555,4 +560,415 @@ func TestTicksDoNotOverlap(t *testing.T) {
 	if br.peak != 1 {
 		t.Fatalf("peak concurrent reflections = %d, want 1", br.peak)
 	}
+}
+
+// watchRun finishes one run of job with reply text, as the daemon does when
+// the run ends. ok=false is a run that failed.
+func (fx *hbFixture) watchRun(t *testing.T, job store.Job, reply string, ok bool) {
+	t.Helper()
+	sid := fx.runSession(t)
+	if reply != "" {
+		fx.reply(t, sid, reply)
+	}
+	if handled, _ := fx.h.RunFinished(context.Background(), job, sid, ok); !handled {
+		t.Fatal("RunFinished did not handle the watch run")
+	}
+}
+
+// digestDue puts the clock at 08:30 UTC with yesterday's digest as the last
+// one sent: the morning digest slot is open.
+func (fx *hbFixture) digestDue(t *testing.T) {
+	t.Helper()
+	fx.now = time.Date(2026, 10, 12, 8, 30, 0, 0, time.UTC)
+	if err := fx.st.SetCompanionState(context.Background(), companion.StateLastDigestDay, "2026-10-11"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (fx *hbFixture) lastDigestDay(t *testing.T) string {
+	t.Helper()
+	v, _, err := fx.st.CompanionState(context.Background(), companion.StateLastDigestDay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// lastInput is the reflection input of the most recent call.
+func (fx *hbFixture) lastInput(t *testing.T) string {
+	t.Helper()
+	if len(fx.refl.inputs) == 0 {
+		t.Fatal("no reflection call was made")
+	}
+	return fx.refl.inputs[len(fx.refl.inputs)-1]
+}
+
+func (fx *hbFixture) runByID(t *testing.T, id int64) store.CompanionRun {
+	t.Helper()
+	for _, r := range fx.watchRuns(t) {
+		if r.ID == id {
+			return r
+		}
+	}
+	t.Fatalf("run %d not found", id)
+	return store.CompanionRun{}
+}
+
+func TestTickResearchCreatesAJobAndRow(t *testing.T) {
+	ctx := context.Background()
+	fx := newHeartbeat(t)
+	in, job := fx.activeWatch(t, "stock:zs")
+	fx.watchRun(t, job, "NOTHING: flat", true) // an unseen run makes the tick eligible
+	fx.refl.replies = []string{`{"action":"research","interest":"stock:zs","research":{"question":"  what moved ZS?  "}}`}
+	if res, err := fx.h.Tick(ctx); err != nil || res != "research stock:zs" {
+		t.Fatalf("tick = %q %v", res, err)
+	}
+	if len(fx.del.sent) != 0 {
+		t.Fatalf("research sent %+v, want nothing", fx.del.sent)
+	}
+	var row store.CompanionRun
+	for _, r := range fx.watchRuns(t) {
+		if r.Kind == store.RunResearch {
+			row = r
+		}
+	}
+	if row.ID == 0 || row.Verdict != store.VerdictPending || row.Question != "what moved ZS?" || row.InterestID != in.ID {
+		t.Fatalf("research row = %+v", row)
+	}
+	j, ok, err := fx.st.Job(ctx, row.JobID)
+	if err != nil || !ok {
+		t.Fatalf("job %d: %v %v", row.JobID, ok, err)
+	}
+	if j.Kind != "once" || j.Profile != config.CompanionProfile || j.OriginSessionID != "" ||
+		j.Notify != store.NotifyNone || !j.CheckedIn || !j.Enabled {
+		t.Fatalf("research job = %+v", j)
+	}
+	if j.Prompt != companion.ResearchPrompt(in.Label, "what moved ZS?") {
+		t.Fatalf("research prompt = %q", j.Prompt)
+	}
+}
+
+func TestStuckResearchFailsAndLateFinishIsIgnored(t *testing.T) {
+	ctx := context.Background()
+	fx := newHeartbeat(t)
+	in, _ := fx.activeWatch(t, "stock:zs")
+	job := fx.plainJob(t, "research the thing")
+	id, err := fx.st.AddCompanionRun(ctx, store.CompanionRun{InterestID: in.ID, JobID: job.ID, Kind: store.RunResearch,
+		Question: "q", Verdict: store.VerdictPending, StartedAt: fx.now.Add(-3 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid := fx.runSession(t)
+	fx.reply(t, sid, "a late answer")
+	if _, err := fx.h.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if r := fx.runByID(t, id); r.Verdict != store.VerdictFailed {
+		t.Fatalf("stuck run = %s, want failed", r.Verdict)
+	}
+	if handled, failNote := fx.h.RunFinished(ctx, job, sid, true); !handled || failNote {
+		t.Fatalf("late RunFinished = %v %v, want handled, no fail note", handled, failNote)
+	}
+	if r := fx.runByID(t, id); r.Verdict != store.VerdictFailed {
+		t.Fatalf("late finish overwrote the stuck run: %s", r.Verdict)
+	}
+}
+
+func TestTickFindingMarksRunsReported(t *testing.T) {
+	ctx := context.Background()
+	fx := newHeartbeat(t)
+	in, job := fx.activeWatch(t, "stock:zs")
+	fx.watchRun(t, job, "NOTHING: flat", true)
+	runID := fx.watchRuns(t)[0].ID
+	fx.refl.replies = []string{`{"action":"finding","interest":"stock:zs","message":"ZS moved.","runs":[` +
+		strconv.FormatInt(runID, 10) + `,` + strconv.FormatInt(runID, 10) + `]}`}
+	if res, err := fx.h.Tick(ctx); err != nil || res != "finding" {
+		t.Fatalf("tick = %q %v", res, err)
+	}
+	if len(fx.del.sent) != 1 || fx.del.sent[0].Kind != store.OutreachFinding || fx.del.sent[0].InterestID != in.ID {
+		t.Fatalf("sent = %+v, want one finding about the interest", fx.del.sent)
+	}
+	if got := fx.runByID(t, runID).ReportedOutreachID; got != fx.del.sent[0].ID {
+		t.Fatalf("run reported by %d, want %d", got, fx.del.sent[0].ID)
+	}
+	if n, err := companion.SpentToday(ctx, fx.st, fx.now, time.UTC); err != nil || n != 1 {
+		t.Fatalf("spent today = %d %v, want 1", n, err)
+	}
+}
+
+// Follow-ups and findings spend the budget, so a follow-up is refused when
+// none is left. The gate stops the call before reflection is asked.
+func TestFollowupCountsAgainstTheBudget(t *testing.T) {
+	ctx := context.Background()
+	fx := newHeartbeat(t)
+	_, job := fx.activeWatch(t, "stock:zs")
+	for range 3 {
+		fx.watchRun(t, job, "", false)
+	}
+	fx.cfg.Companion.StartBudget = 1
+	if _, err := fx.st.AddOutreach(ctx, store.Outreach{Kind: store.OutreachNudge, Text: "x", SentAt: fx.now.Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := fx.h.Tick(ctx); err != nil || res != "budget spent" {
+		t.Fatalf("tick = %q %v", res, err)
+	}
+	if len(fx.refl.inputs) != 0 || len(fx.del.sent) != 0 {
+		t.Fatalf("spent budget reflected %d times and sent %d", len(fx.refl.inputs), len(fx.del.sent))
+	}
+}
+
+func TestDigest(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("slot due at 08:30 allows only the digest", func(t *testing.T) {
+		fx := newHeartbeat(t)
+		fx.digestDue(t)
+		fx.refl.replies = []string{`{"action":"none"}`, `{"action":"digest","message":"Morning."}`}
+		if _, err := fx.h.Tick(ctx); err == nil {
+			t.Fatal("a none reply in the digest slot was accepted")
+		}
+		if fx.lastDigestDay(t) != "2026-10-11" || len(fx.del.sent) != 0 {
+			t.Fatal("a failed digest moved the slot or sent something")
+		}
+		if res, err := fx.h.Tick(ctx); err != nil || res != "digest" {
+			t.Fatalf("tick = %q %v", res, err)
+		}
+		if len(fx.del.sent) != 1 || fx.del.sent[0].Kind != store.OutreachDigest {
+			t.Fatalf("sent = %+v, want one digest", fx.del.sent)
+		}
+		if fx.lastDigestDay(t) != "2026-10-12" {
+			t.Fatalf("last_digest_day = %q, want today", fx.lastDigestDay(t))
+		}
+	})
+
+	t.Run("sent with the budget spent", func(t *testing.T) {
+		fx := newHeartbeat(t)
+		fx.digestDue(t)
+		fx.cfg.Companion.StartBudget = 1
+		if _, err := fx.st.AddOutreach(ctx, store.Outreach{Kind: store.OutreachNudge, Text: "x", SentAt: fx.now.Add(-time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+		fx.refl.replies = []string{`{"action":"digest","message":"Morning."}`}
+		if res, err := fx.h.Tick(ctx); err != nil || res != "digest" {
+			t.Fatalf("tick = %q %v", res, err)
+		}
+		if len(fx.del.sent) != 1 {
+			t.Fatalf("sent %d, want the digest", len(fx.del.sent))
+		}
+	})
+
+	t.Run("last_digest_day is written only after delivery", func(t *testing.T) {
+		fx := newHeartbeat(t)
+		fx.digestDue(t)
+		fx.del.err = errors.New("channel down")
+		fx.refl.replies = []string{`{"action":"digest","message":"Morning."}`}
+		if _, err := fx.h.Tick(ctx); err == nil {
+			t.Fatal("a failed delivery must fail the tick")
+		}
+		if fx.lastDigestDay(t) != "2026-10-11" {
+			t.Fatalf("last_digest_day = %q after a failed send, want unchanged", fx.lastDigestDay(t))
+		}
+	})
+
+	t.Run("none while paused", func(t *testing.T) {
+		fx := newHeartbeat(t)
+		fx.digestDue(t)
+		if err := companion.SetPausedUntil(ctx, fx.st, fx.now.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if res, err := fx.h.Tick(ctx); err != nil || res != "paused" {
+			t.Fatalf("tick = %q %v", res, err)
+		}
+		if len(fx.refl.inputs) != 0 {
+			t.Fatal("a paused companion reflected on the digest")
+		}
+	})
+
+	t.Run("the previous digest is ignored with the reason and no budget step", func(t *testing.T) {
+		fx := newHeartbeat(t)
+		fx.digestDue(t)
+		fx.refl.replies = []string{`{"action":"digest","message":"First."}`, `{"action":"digest","message":"Second."}`}
+		if _, err := fx.h.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if len(fx.del.sent) != 1 {
+			t.Fatalf("first digest: sent %d, want 1", len(fx.del.sent))
+		}
+		first := fx.del.sent[0].ID
+		before := fx.budget(t)
+		fx.now = time.Date(2026, 10, 13, 8, 30, 0, 0, time.UTC)
+		if _, err := fx.h.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if o := fx.outcome(t, first); o.Outcome != store.OutcomeIgnored || o.DropReason != "superseded by the next digest" {
+			t.Fatalf("previous digest = %s %q", o.Outcome, o.DropReason)
+		}
+		if after := fx.budget(t); after != before {
+			t.Fatalf("budget %v -> %v, want unchanged", before, after)
+		}
+	})
+
+	t.Run("nudge_of folds into two nudges that count as nudged", func(t *testing.T) {
+		fx := newHeartbeat(t)
+		fx.digestDue(t)
+		a, _ := fx.st.AddOutreach(ctx, store.Outreach{Kind: store.OutreachProposal, Text: "a", SentAt: fx.now.Add(-13 * time.Hour)})
+		b, _ := fx.st.AddOutreach(ctx, store.Outreach{Kind: store.OutreachProposal, Text: "b", SentAt: fx.now.Add(-13 * time.Hour)})
+		fx.refl.replies = []string{`{"action":"digest","message":"Morning.","nudge_of":[` +
+			strconv.FormatInt(a, 10) + `,` + strconv.FormatInt(b, 10) + `,` + strconv.FormatInt(a, 10) + `]}`}
+		if _, err := fx.h.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []int64{a, b} {
+			n, ok, err := fx.st.NudgeFor(ctx, id)
+			if err != nil || !ok || n.Kind != store.OutreachNudge || n.Channel != store.OutreachChannelDigest {
+				t.Fatalf("folded nudge of %d = %+v %v %v", id, n, ok, err)
+			}
+		}
+		fx.now = fx.now.Add(time.Hour)
+		fx.refl.replies = nil
+		if _, err := fx.h.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Count(fx.lastInput(t), "already nudged"); got != 2 {
+			t.Fatalf("next input marks %d rows as nudged, want 2", got)
+		}
+	})
+
+	t.Run("a held alert is covered by the digest and not retried after", func(t *testing.T) {
+		fx := newHeartbeat(t)
+		fx.digestDue(t)
+		_, job := fx.activeWatch(t, "stock:zs")
+		fx.cfg.Companion.AlertBudget = 1
+		if _, err := fx.st.AddOutreach(ctx, store.Outreach{Kind: store.OutreachAlert, Text: "earlier", SentAt: fx.now.Add(-time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+		fx.watchRun(t, job, "ALERT: ZS -6%", true)
+		held := fx.watchRuns(t)[0]
+		if held.ReportedOutreachID != 0 || len(fx.del.sent) != 0 {
+			t.Fatalf("alert over budget was sent: %+v", fx.del.sent)
+		}
+		fx.refl.replies = []string{`{"action":"digest","message":"Morning."}`}
+		if _, err := fx.h.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if len(fx.del.sent) != 1 || fx.del.sent[0].Kind != store.OutreachDigest {
+			t.Fatalf("sent = %+v, want the digest only", fx.del.sent)
+		}
+		if got := fx.runByID(t, held.ID).ReportedOutreachID; got != fx.del.sent[0].ID {
+			t.Fatalf("held run reported by %d, want the digest %d", got, fx.del.sent[0].ID)
+		}
+		if err := fx.h.RetryHeldAlerts(ctx, fx.now); err != nil {
+			t.Fatal(err)
+		}
+		if len(fx.del.sent) != 1 {
+			t.Fatalf("the covered alert was retried: %+v", fx.del.sent)
+		}
+	})
+}
+
+func TestSeenAtOnlyAfterSuccess(t *testing.T) {
+	ctx := context.Background()
+	fx := newHeartbeat(t)
+	_, job := fx.activeWatch(t, "stock:zs")
+	fx.watchRun(t, job, "NOTHING: flat", true)
+	runID := fx.watchRuns(t)[0].ID
+
+	fx.refl.replies = []string{`{"action":"finding","message":"x","runs":[999]}`}
+	if _, err := fx.h.Tick(ctx); err == nil {
+		t.Fatal("a finding on an unshown run was accepted")
+	}
+	if !fx.runByID(t, runID).SeenAt.IsZero() {
+		t.Fatal("an invalid reply marked the run seen")
+	}
+
+	fx.refl.replies = []string{`{"action":"none"}`}
+	if _, err := fx.h.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if fx.runByID(t, runID).SeenAt.IsZero() {
+		t.Fatal("a valid reply did not mark the run seen")
+	}
+
+	fx.watchRun(t, job, "NOTHING: flat again", true)
+	fx.refl.replies = nil
+	if _, err := fx.h.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if last := fx.lastInput(t); !strings.Contains(last, "(seen before)") {
+		t.Fatalf("next input does not mark the seen run:\n%s", last)
+	}
+}
+
+func TestRunsOlderThan30DaysAreSwept(t *testing.T) {
+	ctx := context.Background()
+	fx := newHeartbeat(t)
+	in, job := fx.activeWatch(t, "stock:zs")
+	old, err := fx.st.AddCompanionRun(ctx, store.CompanionRun{InterestID: in.ID, JobID: job.ID, Kind: store.RunWatch,
+		Verdict: store.VerdictNothing, StartedAt: fx.now.AddDate(0, 0, -31), FinishedAt: fx.now.AddDate(0, 0, -31)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fx.h.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range fx.watchRuns(t) {
+		if r.ID == old {
+			t.Fatal("a run 31 days old survived the sweep")
+		}
+	}
+}
+
+func TestFollowupSubjects(t *testing.T) {
+	ctx := context.Background()
+	const idle = "watch stock:zs has run 10 times in 14 days with no reply or reaction to anything about it: ask whether to keep, change or retire it"
+	const failed = "watch stock:zs failed its last 3 runs: tell the user, or suggest changing or retiring it"
+
+	t.Run("idle", func(t *testing.T) {
+		fx := newHeartbeat(t)
+		_, job := fx.activeWatch(t, "stock:zs")
+		for range 10 {
+			fx.watchRun(t, job, "NOTHING: flat", true)
+		}
+		if _, err := fx.h.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(fx.lastInput(t), idle) {
+			t.Fatalf("input lacks the idle follow-up:\n%s", fx.lastInput(t))
+		}
+	})
+
+	t.Run("failed", func(t *testing.T) {
+		fx := newHeartbeat(t)
+		_, job := fx.activeWatch(t, "stock:zs")
+		for range 3 {
+			fx.watchRun(t, job, "", false)
+		}
+		if _, err := fx.h.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(fx.lastInput(t), failed) {
+			t.Fatalf("input lacks the failed follow-up:\n%s", fx.lastInput(t))
+		}
+	})
+
+	t.Run("a reaction clears the idle line", func(t *testing.T) {
+		fx := newHeartbeat(t)
+		in, job := fx.activeWatch(t, "stock:zs")
+		for range 10 {
+			fx.watchRun(t, job, "NOTHING: flat", true)
+		}
+		id, err := fx.st.AddOutreach(ctx, store.Outreach{InterestID: in.ID, Kind: store.OutreachProposal, Text: "x", SentAt: fx.now.Add(-24 * time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fx.st.ResolveOutreach(ctx, id, []string{store.OutcomePending}, store.OutcomeReacted, "", fx.now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fx.h.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(fx.lastInput(t), "has run") {
+			t.Fatal("a reacted message did not clear the idle line")
+		}
+	})
 }

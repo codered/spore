@@ -37,6 +37,7 @@ const (
 	OutreachChannelDiscord  = "discord"
 	OutreachChannelTerminal = "terminal"
 	OutreachChannelFallback = "terminal-fallback"
+	OutreachChannelDigest   = "digest"
 )
 
 // Outreach is one message the companion started.

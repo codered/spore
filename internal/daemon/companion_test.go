@@ -278,6 +278,11 @@ func TestCheckRouteRunsOneTick(t *testing.T) {
 	if _, err := s.store.TouchInterest(ctx, "stock:zs", "Zscaler (ZS)"); err != nil {
 		t.Fatal(err)
 	}
+	// A fresh store is due its digest; mark today's sent so the plain check
+	// is an ordinary tick.
+	if err := s.store.SetCompanionState(ctx, companion.StateLastDigestDay, time.Now().UTC().Format("2006-01-02")); err != nil {
+		t.Fatal(err)
+	}
 	url := ts.URL + "/api/companion/check"
 
 	res := postJSON(t, url, map[string]any{})
