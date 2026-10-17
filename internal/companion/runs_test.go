@@ -385,3 +385,45 @@ func TestUnreadableWatchReplyStillAlerts(t *testing.T) {
 		t.Fatalf("runs = %+v, want one alert reported by outreach %d", runs, fx.del.sent[0].ID)
 	}
 }
+
+// cancelAfterDeliver sends like the fake, then cancels the caller's context,
+// as a slow send can leave a run's context spent before its mark is written.
+type cancelAfterDeliver struct {
+	*fakeDeliverer
+	cancel context.CancelFunc
+}
+
+func (c cancelAfterDeliver) Deliver(ctx context.Context, o store.Outreach) (store.Outreach, error) {
+	out, err := c.fakeDeliverer.Deliver(ctx, o)
+	c.cancel()
+	return out, err
+}
+
+func TestAlertMarkSurvivesSpentRunContext(t *testing.T) {
+	bg := context.Background()
+	fx := newHeartbeat(t)
+	_, job := fx.activeWatch(t, "stock:zs")
+	run := fx.runSession(t)
+	fx.reply(t, run, "ALERT: ZS -6%")
+
+	ctx, cancel := context.WithCancel(bg)
+	defer cancel()
+	fx.h.Deliverer = cancelAfterDeliver{fx.del, cancel}
+	if handled, _ := fx.h.RunFinished(ctx, job, run, true); !handled {
+		t.Fatal("RunFinished did not handle the watch")
+	}
+	if len(fx.del.sent) != 1 {
+		t.Fatalf("delivered %d, want 1", len(fx.del.sent))
+	}
+	o := fx.del.sent[0]
+	runs := fx.watchRuns(t)
+	if len(runs) != 1 || runs[0].ReportedOutreachID != o.ID {
+		t.Fatalf("runs = %+v, want the alert marked reported by outreach %d", runs, o.ID)
+	}
+	if err := fx.h.RetryHeldAlerts(bg, fx.now); err != nil {
+		t.Fatalf("RetryHeldAlerts: %v", err)
+	}
+	if len(fx.del.sent) != 1 {
+		t.Fatalf("retry sent again: delivered %d, want 1", len(fx.del.sent))
+	}
+}

@@ -695,16 +695,20 @@ func (h *Heartbeat) apply(ctx context.Context, d Decision, v View, now time.Time
 	case ActionResearch:
 		in, _ := v.Interest(d.Interest)
 		q := strings.TrimSpace(d.Research.Question)
+		// The job waits disabled until its row exists, so a scheduler tick in
+		// between cannot run it as an ordinary job. If the row fails, the job
+		// stays disabled and never runs.
 		jobID, err := h.Store.CreateJob(ctx, store.Job{Kind: "once", Spec: now.UTC().Format(time.RFC3339),
-			Prompt: ResearchPrompt(in.Label, q), Enabled: true, NextRun: now, Notify: store.NotifyNone,
+			Prompt: ResearchPrompt(in.Label, q), Enabled: false, NextRun: now, Notify: store.NotifyNone,
 			CheckedIn: true, Profile: config.CompanionProfile})
 		if err != nil {
 			return err
 		}
 		if _, err := h.Store.AddCompanionRun(ctx, store.CompanionRun{InterestID: in.ID, Kind: store.RunResearch,
 			JobID: jobID, Question: q, Verdict: store.VerdictPending, StartedAt: now}); err != nil {
-			// Without its row the job would run as an ordinary one: stop it.
-			_ = h.Store.SetJobEnabled(ctx, jobID, false)
+			return err
+		}
+		if err := h.Store.SetJobEnabled(ctx, jobID, true); err != nil {
 			return err
 		}
 	case ActionFinding, ActionFollowup:

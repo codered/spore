@@ -198,7 +198,8 @@ func (h *Heartbeat) RunFinished(ctx context.Context, job store.Job, sessionID st
 }
 
 // recordWatchRun writes one watch run, delivers its alert when it has one,
-// and returns the run's verdict. A run whose reply cannot be read is failed.
+// and returns the run's verdict. A run that did not finish is failed. A run
+// that finished but whose reply cannot be read alerts with no details.
 func (h *Heartbeat) recordWatchRun(ctx context.Context, in store.Interest, job store.Job, sessionID string, ok bool, now time.Time) string {
 	verdict := store.VerdictFailed
 	if ok {
@@ -272,7 +273,11 @@ func (h *Heartbeat) deliverAlert(ctx context.Context, run store.CompanionRun, no
 	// The alert is sent before the run is marked reported. Marking first would
 	// lose the alert if the send failed, which is worse than a duplicate. If the
 	// mark fails, the run stays held and a retry sends it again: one duplicate.
-	if err := h.Store.SetCompanionRunsReported(ctx, []int64{run.ID}, o.ID); err != nil {
+	// The caller's context may be spent by now: a slow send can use up the
+	// run's deadline. The mark gets its own short context so it still lands.
+	mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := h.Store.SetCompanionRunsReported(mctx, []int64{run.ID}, o.ID); err != nil {
 		slog.Error("companion: alert sent but its run is not marked reported; a retry may send it again",
 			"run", run.ID, "outreach", o.ID, "err", err)
 	}
