@@ -948,3 +948,42 @@ Built with `config.Load`, a fake clock, and a symlinked TMPDIR.
   `spore companion check --research <key>` on an active interest. The digest slot
   reached by clearing `last_digest_day`. Discord is checked live by the user
   only -- never a second daemon on the bot token.
+
+## As built — PR 3
+
+- **Digest state.** `spore companion status` shows a fourth digest state,
+  "none today", when the digest slot is already used today but no digest was
+  written. The other three states would be false there.
+- **Manual check in the digest slot.** A plain `spore companion check` that
+  lands in the digest slot sends the digest, even while paused or in quiet
+  hours. Other manual checks already skip pause and quiet hours.
+- **Empty or unreadable watch reply.** A watch ALERT with no message, or a
+  watch reply that cannot be read, is sent as "<label> watch raised an alert
+  with no details · see the Jobs folder". An empty outreach is never sent.
+- **Verdict markers.** The `ALERT:` or `NOTHING:` marker may be bold before
+  or after the colon.
+- **Alert send before mark.** An alert is sent before its run is marked
+  reported. If the mark fails, the failure is logged at error level and the
+  alert may be sent once more. Marking first would risk losing an alert.
+- **Held alerts and the digest.** A held alert is marked reported by the
+  digest that offered it, so no later digest offers it again.
+- **Drops and nudges.** A decision's drops may not name an id that the same
+  decision also nudges or folds into a digest.
+- **Fingerprint.** The gate fingerprint leaves out the `--research` request
+  and the research counters. A manual check skips the gate anyway, and a
+  finished research run changes the fingerprint only as an unseen run.
+- **Folded nudges.** A message folded into a digest is a nudge row on channel
+  `digest` with the text "(folded into digest #N)". It follows the ordinary
+  nudge rules. Unanswered for 24 hours, it and its original are ignored (one
+  governor step). A reply resolves it `replied`, and its original with it.
+- **Budget gate.** When the daily message budget is spent, the digest slot
+  and `--research` checks still go through.
+- **Replied proposal.** A replied proposal returns its interest to
+  `candidate` only when it is the interest's newest proposal. An older one
+  does nothing, so a re-proposed interest is not bounced.
+- **Saved decision.** A saved pending decision is cleared as soon as it
+  applies. If applying it fails, the failure is logged. A manual check with
+  `--promote` or `--force` does not apply a saved decision; it asks for a
+  fresh answer.
+- **Research "none".** A reply of "none" to `check --research` is accepted,
+  not rejected. No research run starts, and the CLI prints the reply.

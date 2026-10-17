@@ -1126,7 +1126,8 @@ self_max_bytes = 10240
 ```
 
 `spore companion status` and `spore companion interests` show what it has
-noticed. If your config has its own `[policy] allow` list, add `self_note` to it
+noticed. Status also shows the digest (sent, due or paused), the research runs
+used today and the alerts sent today. If your config has its own `[policy] allow` list, add `self_note` to it
 or spore will ask before each note. If it has its own `[policy.profile.remote]`
 deny list, add `self_note` there too, so a remote chat cannot write into spore's
 notes. `/refine rollback` undoes the session's most recent change, and a `self_note`
@@ -1138,7 +1139,12 @@ the last month and at messages you have not answered. Now and then it
 offers to watch one, with Yes / Not now / Never buttons. It nudges an
 unanswered message at most once, and sends fewer messages when you do not
 answer. Only Yes starts a watch. A watch is a scheduled job that runs with
-read-only tools and posts every run where the proposal was.
+read-only tools and ends each run with a verdict. A run that finds nothing
+posts nothing (it stays in the Jobs folder). A run that finds something sends
+an alert, at most `alert_budget` a day (default 3), held during quiet hours
+unless `alerts_in_quiet_hours = true`. The companion may also start a research
+run on an active interest (read-only, at most 6 a day), tell you what those
+runs found, or follow up, and it sends one short digest every morning.
 
 On Discord it uses a thread of its own in a channel you name, which can be
 a private channel just for you:
@@ -1203,7 +1209,7 @@ spore session show <id>             print a transcript
 spore session delete <id>... | --all [--discord] [--yes]
 spore policy check <tool> [json]    show the decision a call would get
 spore mcp list                      connect to MCP servers and list their tools
-spore companion status              whether the companion is on, its timezone, and how full self.md is
+spore companion status              whether the companion is on, its timezone, how full self.md is, and the digest, research and alerts lines
 spore companion interests           what it has noticed, with days seen and state
 spore recall search|status|reindex|setup|teardown
 spore trace setup|status|teardown
