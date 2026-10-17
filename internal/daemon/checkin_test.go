@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codered/spore/internal/companion"
 	"github.com/codered/spore/internal/policy"
 	"github.com/codered/spore/internal/provider"
 	"github.com/codered/spore/internal/scheduler"
@@ -495,4 +496,69 @@ func TestJobFallsBackWhenTheOriginWorkspaceIsRefused(t *testing.T) {
 	if !strings.HasSuffix(sess.Workspace, filepath.Join("sessions", sid)) {
 		t.Errorf("job ran in %q, want a session directory once the origin's root is refused", sess.Workspace)
 	}
+}
+
+// TestCompanionWatchSkipsTheOrdinaryNote: a watch run is recorded by the
+// heartbeat and leaves no note in its origin, whatever its notify mode; a
+// plain job with notify each still posts its note.
+func TestCompanionWatchSkipsTheOrdinaryNote(t *testing.T) {
+	s, n, origin, job := checkInFixture(t,
+		provider.ScriptTurn{Text: "NOTHING: quiet"},
+		provider.ScriptTurn{Text: "a joke"},
+	)
+	ctx := context.Background()
+	s.cfg.Companion.Enabled = true
+	s.cfg.Companion.Timezone = "UTC"
+	s.AttachHeartbeat(&companion.Heartbeat{Store: s.store, Cfg: s.cfg, Deliverer: s.CompanionDeliverer()})
+
+	in, err := s.store.TouchInterest(ctx, "stock:zs", "ZS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.store.SetInterestState(ctx, in.ID, store.InterestObserving, store.InterestProposed); err != nil || !ok {
+		t.Fatalf("propose: %v %v", ok, err)
+	}
+	if ok, err := s.store.ActivateInterest(ctx, in.ID, job.ID); err != nil || !ok {
+		t.Fatalf("activate: %v %v", ok, err)
+	}
+	if claimed, err := s.store.ClaimJobCheckIn(ctx, job.ID); err != nil || !claimed {
+		t.Fatal("could not mark the watch checked in")
+	}
+	if err := s.store.SetJobNotify(ctx, job.ID, store.NotifyEach); err != nil {
+		t.Fatal(err)
+	}
+
+	runJob(t, s, job)
+	waitUntil(t, "the watch run to be recorded", func() bool {
+		runs, err := s.store.CompanionRuns(ctx, time.Time{})
+		return err == nil && len(runs) == 1
+	})
+	for _, m := range messages(t, s, origin) {
+		if m.Role == store.RoleNote {
+			t.Fatalf("a watch run wrote a note into its origin: %s", text(m))
+		}
+	}
+	if delivered, _ := n.snapshot(); len(delivered) != 0 {
+		t.Fatalf("a watch run delivered %v, want nothing", delivered)
+	}
+
+	plain, err := scheduler.CreateJob(ctx, s.store, "*/5 * * * *", "Send me a joke", origin, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed, err := s.store.ClaimJobCheckIn(ctx, plain.ID); err != nil || !claimed {
+		t.Fatal("could not mark the plain job checked in")
+	}
+	if err := s.store.SetJobNotify(ctx, plain.ID, store.NotifyEach); err != nil {
+		t.Fatal(err)
+	}
+	runJob(t, s, plain)
+	waitUntil(t, "the plain job's note", func() bool {
+		for _, m := range messages(t, s, origin) {
+			if m.Role == store.RoleNote && strings.Contains(text(m), "a joke") {
+				return true
+			}
+		}
+		return false
+	})
 }

@@ -1,11 +1,19 @@
 package companion
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/codered/spore/internal/store"
+	"github.com/codered/spore/internal/tool/schedule"
 )
+
+// heldAlertWindow is how far back RetryHeldAlerts looks for held alerts.
+const heldAlertWindow = 30 * 24 * time.Hour
 
 // Verdict is what a watch run decided: an alert for the user, or nothing to
 // report. Kind is store.VerdictAlert or store.VerdictNothing.
@@ -105,4 +113,256 @@ func AlertText(message string) string {
 		return message
 	}
 	return string(r[:alertClip]) + alertFooter
+}
+
+// watchOf reports the active interest whose watch job is job, if any.
+func (h *Heartbeat) watchOf(ctx context.Context, job store.Job) (store.Interest, bool, error) {
+	active, err := h.Store.Interests(ctx, store.InterestActive)
+	if err != nil {
+		return store.Interest{}, false, err
+	}
+	for _, in := range active {
+		if in.WatchJobID == job.ID {
+			return in, true, nil
+		}
+	}
+	return store.Interest{}, false, nil
+}
+
+// RunPrompt is the prompt a job runs with. A companion watch gets
+// VerdictSuffix appended; a research job has its run session recorded. Any
+// other job runs its own prompt unchanged.
+func (h *Heartbeat) RunPrompt(ctx context.Context, job store.Job, sessionID string) string {
+	if !h.Cfg.Companion.Enabled {
+		return job.Prompt
+	}
+	_, watch, err := h.watchOf(ctx, job)
+	if err != nil {
+		slog.Warn("companion: could not read the job's watch", "job", job.ID, "err", err)
+		return job.Prompt
+	}
+	if watch {
+		return job.Prompt + VerdictSuffix
+	}
+	row, ok, err := h.Store.CompanionRunByJob(ctx, job.ID, store.RunResearch)
+	if err != nil {
+		slog.Warn("companion: could not read the job's research run", "job", job.ID, "err", err)
+		return job.Prompt
+	}
+	if ok {
+		if err := h.Store.SetCompanionRunSession(ctx, row.ID, sessionID); err != nil {
+			slog.Warn("companion: could not record the research run's session", "job", job.ID, "err", err)
+		}
+	}
+	return job.Prompt
+}
+
+// RunFinished records a companion run. handled is true when the job is the
+// companion's, so the caller skips its ordinary note path; failNote is true
+// only for a failed watch run. Errors are logged, never returned: a run's
+// bookkeeping must not fail the job.
+func (h *Heartbeat) RunFinished(ctx context.Context, job store.Job, sessionID string, ok bool) (handled, failNote bool) {
+	if !h.Cfg.Companion.Enabled {
+		return false, false
+	}
+	now := h.now()
+	in, watch, err := h.watchOf(ctx, job)
+	if err != nil {
+		slog.Warn("companion: could not read the job's watch", "job", job.ID, "err", err)
+		return false, false
+	}
+	if watch {
+		verdict := h.recordWatchRun(ctx, in, job, sessionID, ok, now)
+		return true, verdict == store.VerdictFailed
+	}
+	row, found, err := h.Store.CompanionRunByJob(ctx, job.ID, store.RunResearch)
+	if err != nil {
+		slog.Warn("companion: could not read the job's research run", "job", job.ID, "err", err)
+		return false, false
+	}
+	if !found {
+		return false, false
+	}
+	verdict := store.VerdictDone
+	if !ok {
+		verdict = store.VerdictFailed
+	}
+	moved, err := h.Store.FinishCompanionRun(ctx, row.ID, verdict, now)
+	switch {
+	case err != nil:
+		slog.Warn("companion: could not finish the research run", "job", job.ID, "err", err)
+	case !moved:
+		slog.Debug("companion: research run already finished", "job", job.ID, "run", row.ID)
+	}
+	return true, false
+}
+
+// recordWatchRun writes one watch run, delivers its alert when it has one,
+// and returns the run's verdict. A run whose reply cannot be read is failed.
+func (h *Heartbeat) recordWatchRun(ctx context.Context, in store.Interest, job store.Job, sessionID string, ok bool, now time.Time) string {
+	verdict := store.VerdictFailed
+	if ok {
+		reply, err := schedule.LastReply(ctx, h.Store, sessionID)
+		if err != nil {
+			slog.Warn("companion: could not read the watch run's reply; the run counts as failed", "job", job.ID, "err", err)
+		} else {
+			verdict = ParseVerdict(reply).Kind
+		}
+	}
+	run := store.CompanionRun{InterestID: in.ID, JobID: job.ID, Kind: store.RunWatch, SessionID: sessionID,
+		Verdict: verdict, StartedAt: now, FinishedAt: now}
+	id, err := h.Store.AddCompanionRun(ctx, run)
+	if err != nil {
+		slog.Warn("companion: could not record the watch run", "job", job.ID, "err", err)
+		return verdict
+	}
+	run.ID = id
+	if verdict == store.VerdictAlert {
+		sent, err := h.deliverAlert(ctx, run, now)
+		if err != nil {
+			slog.Warn("companion: could not deliver the watch alert", "job", job.ID, "err", err)
+		} else if !sent {
+			slog.Debug("companion: watch alert held", "job", job.ID, "run", run.ID)
+		}
+	}
+	return verdict
+}
+
+// deliverAlert sends one alert row now, or leaves it held. It reports whether
+// it was sent. The text is re-read from the run's session each time, so a
+// retry needs no stored text. A session that is gone leaves the row held.
+func (h *Heartbeat) deliverAlert(ctx context.Context, run store.CompanionRun, now time.Time) (bool, error) {
+	h.alertMu.Lock()
+	defer h.alertMu.Unlock()
+	if unreported, err := h.stillHeld(ctx, run); err != nil || !unreported {
+		return false, err
+	}
+	if _, found, err := h.Store.Session(ctx, run.SessionID); err != nil {
+		return false, err
+	} else if !found {
+		return false, nil
+	}
+	held, err := h.alertHeld(ctx, now)
+	if err != nil || held {
+		return false, err
+	}
+	reply, err := schedule.LastReply(ctx, h.Store, run.SessionID)
+	if err != nil {
+		return false, fmt.Errorf("read the alert's reply: %w", err)
+	}
+	msg := strings.TrimSpace(ParseVerdict(reply).Message)
+	text := AlertText(msg)
+	if msg == "" {
+		text = h.alertLabel(ctx, run.InterestID) + " watch raised an alert with no details · see the Jobs folder"
+	}
+	o, err := h.Deliverer.Deliver(ctx, store.Outreach{InterestID: run.InterestID, Kind: store.OutreachAlert,
+		Text: text, SentAt: now})
+	if errors.Is(err, ErrBusy) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("deliver alert: %w", err)
+	}
+	if err := h.Store.SetCompanionRunsReported(ctx, []int64{run.ID}, o.ID); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+// stillHeld reports whether run is still unreported. A live run and a retry
+// may both hold it, and only the first to check may send it.
+func (h *Heartbeat) stillHeld(ctx context.Context, run store.CompanionRun) (bool, error) {
+	runs, err := h.Store.CompanionRuns(ctx, run.StartedAt)
+	if err != nil {
+		return false, err
+	}
+	for _, r := range runs {
+		if r.ID == run.ID {
+			return r.ReportedOutreachID == 0, nil
+		}
+	}
+	return false, nil
+}
+
+// alertHeld reports whether a gate holds alerts now: a pause, quiet hours
+// unless AlertsInQuietHours, or the day's alert budget spent.
+func (h *Heartbeat) alertHeld(ctx context.Context, now time.Time) (bool, error) {
+	c := h.Cfg.Companion
+	paused, err := PausedUntil(ctx, h.Store)
+	if err != nil {
+		return false, err
+	}
+	if now.Before(paused) {
+		return true, nil
+	}
+	loc, err := c.Location()
+	if err != nil {
+		return false, err
+	}
+	if !c.AlertsInQuietHours {
+		quiet, err := InQuietHours(now, loc, c.QuietHours)
+		if err != nil {
+			return false, err
+		}
+		if quiet {
+			return true, nil
+		}
+	}
+	sent, err := alertsSince(ctx, h.Store, LocalDayStart(now, loc))
+	if err != nil {
+		return false, err
+	}
+	return sent >= c.AlertBudget, nil
+}
+
+// alertLabel names the interest an alert is about, for the no-details text.
+func (h *Heartbeat) alertLabel(ctx context.Context, interestID int64) string {
+	in, ok, err := h.Store.InterestByID(ctx, interestID)
+	if err != nil || !ok {
+		return "companion"
+	}
+	return in.Label
+}
+
+// alertsSince counts the alerts sent at or after since.
+func alertsSince(ctx context.Context, st *store.Store, since time.Time) (int, error) {
+	rows, err := st.OutreachSince(ctx, since)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, o := range rows {
+		if o.Kind == store.OutreachAlert {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// RetryHeldAlerts tries every held watch alert from the last 30 days. It makes
+// no model call. Used by the digest.
+func (h *Heartbeat) RetryHeldAlerts(ctx context.Context, now time.Time) error {
+	if !h.Cfg.Companion.Enabled {
+		return nil
+	}
+	runs, err := h.Store.CompanionRuns(ctx, now.Add(-heldAlertWindow))
+	if err != nil {
+		return err
+	}
+	var errs []error
+	sent := 0
+	for _, r := range runs {
+		if r.Kind != store.RunWatch || r.Verdict != store.VerdictAlert || r.ReportedOutreachID != 0 {
+			continue
+		}
+		ok, err := h.deliverAlert(ctx, r, now)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("held alert of run %d: %w", r.ID, err))
+		}
+		if ok {
+			sent++
+		}
+	}
+	slog.Debug("companion: held alerts retried", "sent", sent)
+	return errors.Join(errs...)
 }

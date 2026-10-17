@@ -72,6 +72,9 @@ type Heartbeat struct {
 
 	// mu keeps an operator's check and the ticker from reflecting at once.
 	mu sync.Mutex
+	// alertMu keeps a run's alert and a retry of held alerts from sending
+	// the same one twice.
+	alertMu sync.Mutex
 }
 
 // TickOptions shape an operator's check. The zero value is a heartbeat tick.
