@@ -138,7 +138,7 @@ func (s *Service) startWatch(ctx context.Context, in store.Interest, o store.Out
 	}
 	jobID, err := s.Store.CreateJob(ctx, store.Job{
 		Kind: sched.Kind(), Spec: strings.TrimSpace(w.Cron), Prompt: WatchPrompt(in.Label, w.Goal), Enabled: true,
-		NextRun: next, OriginSessionID: origin, Notify: store.NotifyEach, CheckedIn: true,
+		NextRun: next, OriginSessionID: origin, Notify: store.NotifyNone, CheckedIn: true,
 		Profile: config.CompanionProfile,
 	})
 	if err != nil {
@@ -154,7 +154,7 @@ func (s *Service) startWatch(ctx context.Context, in store.Interest, o store.Out
 		}
 		return "", fmt.Errorf("%w: %s changed while answering", ErrNotProposal, in.Key)
 	}
-	return fmt.Sprintf("Watching %s (job %d, cron %s UTC). Every run will land here.", in.Label, jobID, w.Cron), nil
+	return fmt.Sprintf("Watching %s (job %d, cron %s UTC). I'll tell you here when a run finds something worth it.", in.Label, jobID, w.Cron), nil
 }
 
 // IsCompanionSession reports whether sessionID is the companion's session.
@@ -331,6 +331,19 @@ type Status struct {
 	LastResult     string
 	Failures       int
 	SessionID      string
+	// DigestSentAt is today's digest, zero when none was sent today.
+	DigestSentAt time.Time
+	// DigestDue is true when today's digest has not gone out yet.
+	DigestDue bool
+	// ResearchToday counts the research runs started today.
+	ResearchToday int
+	// ResearchRunning counts research runs still running, from the last 30 days.
+	ResearchRunning int
+	// AlertsToday counts the watch alerts sent today.
+	AlertsToday int
+	// AlertsHeld counts the watch alerts held back, from the last 30 days.
+	AlertsHeld  int
+	AlertBudget int
 }
 
 // Status reads the companion's state. It works with or without a daemon.
@@ -364,5 +377,52 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 	if st.SessionID, _, err = s.Store.CompanionState(ctx, StateSessionID); err != nil {
 		return Status{}, err
 	}
+	if err := s.readDigestResearchAlerts(ctx, &st, loc); err != nil {
+		return Status{}, err
+	}
 	return st, nil
+}
+
+// readDigestResearchAlerts fills the digest, research and alert counts of st.
+// Research and held alerts look back 30 days, and the day counts start at
+// local midnight.
+func (s *Service) readDigestResearchAlerts(ctx context.Context, st *Status, loc *time.Location) error {
+	now := s.Now()
+	dayStart := LocalDayStart(now, loc)
+	st.AlertBudget = s.Cfg.Companion.AlertBudget
+	last, _, err := s.Store.CompanionState(ctx, StateLastDigestDay)
+	if err != nil {
+		return err
+	}
+	st.DigestDue = last != now.In(loc).Format("2006-01-02")
+	outreach, err := s.Store.OutreachSince(ctx, dayStart)
+	if err != nil {
+		return err
+	}
+	for _, o := range outreach {
+		switch o.Kind {
+		case store.OutreachDigest:
+			st.DigestSentAt = o.SentAt
+		case store.OutreachAlert:
+			st.AlertsToday++
+		}
+	}
+	runs, err := s.Store.CompanionRuns(ctx, now.Add(-heldAlertWindow))
+	if err != nil {
+		return err
+	}
+	for _, r := range runs {
+		if r.Kind == store.RunResearch {
+			if !r.StartedAt.Before(dayStart) {
+				st.ResearchToday++
+			}
+			if r.Verdict == store.VerdictPending {
+				st.ResearchRunning++
+			}
+		}
+		if r.Kind == store.RunWatch && r.Verdict == store.VerdictAlert && r.ReportedOutreachID == 0 {
+			st.AlertsHeld++
+		}
+	}
+	return nil
 }

@@ -63,7 +63,7 @@ func TestAnswerProposalYesCreatesTheWatch(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("job: %v %v", ok, err)
 	}
-	if job.Profile != config.CompanionProfile || job.Notify != store.NotifyEach || !job.CheckedIn ||
+	if job.Profile != config.CompanionProfile || job.Notify != store.NotifyNone || !job.CheckedIn ||
 		job.OriginSessionID != fx.sid || job.Spec != "0 14 * * 1-5" || !job.Enabled ||
 		!strings.Contains(job.Prompt, in.Label) || !strings.Contains(job.Prompt, "Check it.") {
 		t.Fatalf("watch job = %+v", job)
@@ -293,6 +293,30 @@ func TestStatus(t *testing.T) {
 	}
 	if !s.Enabled || s.Channel != config.CompanionChannelTerminal || s.Budget != 4 || s.SpentToday != 1 ||
 		s.Failures != 3 || s.LastResult != "failed: provider down" || s.SessionID != fx.sid {
+		t.Fatalf("status = %+v", s)
+	}
+	if s.AlertBudget != 3 || !s.DigestSentAt.IsZero() || s.DigestDue || s.ResearchToday != 0 ||
+		s.ResearchRunning != 0 || s.AlertsToday != 0 || s.AlertsHeld != 0 {
+		t.Fatalf("digest, research and alert fields = %+v", s)
+	}
+}
+
+func TestStatusCountsResearchAndAlerts(t *testing.T) {
+	ctx := context.Background()
+	fx := newService(t)
+	in, _ := fx.st.TouchInterest(ctx, "stock:zs", "ZS")
+	_ = fx.st.SetCompanionState(ctx, companion.StateLastDigestDay, "2026-10-11")
+	_, _ = fx.st.AddCompanionRun(ctx, store.CompanionRun{InterestID: in.ID, Kind: store.RunResearch,
+		Question: "old", Verdict: store.VerdictPending, StartedAt: fx.now.Add(-48 * time.Hour)})
+	_, _ = fx.st.AddCompanionRun(ctx, store.CompanionRun{InterestID: in.ID, Kind: store.RunResearch,
+		Question: "today", Verdict: store.VerdictPending, StartedAt: fx.now.Add(-time.Hour)})
+	_, _ = fx.st.AddCompanionRun(ctx, store.CompanionRun{InterestID: in.ID, Kind: store.RunWatch,
+		Question: "held", Verdict: store.VerdictAlert, StartedAt: fx.now.Add(-time.Hour), FinishedAt: fx.now.Add(-time.Hour)})
+	s, err := fx.svc.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.DigestDue || s.ResearchToday != 1 || s.ResearchRunning != 2 || s.AlertsHeld != 1 {
 		t.Fatalf("status = %+v", s)
 	}
 }

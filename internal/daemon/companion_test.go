@@ -278,6 +278,11 @@ func TestCheckRouteRunsOneTick(t *testing.T) {
 	if _, err := s.store.TouchInterest(ctx, "stock:zs", "Zscaler (ZS)"); err != nil {
 		t.Fatal(err)
 	}
+	// A fresh store is due its digest; mark today's sent so the plain check
+	// is an ordinary tick.
+	if err := s.store.SetCompanionState(ctx, companion.StateLastDigestDay, time.Now().UTC().Format("2006-01-02")); err != nil {
+		t.Fatal(err)
+	}
 	url := ts.URL + "/api/companion/check"
 
 	res := postJSON(t, url, map[string]any{})
@@ -300,6 +305,21 @@ func TestCheckRouteRunsOneTick(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown interest = %d, want 400", res.StatusCode)
+	}
+}
+
+func TestCompanionCheckResearchBadRequest(t *testing.T) {
+	s, ts := newTestServer(t)
+	s.cfg.Companion.Enabled = true
+	s.cfg.Companion.Timezone = "UTC"
+	s.AttachCompanion(companion.NewService(s.store, s.cfg))
+	s.AttachHeartbeat(&companion.Heartbeat{Store: s.store, Cfg: s.cfg, Recorder: companion.NewRecorder(s.store, s.cfg),
+		Reflector: &noneReflector{}, Deliverer: s.CompanionDeliverer(), Now: time.Now})
+
+	res := postJSON(t, ts.URL+"/api/companion/check", map[string]any{"research": "nope"})
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("research on an unknown interest = %d, want 400", res.StatusCode)
 	}
 }
 

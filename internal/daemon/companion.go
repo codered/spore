@@ -200,14 +200,15 @@ func (s *Server) handleCompanionCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Promote string `json:"promote"`
-		Force   bool   `json:"force"`
+		Promote  string `json:"promote"`
+		Force    bool   `json:"force"`
+		Research string `json:"research"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "decode body: %v", err)
 		return
 	}
-	res, err := s.heartbeat.TickWith(r.Context(), companion.TickOptions{Manual: true, Promote: body.Promote, Force: body.Force})
+	res, err := s.heartbeat.TickWith(r.Context(), companion.TickOptions{Manual: true, Promote: body.Promote, Force: body.Force, Research: body.Research})
 	switch {
 	case errors.Is(err, companion.ErrBadCheck):
 		writeError(w, http.StatusBadRequest, "%v", err)
@@ -220,15 +221,21 @@ func (s *Server) handleCompanionCheck(w http.ResponseWriter, r *http.Request) {
 
 // CompanionStatusJSON is GET /api/companion/status.
 type CompanionStatusJSON struct {
-	Enabled        bool       `json:"enabled"`
-	Channel        string     `json:"channel"`
-	PausedUntil    *time.Time `json:"paused_until,omitempty"`
-	Budget         float64    `json:"budget"`
-	SpentToday     int        `json:"spent_today"`
-	LastReflection *time.Time `json:"last_reflection,omitempty"`
-	LastResult     string     `json:"last_result,omitempty"`
-	Failures       int        `json:"failures"`
-	SessionID      string     `json:"session_id,omitempty"`
+	Enabled         bool       `json:"enabled"`
+	Channel         string     `json:"channel"`
+	PausedUntil     *time.Time `json:"paused_until,omitempty"`
+	Budget          float64    `json:"budget"`
+	SpentToday      int        `json:"spent_today"`
+	LastReflection  *time.Time `json:"last_reflection,omitempty"`
+	LastResult      string     `json:"last_result,omitempty"`
+	Failures        int        `json:"failures"`
+	SessionID       string     `json:"session_id,omitempty"`
+	DigestSentAt    *time.Time `json:"digest_sent_at,omitempty"`
+	DigestDue       bool       `json:"digest_due"`
+	ResearchToday   int        `json:"research_today"`
+	ResearchRunning int        `json:"research_running"`
+	AlertsToday     int        `json:"alerts_today"`
+	AlertsHeld      int        `json:"alerts_held"`
 }
 
 func (s *Server) handleCompanionStatus(w http.ResponseWriter, r *http.Request) {
@@ -249,6 +256,11 @@ func (s *Server) handleCompanionStatus(w http.ResponseWriter, r *http.Request) {
 	if !st.LastReflection.IsZero() {
 		out.LastReflection = &st.LastReflection
 	}
+	if !st.DigestSentAt.IsZero() {
+		out.DigestSentAt = &st.DigestSentAt
+	}
+	out.DigestDue, out.ResearchToday, out.ResearchRunning = st.DigestDue, st.ResearchToday, st.ResearchRunning
+	out.AlertsToday, out.AlertsHeld = st.AlertsToday, st.AlertsHeld
 	writeJSON(w, http.StatusOK, out)
 }
 

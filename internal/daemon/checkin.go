@@ -62,10 +62,21 @@ func (s *Server) afterJobRun(jobID int64, runSession string, end WireEvent) {
 		}
 		return
 	}
+	ok := end.Type == WireTurnDone
+	if s.heartbeat != nil {
+		// A companion's run is recorded by the heartbeat, not reported as a note.
+		if handled, failNote := s.heartbeat.RunFinished(ctx, job, runSession, ok); handled {
+			if failNote && job.OriginSessionID != "" {
+				if err := s.postNote(ctx, job.OriginSessionID, runNote(job, end, "")); err != nil {
+					slog.Warn("could not post the watch's failure note", "job", job.ID, "err", err)
+				}
+			}
+			return
+		}
+	}
 	if job.OriginSessionID == "" {
 		return
 	}
-	ok := end.Type == WireTurnDone
 	if !job.CheckedIn {
 		if !ok {
 			return // only a success checks in

@@ -182,7 +182,11 @@ func (s *Server) StartJob(ctx context.Context, job store.Job) (string, error) {
 		return sessionID, errSessionBusy
 	}
 	then := func(end WireEvent) { s.afterJobRun(job.ID, sessionID, end) }
-	if err := s.startTurnThen(sessionID, job.Prompt, "job", profile, then); err != nil {
+	prompt := job.Prompt
+	if s.heartbeat != nil {
+		prompt = s.heartbeat.RunPrompt(ctx, job, sessionID)
+	}
+	if err := s.startTurnThen(sessionID, prompt, "job", profile, then); err != nil {
 		s.hub.End(sessionID)
 		return sessionID, err
 	}

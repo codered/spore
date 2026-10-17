@@ -15,18 +15,40 @@ import (
 
 	"github.com/codered/spore/internal/config"
 	"github.com/codered/spore/internal/store"
+	"github.com/codered/spore/internal/tool/schedule"
 )
 
 // Timeouts and cooldowns. See the companion spec, sections 2.3, 4.6 and 5.3.
 const (
 	UnansweredAfter   = 12 * time.Hour
 	NudgeIgnoredAfter = 24 * time.Hour
-	NotNowCooldown    = 14 * 24 * time.Hour
-	ReturnCooldown    = 7 * 24 * time.Hour
-	RecentOutreach    = 7 * 24 * time.Hour
+	// RepliedProposalReturn is how long a proposal answered in text may
+	// stay proposed before it goes back to candidate. Replied rows are
+	// scanned on every tick, and only the interest's newest proposal counts:
+	// an older replied row never returns a re-proposed interest.
+	RepliedProposalReturn = 24 * time.Hour
+	// PendingDecisionMaxAge is how old a saved busy decision may be and
+	// still be applied.
+	PendingDecisionMaxAge = 12 * time.Hour
+	NotNowCooldown        = 14 * 24 * time.Hour
+	ReturnCooldown        = 7 * 24 * time.Hour
+	RecentOutreach        = 7 * 24 * time.Hour
 	// FailureWarning is how many reflections in a row may fail before
 	// status warns about it.
 	FailureWarning = 3
+	// ResearchStuckAfter is how long a research run may stay pending before
+	// it is failed. A late finish never overwrites that failure.
+	ResearchStuckAfter = 2 * time.Hour
+	// RunsShownFor is how far back reflection sees finished runs; RunsKeptFor
+	// is how long a run's row is kept.
+	RunsShownFor = 7 * 24 * time.Hour
+	RunsKeptFor  = 30 * 24 * time.Hour
+	// FollowupWindow is the span the idle follow-up counts its runs over.
+	FollowupWindow = 14 * 24 * time.Hour
+	// FollowupIdleRuns is how many runs in FollowupWindow make a watch idle.
+	FollowupIdleRuns = 10
+	// FollowupFailedRuns is how many failed runs in a row prompt a follow-up.
+	FollowupFailedRuns = 3
 )
 
 // ErrBusy is the deliverer refusing because a turn is running in the
@@ -72,6 +94,9 @@ type Heartbeat struct {
 
 	// mu keeps an operator's check and the ticker from reflecting at once.
 	mu sync.Mutex
+	// alertMu keeps a run's alert and a retry of held alerts from sending
+	// the same one twice.
+	alertMu sync.Mutex
 }
 
 // TickOptions shape an operator's check. The zero value is a heartbeat tick.
@@ -84,6 +109,9 @@ type TickOptions struct {
 	Promote string
 	// Force tells the reflection it must propose Promote.
 	Force bool
+	// Research names an active interest the reflection must start a research
+	// run for. It cannot be combined with Promote or Force.
+	Research string
 }
 
 func (h *Heartbeat) now() time.Time {
@@ -127,6 +155,12 @@ func (h *Heartbeat) Tick(ctx context.Context) (string, error) {
 
 // TickWith runs one tick shaped by o. See TickOptions.
 func (h *Heartbeat) TickWith(ctx context.Context, o TickOptions) (string, error) {
+	if o.Research != "" && o.Promote != "" {
+		return "", fmt.Errorf("%w: --research cannot be combined with --promote", ErrBadCheck)
+	}
+	if o.Research != "" && o.Force {
+		return "", fmt.Errorf("%w: --research cannot be combined with --force", ErrBadCheck)
+	}
 	if o.Force && o.Promote == "" {
 		return "", fmt.Errorf("%w: force needs an interest to promote", ErrBadCheck)
 	}
@@ -149,8 +183,16 @@ func (h *Heartbeat) TickWith(ctx context.Context, o TickOptions) (string, error)
 			return "", err
 		}
 	}
+	if err := h.housekeep(ctx, now); err != nil {
+		return "", err
+	}
 	if o.Promote != "" {
 		if err := h.promote(ctx, o.Promote, now, loc); err != nil {
+			return "", err
+		}
+	}
+	if o.Research != "" {
+		if err := h.checkResearch(ctx, o.Research); err != nil {
 			return "", err
 		}
 	}
@@ -170,17 +212,33 @@ func (h *Heartbeat) TickWith(ctx context.Context, o TickOptions) (string, error)
 			return "quiet hours", nil
 		}
 	}
-	v, err := h.view(ctx, now, loc)
+	v, err := h.view(ctx, now, loc, o)
 	if err != nil {
 		return "", err
 	}
 	if o.Force {
 		v.Force = o.Promote
 	}
+	if o.Research != "" {
+		v.ForceResearch = o.Research
+	}
+	// A decision the busy session refused is applied before the gate: it was
+	// made already, so the gate and the fingerprint do not decide it again.
+	// An operator's check that names an interest asks for a fresh answer.
+	if o.Promote == "" && o.Research == "" {
+		res, settled, err := h.applySaved(ctx, v, now)
+		if err != nil {
+			return "", err
+		}
+		if settled {
+			return res, nil
+		}
+	}
 	if !Eligible(v) {
 		return "nothing to decide", nil
 	}
-	if v.BudgetLeft < 1 {
+	// The digest and research cost no budget: a spent budget never holds them.
+	if v.BudgetLeft < 1 && !v.DigestDue && v.ForceResearch == "" {
 		return "budget spent", nil
 	}
 	fp := Fingerprint(v)
@@ -204,13 +262,105 @@ func (h *Heartbeat) TickWith(ctx context.Context, o TickOptions) (string, error)
 	}
 	if err := h.apply(ctx, d, v, now); err != nil {
 		if errors.Is(err, ErrBusy) {
-			// The user is talking to spore right now; the next tick asks again.
-			return "companion session busy", nil
+			// The user is talking to spore right now. Keep the decision: the
+			// next tick applies it without asking the model again.
+			if err := h.saveDecision(ctx, d, now); err != nil {
+				return "", h.fail(ctx, now, fmt.Errorf("save busy decision: %w", err))
+			}
+			return "companion session busy (decision saved)", nil
 		}
+		return "", h.fail(ctx, now, err)
+	}
+	// Only a decision that applied counts as the user having seen the runs.
+	if err := h.Store.SetCompanionRunsSeen(ctx, runIDs(v.Runs), now); err != nil {
 		return "", h.fail(ctx, now, err)
 	}
 	res := summarize(d)
 	return res, h.succeed(ctx, now, fp, res)
+}
+
+// savedDecision is a reflection decision that a busy session refused.
+type savedDecision struct {
+	Decision Decision  `json:"decision"`
+	SavedAt  time.Time `json:"saved_at"`
+}
+
+// saveDecision keeps d, made at now, for the next tick.
+func (h *Heartbeat) saveDecision(ctx context.Context, d Decision, now time.Time) error {
+	b, err := json.Marshal(savedDecision{Decision: d, SavedAt: now})
+	if err != nil {
+		return err
+	}
+	return h.Store.SetCompanionState(ctx, StatePendingDecision, string(b))
+}
+
+// clearDecision forgets the saved decision. An empty value means none saved.
+func (h *Heartbeat) clearDecision(ctx context.Context) error {
+	return h.Store.SetCompanionState(ctx, StatePendingDecision, "")
+}
+
+// applySaved applies the saved decision against the fresh view v. It reports
+// the tick's result and true when the decision settled the tick. A decision
+// that is too old, that v no longer allows, or that cannot be read is
+// discarded, and the tick goes on as usual.
+func (h *Heartbeat) applySaved(ctx context.Context, v View, now time.Time) (string, bool, error) {
+	raw, _, err := h.Store.CompanionState(ctx, StatePendingDecision)
+	if err != nil {
+		return "", false, err
+	}
+	if raw == "" {
+		return "", false, nil
+	}
+	var s savedDecision
+	if err := json.Unmarshal([]byte(raw), &s); err != nil || now.Sub(s.SavedAt) > PendingDecisionMaxAge || Validate(s.Decision, v) != nil {
+		return "", false, h.clearDecision(ctx)
+	}
+	fp := Fingerprint(v)
+	switch err := h.apply(ctx, s.Decision, v, now); {
+	case errors.Is(err, ErrBusy):
+		// Still busy: keep the decision for the next tick.
+		return "companion session busy", true, nil
+	case err != nil:
+		if cerr := h.clearDecision(ctx); cerr != nil {
+			slog.Warn("companion: could not clear a failed saved decision", "err", cerr)
+		}
+		return "", true, h.fail(ctx, now, err)
+	}
+	// The message is out. Clear the decision before anything else can fail:
+	// a surviving one would send the same message again on the next tick.
+	if err := h.clearDecision(ctx); err != nil {
+		slog.Warn("companion: applied a saved decision but could not clear it; it may apply again", "err", err)
+	}
+	if err := h.Store.SetCompanionRunsSeen(ctx, runIDs(v.Runs), now); err != nil {
+		return "", true, h.fail(ctx, now, err)
+	}
+	res := summarize(s.Decision) + " (saved decision)"
+	return res, true, h.succeed(ctx, now, fp, res)
+}
+
+// housekeep fails research runs that never finished, forgets runs past their
+// keep window, and retries held alerts. It makes no model call. A failed
+// retry is logged, never returned: it must not stop the reflection.
+func (h *Heartbeat) housekeep(ctx context.Context, now time.Time) error {
+	runs, err := h.Store.CompanionRuns(ctx, now.Add(-RunsKeptFor))
+	if err != nil {
+		return err
+	}
+	for _, r := range runs {
+		if r.Kind != store.RunResearch || r.Verdict != store.VerdictPending || now.Sub(r.StartedAt) < ResearchStuckAfter {
+			continue
+		}
+		if _, err := h.Store.FinishCompanionRun(ctx, r.ID, store.VerdictFailed, now); err != nil {
+			return err
+		}
+	}
+	if _, err := h.Store.DeleteCompanionRunsBefore(ctx, now.Add(-RunsKeptFor)); err != nil {
+		return err
+	}
+	if err := h.RetryHeldAlerts(ctx, now); err != nil {
+		slog.Warn("companion: some held alerts could not be sent; they stay held", "err", err)
+	}
+	return nil
 }
 
 // promote makes key a candidate for one check. It runs after the sweep,
@@ -235,6 +385,22 @@ func (h *Heartbeat) promote(ctx context.Context, key string, now time.Time, loc 
 	default:
 		return fmt.Errorf("%w: interest %s is %s; only an observing or candidate interest can be promoted", ErrBadCheck, key, in.State)
 	}
+}
+
+// checkResearch refuses a research check that names no active interest. The
+// reflection can only research an active one.
+func (h *Heartbeat) checkResearch(ctx context.Context, key string) error {
+	in, ok, err := h.Store.InterestByKey(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: no interest %q (see spore companion interests)", ErrBadCheck, key)
+	}
+	if in.State != store.InterestActive {
+		return fmt.Errorf("%w: interest %s is %s; only an active interest can be researched", ErrBadCheck, key, in.State)
+	}
+	return nil
 }
 
 // resolveStale times out what the user did not answer: a message pending
@@ -280,11 +446,33 @@ func (h *Heartbeat) resolveStale(ctx context.Context, now time.Time) error {
 			}
 		}
 	}
+	// A proposal answered in text never resolves its interest. Once it has
+	// waited RepliedProposalReturn, it goes back to candidate. Only the
+	// interest's newest proposal may do this: a re-proposal is live.
+	replied, err := h.Store.OutreachByOutcome(ctx, store.OutcomeReplied)
+	if err != nil {
+		return err
+	}
+	for _, o := range replied {
+		if o.Kind != store.OutreachProposal || o.ResolvedAt.After(now.Add(-RepliedProposalReturn)) {
+			continue
+		}
+		latest, ok, err := h.Store.LatestProposal(ctx, o.InterestID)
+		if err != nil {
+			return err
+		}
+		if !ok || latest.ID != o.ID {
+			continue
+		}
+		if err := returnProposal(ctx, h.Store, o, now); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-// view reads everything a reflection sees.
-func (h *Heartbeat) view(ctx context.Context, now time.Time, loc *time.Location) (View, error) {
+// view reads everything a reflection sees. o shapes an operator's check.
+func (h *Heartbeat) view(ctx context.Context, now time.Time, loc *time.Location, o TickOptions) (View, error) {
 	v := View{Now: now, Loc: loc, SelfMax: h.Cfg.Companion.SelfMaxBytes,
 		Days: map[int64][]string{}, Keys: map[int64]string{}, Nudged: map[int64]bool{}}
 	// soul.md is the user's; missing or unreadable, it simply has no section.
@@ -337,7 +525,148 @@ func (h *Heartbeat) view(ctx context.Context, now time.Time, loc *time.Location)
 		return View{}, err
 	}
 	v.BudgetLeft = int(b) - spent
+	// The digest is due once a day, on the first tick after its day began.
+	// An operator's check never sends it.
+	last, _, err := h.Store.CompanionState(ctx, StateLastDigestDay)
+	if err != nil {
+		return View{}, err
+	}
+	v.DigestDue = last != now.In(loc).Format("2006-01-02") && !o.Force && o.Research == ""
+	if err := h.viewRuns(ctx, &v, now, loc); err != nil {
+		return View{}, err
+	}
 	return v, nil
+}
+
+// viewRuns reads the run side of the view: research counts, the finished
+// runs the user has not been told of, and the follow-up subjects.
+func (h *Heartbeat) viewRuns(ctx context.Context, v *View, now time.Time, loc *time.Location) error {
+	runs, err := h.Store.CompanionRuns(ctx, now.Add(-RunsKeptFor))
+	if err != nil {
+		return err
+	}
+	dayStart := LocalDayStart(now, loc)
+	for _, r := range runs {
+		if r.Kind == store.RunResearch {
+			if !r.StartedAt.Before(dayStart) {
+				v.ResearchToday++
+			}
+			if r.Verdict == store.VerdictPending {
+				v.ResearchInFlight = true
+			}
+		}
+		if r.Verdict == store.VerdictPending || r.ReportedOutreachID != 0 || r.FinishedAt.IsZero() ||
+			r.FinishedAt.Before(now.Add(-RunsShownFor)) {
+			continue
+		}
+		reply, err := h.runReply(ctx, r.SessionID)
+		if err != nil {
+			return err
+		}
+		v.Runs = append(v.Runs, RunView{Run: r, Key: v.Keys[r.InterestID], Reply: reply,
+			Held: r.Kind == store.RunWatch && r.Verdict == store.VerdictAlert})
+	}
+	return h.followups(ctx, v, runs, now)
+}
+
+// runReply is the full reply of a run, read from its session. A session that
+// is gone reads "(run deleted)". A reply that cannot be read is said so, and
+// does not stop the tick.
+func (h *Heartbeat) runReply(ctx context.Context, sessionID string) (string, error) {
+	_, found, err := h.Store.Session(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "(run deleted)", nil
+	}
+	reply, err := schedule.LastReply(ctx, h.Store, sessionID)
+	if err != nil {
+		slog.Warn("companion: could not read a run's reply", "session", sessionID, "err", err)
+		return "(reply unreadable)", nil
+	}
+	return reply, nil
+}
+
+// followups sets the subjects reflection may raise: an active watch that ran
+// often with no answer, one whose last runs all failed, and in the digest
+// slot the threads line. runs is every run in the keep window, newest first.
+func (h *Heartbeat) followups(ctx context.Context, v *View, runs []store.CompanionRun, now time.Time) error {
+	since := now.Add(-FollowupWindow)
+	recent, err := h.Store.OutreachSince(ctx, since)
+	if err != nil {
+		return err
+	}
+	for _, in := range v.Interests {
+		if in.State != store.InterestActive {
+			continue
+		}
+		var mine []store.CompanionRun
+		inWindow := 0
+		for _, r := range runs {
+			if r.Kind != store.RunWatch || r.InterestID != in.ID {
+				continue
+			}
+			mine = append(mine, r)
+			if !r.StartedAt.Before(since) {
+				inWindow++
+			}
+		}
+		if inWindow >= FollowupIdleRuns && !answered(recent, in.ID) {
+			v.Followups = append(v.Followups, fmt.Sprintf("watch %s has run %d times in 14 days with no reply or reaction to anything about it: ask whether to keep, change or retire it", in.Key, inWindow))
+		}
+		if len(mine) >= FollowupFailedRuns && allFailed(mine[:FollowupFailedRuns]) {
+			v.Followups = append(v.Followups, fmt.Sprintf("watch %s failed its last %d runs: tell the user, or suggest changing or retiring it", in.Key, FollowupFailedRuns))
+		}
+	}
+	if v.DigestDue {
+		v.Followups = append(v.Followups, `read "Threads with you" in your notes and raise any that has come due`)
+	}
+	return nil
+}
+
+// answered reports whether any message about interest id since the window
+// was replied to or reacted to.
+func answered(recent []store.Outreach, id int64) bool {
+	for _, o := range recent {
+		if o.InterestID == id && (o.Outcome == store.OutcomeReplied || o.Outcome == store.OutcomeReacted) {
+			return true
+		}
+	}
+	return false
+}
+
+// allFailed reports whether every run in runs failed.
+func allFailed(runs []store.CompanionRun) bool {
+	for _, r := range runs {
+		if r.Verdict != store.VerdictFailed {
+			return false
+		}
+	}
+	return true
+}
+
+// runIDs lists the ids of runs.
+func runIDs(runs []RunView) []int64 {
+	ids := make([]int64, 0, len(runs))
+	for _, r := range runs {
+		ids = append(ids, r.Run.ID)
+	}
+	return ids
+}
+
+// uniqueIDs drops repeated ids, keeping the first of each. A model may name
+// one id twice; a write must not do it twice.
+func uniqueIDs(ids []int64) []int64 {
+	seen := make(map[int64]bool, len(ids))
+	var out []int64
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // apply carries out a validated decision. The message goes first: if it
@@ -358,9 +687,50 @@ func (h *Heartbeat) apply(ctx context.Context, d Decision, v View, now time.Time
 			return err
 		}
 	case ActionNudge:
-		orig, _ := v.UnansweredByID(d.NudgeOf)
+		orig, _ := v.UnansweredByID(d.NudgeOf[0])
 		if _, err := h.Deliverer.Deliver(ctx, store.Outreach{InterestID: orig.InterestID, Kind: store.OutreachNudge,
 			Text: d.Message, NudgeOf: orig.ID, SentAt: now}); err != nil {
+			return err
+		}
+	case ActionResearch:
+		in, _ := v.Interest(d.Interest)
+		q := strings.TrimSpace(d.Research.Question)
+		// The job waits disabled until its row exists, so a scheduler tick in
+		// between cannot run it as an ordinary job. If the row fails, the job
+		// stays disabled and never runs.
+		jobID, err := h.Store.CreateJob(ctx, store.Job{Kind: "once", Spec: now.UTC().Format(time.RFC3339),
+			Prompt: ResearchPrompt(in.Label, q), Enabled: false, NextRun: now, Notify: store.NotifyNone,
+			CheckedIn: true, Profile: config.CompanionProfile})
+		if err != nil {
+			return err
+		}
+		if _, err := h.Store.AddCompanionRun(ctx, store.CompanionRun{InterestID: in.ID, Kind: store.RunResearch,
+			JobID: jobID, Question: q, Verdict: store.VerdictPending, StartedAt: now}); err != nil {
+			return err
+		}
+		if err := h.Store.SetJobEnabled(ctx, jobID, true); err != nil {
+			return err
+		}
+	case ActionFinding, ActionFollowup:
+		kind := store.OutreachFollowup
+		if d.Action == ActionFinding {
+			kind = store.OutreachFinding
+		}
+		var interestID int64
+		if in, ok := v.Interest(d.Interest); ok {
+			interestID = in.ID
+		}
+		o, err := h.Deliverer.Deliver(ctx, store.Outreach{InterestID: interestID, Kind: kind, Text: d.Message, SentAt: now})
+		if err != nil {
+			return err
+		}
+		if d.Action == ActionFinding {
+			if err := h.Store.SetCompanionRunsReported(ctx, uniqueIDs(d.Runs), o.ID); err != nil {
+				return err
+			}
+		}
+	case ActionDigest:
+		if err := h.sendDigest(ctx, d, v, now); err != nil {
 			return err
 		}
 	}
@@ -389,6 +759,60 @@ func (h *Heartbeat) apply(ctx context.Context, d Decision, v View, now time.Time
 	return nil
 }
 
+// sendDigest sends the morning digest. It covers the runs the digest names
+// and every held alert, folds in the nudges it names, and marks the day sent
+// only once the message is out.
+func (h *Heartbeat) sendDigest(ctx context.Context, d Decision, v View, now time.Time) error {
+	loc, err := h.Cfg.Companion.Location()
+	if err != nil {
+		return err
+	}
+	o, err := h.Deliverer.Deliver(ctx, store.Outreach{Kind: store.OutreachDigest, Text: d.Message, SentAt: now})
+	if err != nil {
+		return err
+	}
+	covered := uniqueIDs(d.Runs)
+	for _, r := range v.Runs {
+		if r.Held {
+			covered = append(covered, r.Run.ID)
+		}
+	}
+	if err := h.Store.SetCompanionRunsReported(ctx, uniqueIDs(covered), o.ID); err != nil {
+		return err
+	}
+	for _, id := range uniqueIDs(d.NudgeOf) {
+		orig, _ := v.UnansweredByID(id)
+		if _, err := h.Store.AddOutreach(ctx, store.Outreach{InterestID: orig.InterestID, Kind: store.OutreachNudge,
+			Channel: store.OutreachChannelDigest, Text: fmt.Sprintf("(folded into digest #%d)", o.ID),
+			NudgeOf: id, SentAt: now}); err != nil {
+			return err
+		}
+	}
+	if err := h.supersedeDigests(ctx, o.ID, now); err != nil {
+		return err
+	}
+	return h.Store.SetCompanionState(ctx, StateLastDigestDay, now.In(loc).Format("2006-01-02"))
+}
+
+// supersedeDigests ends every earlier digest still waiting for an answer. The
+// next digest replaces it, so no governor step: the user did not ignore it.
+func (h *Heartbeat) supersedeDigests(ctx context.Context, keep int64, now time.Time) error {
+	open, err := h.Store.OutreachByOutcome(ctx, store.OutcomePending, store.OutcomeUnanswered)
+	if err != nil {
+		return err
+	}
+	for _, o := range open {
+		if o.Kind != store.OutreachDigest || o.ID == keep {
+			continue
+		}
+		if _, err := h.Store.ResolveOutreach(ctx, o.ID, []string{store.OutcomePending, store.OutcomeUnanswered},
+			store.OutcomeIgnored, "superseded by the next digest", now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // summarize names what a decision did, for logs and status.
 func summarize(d Decision) string {
 	var s string
@@ -396,7 +820,15 @@ func summarize(d Decision) string {
 	case ActionPropose:
 		s = "propose " + d.Interest
 	case ActionNudge:
-		s = "nudge #" + strconv.FormatInt(d.NudgeOf, 10)
+		s = "nudge #" + strconv.FormatInt(d.NudgeOf[0], 10)
+	case ActionResearch:
+		s = "research " + d.Interest
+	case ActionFinding:
+		s = "finding"
+	case ActionFollowup:
+		s = "followup"
+	case ActionDigest:
+		s = "digest"
 	default:
 		s = "none"
 	}

@@ -288,4 +288,24 @@ CREATE TABLE IF NOT EXISTS companion_state (
   value      TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- companion_runs records each watch check and research run the companion
+-- started. Reports, the digest, and the sweep read it back. session_id has
+-- no foreign key on purpose: the row outlives a deleted run session.
+CREATE TABLE IF NOT EXISTS companion_runs (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  interest_id          INTEGER NOT NULL REFERENCES interests(id) ON DELETE CASCADE,
+  kind                 TEXT NOT NULL,
+  job_id               INTEGER NOT NULL,
+  session_id           TEXT NOT NULL DEFAULT '',
+  question             TEXT NOT NULL DEFAULT '',
+  verdict              TEXT NOT NULL,
+  started_at           TEXT NOT NULL,
+  finished_at          TEXT NOT NULL DEFAULT '',
+  reported_outreach_id INTEGER REFERENCES outreach(id) ON DELETE SET NULL,
+  seen_at              TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_companion_runs_started ON companion_runs(started_at);
+CREATE INDEX IF NOT EXISTS idx_companion_runs_job ON companion_runs(job_id);
 `
