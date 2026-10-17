@@ -1173,6 +1173,7 @@ To see it work without waiting three days, run one heartbeat now:
 spore companion check                                  # reflect now, ignoring pause and quiet hours
 spore companion check --promote topic:subagents        # treat an observed interest as a habit first
 spore companion check --promote topic:subagents --force  # and tell the model it must propose it
+spore companion check --research stock:zs                # start a research run for an active interest now
 ```
 
 In any chat (TUI, web, Discord, plain `spore chat`), `/companion` runs the same

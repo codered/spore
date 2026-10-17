@@ -109,6 +109,9 @@ type TickOptions struct {
 	Promote string
 	// Force tells the reflection it must propose Promote.
 	Force bool
+	// Research names an active interest the reflection must start a research
+	// run for. It cannot be combined with Promote or Force.
+	Research string
 }
 
 func (h *Heartbeat) now() time.Time {
@@ -152,6 +155,12 @@ func (h *Heartbeat) Tick(ctx context.Context) (string, error) {
 
 // TickWith runs one tick shaped by o. See TickOptions.
 func (h *Heartbeat) TickWith(ctx context.Context, o TickOptions) (string, error) {
+	if o.Research != "" && o.Promote != "" {
+		return "", fmt.Errorf("%w: --research cannot be combined with --promote", ErrBadCheck)
+	}
+	if o.Research != "" && o.Force {
+		return "", fmt.Errorf("%w: --research cannot be combined with --force", ErrBadCheck)
+	}
 	if o.Force && o.Promote == "" {
 		return "", fmt.Errorf("%w: force needs an interest to promote", ErrBadCheck)
 	}
@@ -182,6 +191,11 @@ func (h *Heartbeat) TickWith(ctx context.Context, o TickOptions) (string, error)
 			return "", err
 		}
 	}
+	if o.Research != "" {
+		if err := h.checkResearch(ctx, o.Research); err != nil {
+			return "", err
+		}
+	}
 	if !o.Manual {
 		paused, err := PausedUntil(ctx, h.Store)
 		if err != nil {
@@ -205,10 +219,13 @@ func (h *Heartbeat) TickWith(ctx context.Context, o TickOptions) (string, error)
 	if o.Force {
 		v.Force = o.Promote
 	}
+	if o.Research != "" {
+		v.ForceResearch = o.Research
+	}
 	// A decision the busy session refused is applied before the gate: it was
 	// made already, so the gate and the fingerprint do not decide it again.
 	// An operator's check that names an interest asks for a fresh answer.
-	if o.Promote == "" {
+	if o.Promote == "" && o.Research == "" {
 		res, settled, err := h.applySaved(ctx, v, now)
 		if err != nil {
 			return "", err
@@ -370,6 +387,22 @@ func (h *Heartbeat) promote(ctx context.Context, key string, now time.Time, loc 
 	}
 }
 
+// checkResearch refuses a research check that names no active interest. The
+// reflection can only research an active one.
+func (h *Heartbeat) checkResearch(ctx context.Context, key string) error {
+	in, ok, err := h.Store.InterestByKey(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: no interest %q (see spore companion interests)", ErrBadCheck, key)
+	}
+	if in.State != store.InterestActive {
+		return fmt.Errorf("%w: interest %s is %s; only an active interest can be researched", ErrBadCheck, key, in.State)
+	}
+	return nil
+}
+
 // resolveStale times out what the user did not answer: a message pending
 // for UnansweredAfter becomes unanswered (reflection decides what next), and
 // a nudge pending for NudgeIgnoredAfter ends itself and its original as
@@ -498,7 +531,7 @@ func (h *Heartbeat) view(ctx context.Context, now time.Time, loc *time.Location,
 	if err != nil {
 		return View{}, err
 	}
-	v.DigestDue = last != now.In(loc).Format("2006-01-02") && !o.Force
+	v.DigestDue = last != now.In(loc).Format("2006-01-02") && !o.Force && o.Research == ""
 	if err := h.viewRuns(ctx, &v, now, loc); err != nil {
 		return View{}, err
 	}

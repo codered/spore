@@ -21,7 +21,7 @@ import (
 // companion.Run, which the daemon's /companion also uses.
 func cmdCompanion(ctx context.Context, cfg *config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: spore companion status | interests | outreach | pause [duration] | resume | answer <id> yes|not-now|never | interests undecline <key> | check [--promote <key>] [--force]")
+		return fmt.Errorf("usage: spore companion status | interests | outreach | pause [duration] | resume | answer <id> yes|not-now|never | interests undecline <key> | check [--promote <key> [--force]] [--research <key>]")
 	}
 	switch args[0] {
 	case "answer":
@@ -62,19 +62,25 @@ func companionAnswer(ctx context.Context, cfg *config.Config, args []string) err
 // companionCheck runs one heartbeat in the daemon now, skipping pause, quiet
 // hours and the unchanged-state skip, and prints what it did. --promote
 // makes an observing interest a candidate first; --force also tells the
-// model it must propose it. What it sends is real: Yes starts a watch.
+// model it must propose it. --research tells the model to start a research
+// run for an active interest; it sends nothing. What it sends is real: Yes
+// starts a watch.
 func companionCheck(ctx context.Context, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("companion check", flag.ContinueOnError)
 	promote := fs.String("promote", "", "make this observing interest a candidate first")
 	force := fs.Bool("force", false, "tell the model it must propose the --promote interest")
+	research := fs.String("research", "", "tell the model to start a research run for this active interest")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("usage: spore companion check [--promote <key>] [--force]")
+		return fmt.Errorf("usage: spore companion check [--promote <key> [--force]] [--research <key>]")
 	}
 	if *force && *promote == "" {
 		return fmt.Errorf("--force needs --promote <key>")
+	}
+	if *research != "" && (*promote != "" || *force) {
+		return fmt.Errorf("--research cannot be combined with --promote or --force")
 	}
 	c, err := ensureDaemon(ctx, cfg)
 	if err != nil {
@@ -85,7 +91,7 @@ func companionCheck(ctx context.Context, cfg *config.Config, args []string) erro
 	var out struct {
 		Result string `json:"result"`
 	}
-	if err := c.doSlow(ctx, http.MethodPost, "/api/companion/check", map[string]any{"promote": *promote, "force": *force}, &out); err != nil {
+	if err := c.doSlow(ctx, http.MethodPost, "/api/companion/check", map[string]any{"promote": *promote, "force": *force, "research": *research}, &out); err != nil {
 		return err
 	}
 	fmt.Println(out.Result)

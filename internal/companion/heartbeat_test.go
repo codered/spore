@@ -471,6 +471,9 @@ func TestCheckRejectsBadOptions(t *testing.T) {
 	for name, o := range map[string]companion.TickOptions{
 		"force without promote": {Manual: true, Force: true},
 		"unknown key":           {Manual: true, Promote: "stock:nope"},
+		"research with promote": {Manual: true, Research: "stock:zs", Promote: "stock:zs"},
+		"research with force":   {Manual: true, Research: "stock:zs", Force: true},
+		"research unknown key":  {Manual: true, Research: "stock:nope"},
 	} {
 		if _, err := fx.h.TickWith(ctx, o); !errors.Is(err, companion.ErrBadCheck) {
 			t.Errorf("%s: err = %v, want ErrBadCheck", name, err)
@@ -484,6 +487,75 @@ func TestCheckRejectsBadOptions(t *testing.T) {
 	if len(fx.refl.inputs) != 0 {
 		t.Fatal("a rejected check reflected")
 	}
+}
+
+// researchReply asks for a research run on stock:zs.
+const researchReply = `{"action":"research","interest":"stock:zs","research":{"question":"what changed?"}}`
+
+func TestCheckResearch(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("an observing interest is refused, and its state named", func(t *testing.T) {
+		fx := newHeartbeat(t)
+		fx.observed(t, "stock:zs")
+		_, err := fx.h.TickWith(ctx, companion.TickOptions{Manual: true, Research: "stock:zs"})
+		if !errors.Is(err, companion.ErrBadCheck) || !strings.Contains(err.Error(), "observing") {
+			t.Fatalf("research on observing = %v, want ErrBadCheck naming observing", err)
+		}
+		if len(fx.refl.inputs) != 0 {
+			t.Fatal("a refused research check reflected")
+		}
+	})
+
+	t.Run("an active interest on a digest day starts the research run, not a digest", func(t *testing.T) {
+		fx := newHeartbeat(t)
+		fx.digestDue(t)
+		fx.activeWatch(t, "stock:zs")
+		fx.refl.replies = []string{researchReply}
+		res, err := fx.h.TickWith(ctx, companion.TickOptions{Manual: true, Research: "stock:zs"})
+		if err != nil || res != "research stock:zs" {
+			t.Fatalf("check = %q %v", res, err)
+		}
+		if len(fx.refl.inputs) != 1 || !strings.Contains(fx.refl.inputs[0], "## Operator check") ||
+			!strings.Contains(fx.refl.inputs[0], `"research"`) || !strings.Contains(fx.refl.inputs[0], "stock:zs") {
+			t.Fatalf("input = %v", fx.refl.inputs)
+		}
+		if len(fx.del.sent) != 0 {
+			t.Fatalf("sent %d messages, want none: research sends nothing", len(fx.del.sent))
+		}
+		runs, err := fx.st.CompanionRuns(ctx, time.Time{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var research int
+		for _, r := range runs {
+			if r.Kind == store.RunResearch {
+				research++
+			}
+		}
+		if research != 1 {
+			t.Fatalf("research runs = %d, want 1", research)
+		}
+		if fx.lastDigestDay(t) != "2026-10-11" {
+			t.Fatalf("last_digest_day = %q, want unchanged: no digest was sent", fx.lastDigestDay(t))
+		}
+	})
+
+	t.Run("a saved pending decision is not applied", func(t *testing.T) {
+		fx := newHeartbeat(t)
+		fx.activeWatch(t, "stock:zs")
+		saved := `{"decision":{"action":"none"},"saved_at":"` + fx.now.Format(time.RFC3339) + `"}`
+		if err := fx.st.SetCompanionState(ctx, companion.StatePendingDecision, saved); err != nil {
+			t.Fatal(err)
+		}
+		fx.refl.replies = []string{researchReply}
+		if res, err := fx.h.TickWith(ctx, companion.TickOptions{Manual: true, Research: "stock:zs"}); err != nil || res != "research stock:zs" {
+			t.Fatalf("check = %q %v, want a fresh research decision", res, err)
+		}
+		if len(fx.refl.inputs) != 1 {
+			t.Fatal("the saved decision settled the check without a fresh reflection")
+		}
+	})
 }
 
 func TestCheckIgnoresPauseQuietAndUnchangedButNotBudget(t *testing.T) {

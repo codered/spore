@@ -200,14 +200,15 @@ func (s *Server) handleCompanionCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Promote string `json:"promote"`
-		Force   bool   `json:"force"`
+		Promote  string `json:"promote"`
+		Force    bool   `json:"force"`
+		Research string `json:"research"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "decode body: %v", err)
 		return
 	}
-	res, err := s.heartbeat.TickWith(r.Context(), companion.TickOptions{Manual: true, Promote: body.Promote, Force: body.Force})
+	res, err := s.heartbeat.TickWith(r.Context(), companion.TickOptions{Manual: true, Promote: body.Promote, Force: body.Force, Research: body.Research})
 	switch {
 	case errors.Is(err, companion.ErrBadCheck):
 		writeError(w, http.StatusBadRequest, "%v", err)

@@ -308,6 +308,21 @@ func TestCheckRouteRunsOneTick(t *testing.T) {
 	}
 }
 
+func TestCompanionCheckResearchBadRequest(t *testing.T) {
+	s, ts := newTestServer(t)
+	s.cfg.Companion.Enabled = true
+	s.cfg.Companion.Timezone = "UTC"
+	s.AttachCompanion(companion.NewService(s.store, s.cfg))
+	s.AttachHeartbeat(&companion.Heartbeat{Store: s.store, Cfg: s.cfg, Recorder: companion.NewRecorder(s.store, s.cfg),
+		Reflector: &noneReflector{}, Deliverer: s.CompanionDeliverer(), Now: time.Now})
+
+	res := postJSON(t, ts.URL+"/api/companion/check", map[string]any{"research": "nope"})
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("research on an unknown interest = %d, want 400", res.StatusCode)
+	}
+}
+
 func TestCheckRouteWithoutCompanionIs503(t *testing.T) {
 	_, ts := newTestServer(t)
 	res := postJSON(t, ts.URL+"/api/companion/check", map[string]any{})
