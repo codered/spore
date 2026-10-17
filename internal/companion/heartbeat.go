@@ -361,7 +361,7 @@ func (h *Heartbeat) apply(ctx context.Context, d Decision, v View, now time.Time
 			return err
 		}
 	case ActionNudge:
-		orig, _ := v.UnansweredByID(d.NudgeOf)
+		orig, _ := v.UnansweredByID(d.NudgeOf[0])
 		if _, err := h.Deliverer.Deliver(ctx, store.Outreach{InterestID: orig.InterestID, Kind: store.OutreachNudge,
 			Text: d.Message, NudgeOf: orig.ID, SentAt: now}); err != nil {
 			return err
@@ -399,7 +399,7 @@ func summarize(d Decision) string {
 	case ActionPropose:
 		s = "propose " + d.Interest
 	case ActionNudge:
-		s = "nudge #" + strconv.FormatInt(d.NudgeOf, 10)
+		s = "nudge #" + strconv.FormatInt(d.NudgeOf[0], 10)
 	default:
 		s = "none"
 	}
