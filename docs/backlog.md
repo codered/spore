@@ -481,3 +481,39 @@ out of it:
    over time. Open questions: whether it is wanted at all once `self.md` and
    initiative exist, how it stays subordinate to `soul.md`, and how the user
    sees and resets it.
+
+## A turn typed in the TUI never reaches the session's Discord thread
+
+Asked for 2026-10-17. Opening a Discord-bound session in the TUI (or web UI)
+and typing into it runs the turn, but the reply stays local: nothing is
+posted to the thread the session is bound to. The user wants the opposite --
+and, beyond that, a way to start a Discord thread from the local side as an
+agent with a given opening prompt, so the whole conversation lives upstream.
+
+Why it happens: the bridge renders a turn into Discord only when it started
+the turn itself (`Bridge.startTurn`, from a Discord message) or when the
+daemon asks it to follow one through `Notifier.Follow`, which today is called
+only for a job's check-in (`internal/bridge/discord/bridge.go`, `Follow`).
+`POST /api/sessions/{id}/messages` from the TUI starts the turn with no
+notifier, so a bound session's turn is never followed.
+
+Open questions:
+
+1. **Mirror every turn of a bound session, or opt in?** Following all turns
+   in a bound session is the smallest change (call `Follow` from the turn
+   start path when a binding exists). But it would post the local user's
+   message nowhere -- Discord would show replies to prompts it never saw.
+   Echo the prompt as a quiet "› typed locally: …" line first?
+2. **Profile.** A TUI turn runs under the local profile; a Discord turn under
+   `remote`. Mirroring the output of a local-profile turn into a shared
+   channel may leak what the remote profile is meant to keep out (file
+   contents, shell output). Should a mirrored turn run under `remote`, or
+   should only the final reply (no tool lines) go upstream?
+3. **Starting a thread from the local side.** A `/thread <prompt>` (TUI,
+   web, CLI `spore thread`) that creates a thread in a configured channel,
+   binds a new session to it, and runs the prompt as the first turn there.
+   Which channel by default (`[companion.discord].channel_id`, or a new
+   `[discord].default_channel`)? Thread name from the prompt or from the
+   session titler?
+4. **Approvals.** A mirrored turn that asks for approval: card in both
+   places, first answer wins (the broker already settles once)?
