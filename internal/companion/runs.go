@@ -45,11 +45,10 @@ func ParseVerdict(reply string) Verdict {
 	}
 	line := strings.TrimLeft(lines[first], "*#_> \t")
 	rest := strings.Join(lines[first+1:], "\n")
-	switch {
-	case hasMarker(line, "NOTHING:"):
-		return Verdict{Kind: store.VerdictNothing, Message: markerText(line, "NOTHING:")}
-	case hasMarker(line, "ALERT:"):
-		msg := markerText(line, "ALERT:")
+	if msg, ok := markerText(line, "NOTHING"); ok {
+		return Verdict{Kind: store.VerdictNothing, Message: msg}
+	}
+	if msg, ok := markerText(line, "ALERT"); ok {
 		if rest != "" {
 			msg += "\n" + rest
 		}
@@ -74,16 +73,18 @@ func stripFence(s string) string {
 	return s
 }
 
-// hasMarker reports whether line starts with marker, ignoring case.
-func hasMarker(line, marker string) bool {
-	return len(line) >= len(marker) && strings.EqualFold(line[:len(marker)], marker)
-}
-
-// markerText returns the text after a marker on its line, without the
-// emphasis marks that may wrap the colon.
-func markerText(line, marker string) string {
-	rest := strings.TrimLeft(line[len(marker):], "*_")
-	return strings.TrimSpace(rest)
+// markerText reports whether line starts with word followed by a colon, and
+// returns the text after that colon. Emphasis marks may sit between the word
+// and the colon, as in **NOTHING**: or __ALERT__:, and after it.
+func markerText(line, word string) (string, bool) {
+	if len(line) < len(word) || !strings.EqualFold(line[:len(word)], word) {
+		return "", false
+	}
+	rest := strings.TrimLeft(line[len(word):], "*_")
+	if !strings.HasPrefix(rest, ":") {
+		return "", false
+	}
+	return strings.TrimSpace(strings.TrimLeft(rest[1:], "*_")), true
 }
 
 // ResearchPrompt is what a research run is told: the question, framed so the

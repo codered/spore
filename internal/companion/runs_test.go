@@ -23,6 +23,8 @@ func TestParseVerdict(t *testing.T) {
 		{"leading blank lines", "\n\n  NOTHING: z", store.VerdictNothing, "z"},
 		{"no marker", "no marker here", store.VerdictAlert, "no marker here"},
 		{"empty", "", store.VerdictAlert, ""},
+		{"bold nothing before colon", "**NOTHING**: flat day", store.VerdictNothing, "flat day"},
+		{"underscore alert before colon", "__ALERT__: x", store.VerdictAlert, "x"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -43,6 +45,15 @@ func TestAlertTextClips(t *testing.T) {
 	short := "ZS fell 6%"
 	if got := companion.AlertText(short); got != short {
 		t.Fatalf("AlertText(short) = %q, want unchanged", got)
+	}
+	exact := strings.Repeat("a", 1200)
+	if got := companion.AlertText(exact); got != exact {
+		t.Fatalf("AlertText(exactly 1200 runes) changed, want unchanged")
+	}
+	multi := strings.Repeat("é", 1300)
+	wantMulti := strings.Repeat("é", 1200) + "\n\n· the rest is in the Jobs folder"
+	if got := companion.AlertText(multi); got != wantMulti {
+		t.Fatalf("AlertText(1300 multi-byte runes) = %d runes, want 1200 é plus footer", len([]rune(got)))
 	}
 }
 
