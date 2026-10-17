@@ -3,6 +3,7 @@ package companion_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -276,7 +277,7 @@ func TestTickBusyIsNotAFailure(t *testing.T) {
 	fx.refl.replies = []string{proposeZS}
 	fx.del.err = companion.ErrBusy
 	res, err := fx.h.Tick(ctx)
-	if err != nil || res != "companion session busy" {
+	if err != nil || res != "companion session busy (decision saved)" {
 		t.Fatalf("tick = %q %v", res, err)
 	}
 	if v, _, _ := fx.st.CompanionState(ctx, companion.StateFailures); v == "1" {
@@ -971,4 +972,171 @@ func TestFollowupSubjects(t *testing.T) {
 			t.Fatal("a reacted message did not clear the idle line")
 		}
 	})
+}
+
+// markDigestSent records fx.now's day as the day the digest went out.
+func markDigestSent(t *testing.T, fx *hbFixture) {
+	t.Helper()
+	if err := fx.st.SetCompanionState(context.Background(), companion.StateLastDigestDay, fx.now.In(time.UTC).Format("2006-01-02")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const nudgeOfZero = `{"action":"nudge","nudge_of":[%d],"message":"Still there? Last week's note is waiting."}`
+
+func TestRepliedProposalReturnsToCandidateAfterADay(t *testing.T) {
+	ctx := context.Background()
+	fx := newHeartbeat(t)
+	fx.candidate(t, "stock:zs")
+	fx.refl.replies = []string{proposeZS}
+	if _, err := fx.h.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	sent := fx.del.sent[0]
+	if moved, err := fx.st.ResolveOutreach(ctx, sent.ID, []string{store.OutcomePending}, store.OutcomeReplied, "", fx.now); err != nil || !moved {
+		t.Fatalf("resolve replied = %v %v", moved, err)
+	}
+
+	// Each step crosses into a new day, so mark that day's digest as sent:
+	// the digest slot would otherwise take the tick.
+	fx.now = fx.now.Add(23 * time.Hour)
+	markDigestSent(t, fx)
+	if _, err := fx.h.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := fx.st.InterestByKey(ctx, "stock:zs"); got.State != store.InterestProposed {
+		t.Fatalf("after 23h interest = %s, want proposed", got.State)
+	}
+
+	fx.now = fx.now.Add(2 * time.Hour)
+	markDigestSent(t, fx)
+	if _, err := fx.h.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := fx.st.InterestByKey(ctx, "stock:zs")
+	if got.State != store.InterestCandidate {
+		t.Fatalf("after 25h interest = %s, want candidate", got.State)
+	}
+	if !got.CooldownUntil.Equal(fx.now.Add(companion.ReturnCooldown)) {
+		t.Fatalf("cooldown = %s, want %s", got.CooldownUntil, fx.now.Add(companion.ReturnCooldown))
+	}
+}
+
+func TestBusyDecisionIsAppliedNextTickWithoutAModelCall(t *testing.T) {
+	ctx := context.Background()
+	fx := newHeartbeat(t)
+	fx.candidate(t, "stock:zs")
+	fx.refl.replies = []string{proposeZS}
+	fx.del.err = companion.ErrBusy
+	if res, err := fx.h.Tick(ctx); err != nil || res != "companion session busy (decision saved)" {
+		t.Fatalf("busy tick = %q %v", res, err)
+	}
+	if v, _, _ := fx.st.CompanionState(ctx, companion.StatePendingDecision); v == "" {
+		t.Fatal("busy decision was not saved")
+	}
+
+	fx.del.err = nil
+	if res, err := fx.h.Tick(ctx); err != nil || res != "propose stock:zs (saved decision)" {
+		t.Fatalf("next tick = %q %v", res, err)
+	}
+	if len(fx.refl.inputs) != 1 {
+		t.Fatalf("model called %d times, want 1 (the busy tick only)", len(fx.refl.inputs))
+	}
+	if len(fx.del.sent) != 1 || fx.del.sent[0].Kind != store.OutreachProposal {
+		t.Fatalf("sent = %+v, want one proposal", fx.del.sent)
+	}
+	if got, _, _ := fx.st.InterestByKey(ctx, "stock:zs"); got.State != store.InterestProposed {
+		t.Fatalf("interest = %s, want proposed", got.State)
+	}
+	if v, _, _ := fx.st.CompanionState(ctx, companion.StatePendingDecision); v != "" {
+		t.Fatalf("saved decision still stored: %s", v)
+	}
+}
+
+func TestSavedDecisionDiscardedWhenStaleOrInvalid(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("stale", func(t *testing.T) {
+		fx := newHeartbeat(t)
+		// 08:30 UTC: thirteen hours later is 21:30, outside quiet hours.
+		fx.now = time.Date(2026, 10, 12, 8, 30, 0, 0, time.UTC)
+		fx.candidate(t, "stock:zs")
+		fx.refl.replies = []string{proposeZS}
+		fx.del.err = companion.ErrBusy
+		if _, err := fx.h.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		fx.now = fx.now.Add(13 * time.Hour)
+		fx.del.err = nil
+		if _, err := fx.h.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if len(fx.refl.inputs) != 2 {
+			t.Fatalf("model called %d times, want 2: the stale decision must not be applied", len(fx.refl.inputs))
+		}
+		if len(fx.del.sent) != 0 {
+			t.Fatal("a stale decision was sent")
+		}
+		if v, _, _ := fx.st.CompanionState(ctx, companion.StatePendingDecision); v != "" {
+			t.Fatalf("stale decision still stored: %s", v)
+		}
+	})
+
+	t.Run("target answered", func(t *testing.T) {
+		fx := newHeartbeat(t)
+		fx.now = time.Date(2026, 10, 12, 8, 30, 0, 0, time.UTC)
+		fx.candidate(t, "stock:zs")
+		// Sent 13 hours ago, so the busy tick times it out to unanswered.
+		id, err := fx.st.AddOutreach(ctx, store.Outreach{Kind: store.OutreachFinding, Text: "earlier",
+			SentAt: fx.now.Add(-13 * time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fx.refl.replies = []string{fmt.Sprintf(nudgeOfZero, id)}
+		fx.del.err = companion.ErrBusy
+		if res, err := fx.h.Tick(ctx); err != nil || res != "companion session busy (decision saved)" {
+			t.Fatalf("busy tick = %q %v", res, err)
+		}
+		if moved, err := fx.st.ResolveOutreach(ctx, id, []string{store.OutcomeUnanswered}, store.OutcomeReplied, "", fx.now); err != nil || !moved {
+			t.Fatalf("resolve replied = %v %v", moved, err)
+		}
+		fx.del.err = nil
+		if _, err := fx.h.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if len(fx.refl.inputs) != 2 {
+			t.Fatalf("model called %d times, want 2: the invalid decision must be discarded", len(fx.refl.inputs))
+		}
+		if len(fx.del.sent) != 0 {
+			t.Fatal("an invalid decision was sent")
+		}
+		if v, _, _ := fx.st.CompanionState(ctx, companion.StatePendingDecision); v != "" {
+			t.Fatalf("invalid decision still stored: %s", v)
+		}
+	})
+}
+
+func TestOperatorPromoteLeavesSavedDecisionAndReflects(t *testing.T) {
+	ctx := context.Background()
+	fx := newHeartbeat(t)
+	fx.candidate(t, "stock:zs")
+	fx.refl.replies = []string{proposeZS}
+	fx.del.err = companion.ErrBusy
+	if _, err := fx.h.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fx.del.err = nil
+	res, err := fx.h.TickWith(ctx, companion.TickOptions{Manual: true, Promote: "stock:zs", Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fx.refl.inputs) != 2 {
+		t.Fatalf("model called %d times, want 2: a forced check reflects", len(fx.refl.inputs))
+	}
+	if strings.Contains(res, "saved decision") {
+		t.Fatalf("forced check applied the saved decision: %q", res)
+	}
+	if v, _, _ := fx.st.CompanionState(ctx, companion.StatePendingDecision); v == "" {
+		t.Fatal("forced check cleared the saved decision")
+	}
 }

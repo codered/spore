@@ -20,6 +20,9 @@ const (
 	// StateLastDigestDay is the local day (2006-01-02) the morning digest
 	// was last sent.
 	StateLastDigestDay = "last_digest_day"
+	// StatePendingDecision holds a reflection decision the busy session
+	// refused, as JSON. The next tick applies it or discards it.
+	StatePendingDecision = "pending_decision"
 )
 
 // LoadBudget is the governor's budget: the stored value, or start when none

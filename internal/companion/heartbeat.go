@@ -22,9 +22,15 @@ import (
 const (
 	UnansweredAfter   = 12 * time.Hour
 	NudgeIgnoredAfter = 24 * time.Hour
-	NotNowCooldown    = 14 * 24 * time.Hour
-	ReturnCooldown    = 7 * 24 * time.Hour
-	RecentOutreach    = 7 * 24 * time.Hour
+	// RepliedProposalReturn is how long a proposal answered in text may
+	// stay proposed before it goes back to candidate.
+	RepliedProposalReturn = 24 * time.Hour
+	// PendingDecisionMaxAge is how old a saved busy decision may be and
+	// still be applied.
+	PendingDecisionMaxAge = 12 * time.Hour
+	NotNowCooldown        = 14 * 24 * time.Hour
+	ReturnCooldown        = 7 * 24 * time.Hour
+	RecentOutreach        = 7 * 24 * time.Hour
 	// FailureWarning is how many reflections in a row may fail before
 	// status warns about it.
 	FailureWarning = 3
@@ -197,6 +203,18 @@ func (h *Heartbeat) TickWith(ctx context.Context, o TickOptions) (string, error)
 	if o.Force {
 		v.Force = o.Promote
 	}
+	// A decision the busy session refused is applied before the gate: it was
+	// made already, so the gate and the fingerprint do not decide it again.
+	// An operator's check that names an interest asks for a fresh answer.
+	if o.Promote == "" {
+		res, settled, err := h.applySaved(ctx, v, now)
+		if err != nil {
+			return "", err
+		}
+		if settled {
+			return res, nil
+		}
+	}
 	if !Eligible(v) {
 		return "nothing to decide", nil
 	}
@@ -225,8 +243,12 @@ func (h *Heartbeat) TickWith(ctx context.Context, o TickOptions) (string, error)
 	}
 	if err := h.apply(ctx, d, v, now); err != nil {
 		if errors.Is(err, ErrBusy) {
-			// The user is talking to spore right now; the next tick asks again.
-			return "companion session busy", nil
+			// The user is talking to spore right now. Keep the decision: the
+			// next tick applies it without asking the model again.
+			if err := h.saveDecision(ctx, d, now); err != nil {
+				return "", h.fail(ctx, now, fmt.Errorf("save busy decision: %w", err))
+			}
+			return "companion session busy (decision saved)", nil
 		}
 		return "", h.fail(ctx, now, err)
 	}
@@ -236,6 +258,61 @@ func (h *Heartbeat) TickWith(ctx context.Context, o TickOptions) (string, error)
 	}
 	res := summarize(d)
 	return res, h.succeed(ctx, now, fp, res)
+}
+
+// savedDecision is a reflection decision that a busy session refused.
+type savedDecision struct {
+	Decision Decision  `json:"decision"`
+	SavedAt  time.Time `json:"saved_at"`
+}
+
+// saveDecision keeps d, made at now, for the next tick.
+func (h *Heartbeat) saveDecision(ctx context.Context, d Decision, now time.Time) error {
+	b, err := json.Marshal(savedDecision{Decision: d, SavedAt: now})
+	if err != nil {
+		return err
+	}
+	return h.Store.SetCompanionState(ctx, StatePendingDecision, string(b))
+}
+
+// clearDecision forgets the saved decision. An empty value means none saved.
+func (h *Heartbeat) clearDecision(ctx context.Context) error {
+	return h.Store.SetCompanionState(ctx, StatePendingDecision, "")
+}
+
+// applySaved applies the saved decision against the fresh view v. It reports
+// the tick's result and true when the decision settled the tick. A decision
+// that is too old, that v no longer allows, or that cannot be read is
+// discarded, and the tick goes on as usual.
+func (h *Heartbeat) applySaved(ctx context.Context, v View, now time.Time) (string, bool, error) {
+	raw, _, err := h.Store.CompanionState(ctx, StatePendingDecision)
+	if err != nil {
+		return "", false, err
+	}
+	if raw == "" {
+		return "", false, nil
+	}
+	var s savedDecision
+	if err := json.Unmarshal([]byte(raw), &s); err != nil || now.Sub(s.SavedAt) > PendingDecisionMaxAge || Validate(s.Decision, v) != nil {
+		return "", false, h.clearDecision(ctx)
+	}
+	fp := Fingerprint(v)
+	switch err := h.apply(ctx, s.Decision, v, now); {
+	case errors.Is(err, ErrBusy):
+		// Still busy: keep the decision for the next tick.
+		return "companion session busy", true, nil
+	case err != nil:
+		_ = h.clearDecision(ctx)
+		return "", true, h.fail(ctx, now, err)
+	}
+	if err := h.clearDecision(ctx); err != nil {
+		return "", true, err
+	}
+	if err := h.Store.SetCompanionRunsSeen(ctx, runIDs(v.Runs), now); err != nil {
+		return "", true, h.fail(ctx, now, err)
+	}
+	res := summarize(s.Decision) + " (saved decision)"
+	return res, true, h.succeed(ctx, now, fp, res)
 }
 
 // housekeep fails research runs that never finished, forgets runs past their
@@ -328,6 +405,20 @@ func (h *Heartbeat) resolveStale(ctx context.Context, now time.Time) error {
 			if err := returnProposal(ctx, h.Store, orig, now); err != nil {
 				return err
 			}
+		}
+	}
+	// A proposal answered in text never resolves its interest. Once it has
+	// waited RepliedProposalReturn, it goes back to candidate.
+	replied, err := h.Store.OutreachByOutcome(ctx, store.OutcomeReplied)
+	if err != nil {
+		return err
+	}
+	for _, o := range replied {
+		if o.Kind != store.OutreachProposal || o.ResolvedAt.After(now.Add(-RepliedProposalReturn)) {
+			continue
+		}
+		if err := returnProposal(ctx, h.Store, o, now); err != nil {
+			return err
 		}
 	}
 	return nil
