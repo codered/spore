@@ -202,9 +202,12 @@ func (h *Heartbeat) RunFinished(ctx context.Context, job store.Job, sessionID st
 func (h *Heartbeat) recordWatchRun(ctx context.Context, in store.Interest, job store.Job, sessionID string, ok bool, now time.Time) string {
 	verdict := store.VerdictFailed
 	if ok {
+		// A finished run with an unreadable reply still alerts, so the user
+		// hears of it; the alert carries the no-details text.
+		verdict = store.VerdictAlert
 		reply, err := schedule.LastReply(ctx, h.Store, sessionID)
 		if err != nil {
-			slog.Warn("companion: could not read the watch run's reply; the run counts as failed", "job", job.ID, "err", err)
+			slog.Warn("companion: could not read the watch run's reply; alerting without its details", "job", job.ID, "err", err)
 		} else {
 			verdict = ParseVerdict(reply).Kind
 		}
@@ -246,11 +249,14 @@ func (h *Heartbeat) deliverAlert(ctx context.Context, run store.CompanionRun, no
 	if err != nil || held {
 		return false, err
 	}
+	var msg string
 	reply, err := schedule.LastReply(ctx, h.Store, run.SessionID)
 	if err != nil {
-		return false, fmt.Errorf("read the alert's reply: %w", err)
+		// Send the no-details text rather than hold an alert the user needs.
+		slog.Warn("companion: could not re-read the alert's reply; alerting without its details", "run", run.ID, "err", err)
+	} else {
+		msg = strings.TrimSpace(ParseVerdict(reply).Message)
 	}
-	msg := strings.TrimSpace(ParseVerdict(reply).Message)
 	text := AlertText(msg)
 	if msg == "" {
 		text = h.alertLabel(ctx, run.InterestID) + " watch raised an alert with no details · see the Jobs folder"
@@ -263,8 +269,12 @@ func (h *Heartbeat) deliverAlert(ctx context.Context, run store.CompanionRun, no
 	if err != nil {
 		return false, fmt.Errorf("deliver alert: %w", err)
 	}
+	// The alert is sent before the run is marked reported. Marking first would
+	// lose the alert if the send failed, which is worse than a duplicate. If the
+	// mark fails, the run stays held and a retry sends it again: one duplicate.
 	if err := h.Store.SetCompanionRunsReported(ctx, []int64{run.ID}, o.ID); err != nil {
-		return true, err
+		slog.Error("companion: alert sent but its run is not marked reported; a retry may send it again",
+			"run", run.ID, "outreach", o.ID, "err", err)
 	}
 	return true, nil
 }

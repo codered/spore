@@ -356,3 +356,32 @@ func TestDisabledCompanionLeavesJobsAlone(t *testing.T) {
 		t.Fatalf("runs = %+v while disabled, want none", runs)
 	}
 }
+
+// TestUnreadableWatchReplyStillAlerts: a run that finished ok but whose reply
+// cannot be read still alerts, with the no-details text, and is not a failure.
+func TestUnreadableWatchReplyStillAlerts(t *testing.T) {
+	ctx := context.Background()
+	fx := newHeartbeat(t)
+	in, job := fx.activeWatch(t, "stock:zs")
+	run := fx.runSession(t)
+	if _, err := fx.st.AppendMessage(ctx, store.Message{SessionID: run,
+		Role: string(provider.RoleAssistant), BlocksJSON: []byte("not json")}); err != nil {
+		t.Fatal(err)
+	}
+
+	handled, failNote := fx.h.RunFinished(ctx, job, run, true)
+	if !handled || failNote {
+		t.Fatalf("RunFinished = %v %v, want handled and no fail note", handled, failNote)
+	}
+	if len(fx.del.sent) != 1 {
+		t.Fatalf("delivered %d, want 1 no-details alert", len(fx.del.sent))
+	}
+	want := in.Label + " watch raised an alert with no details · see the Jobs folder"
+	if got := fx.del.sent[0].Text; got != want {
+		t.Fatalf("text = %q, want %q", got, want)
+	}
+	runs := fx.watchRuns(t)
+	if len(runs) != 1 || runs[0].Verdict != store.VerdictAlert || runs[0].ReportedOutreachID != fx.del.sent[0].ID {
+		t.Fatalf("runs = %+v, want one alert reported by outreach %d", runs, fx.del.sent[0].ID)
+	}
+}
