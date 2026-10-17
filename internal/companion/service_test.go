@@ -63,7 +63,7 @@ func TestAnswerProposalYesCreatesTheWatch(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("job: %v %v", ok, err)
 	}
-	if job.Profile != config.CompanionProfile || job.Notify != store.NotifyEach || !job.CheckedIn ||
+	if job.Profile != config.CompanionProfile || job.Notify != store.NotifyNone || !job.CheckedIn ||
 		job.OriginSessionID != fx.sid || job.Spec != "0 14 * * 1-5" || !job.Enabled ||
 		!strings.Contains(job.Prompt, in.Label) || !strings.Contains(job.Prompt, "Check it.") {
 		t.Fatalf("watch job = %+v", job)

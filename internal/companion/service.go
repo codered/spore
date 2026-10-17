@@ -138,7 +138,7 @@ func (s *Service) startWatch(ctx context.Context, in store.Interest, o store.Out
 	}
 	jobID, err := s.Store.CreateJob(ctx, store.Job{
 		Kind: sched.Kind(), Spec: strings.TrimSpace(w.Cron), Prompt: WatchPrompt(in.Label, w.Goal), Enabled: true,
-		NextRun: next, OriginSessionID: origin, Notify: store.NotifyEach, CheckedIn: true,
+		NextRun: next, OriginSessionID: origin, Notify: store.NotifyNone, CheckedIn: true,
 		Profile: config.CompanionProfile,
 	})
 	if err != nil {
@@ -154,7 +154,7 @@ func (s *Service) startWatch(ctx context.Context, in store.Interest, o store.Out
 		}
 		return "", fmt.Errorf("%w: %s changed while answering", ErrNotProposal, in.Key)
 	}
-	return fmt.Sprintf("Watching %s (job %d, cron %s UTC). Every run will land here.", in.Label, jobID, w.Cron), nil
+	return fmt.Sprintf("Watching %s (job %d, cron %s UTC). I'll tell you here when a run finds something worth it.", in.Label, jobID, w.Cron), nil
 }
 
 // IsCompanionSession reports whether sessionID is the companion's session.
