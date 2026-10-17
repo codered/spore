@@ -94,12 +94,24 @@ func writeStatus(ctx context.Context, w io.Writer, svc *Service) error {
 		return err
 	}
 	_, _ = fmt.Fprintf(w, "companion: %s\n", state)
-	if !s.PausedUntil.IsZero() && time.Now().Before(s.PausedUntil) {
+	paused := !s.PausedUntil.IsZero() && svc.Now().Before(s.PausedUntil)
+	if paused {
 		_, _ = fmt.Fprintf(w, "           paused until %s\n", s.PausedUntil.In(loc).Format("Mon 2006-01-02 15:04"))
 	}
 	_, _ = fmt.Fprintf(w, "channel:   %s\n", s.Channel)
 	_, _ = fmt.Fprintf(w, "timezone:  %s (habit_days %d, quiet %s)\n", loc, c.HabitDays, c.QuietHours)
 	_, _ = fmt.Fprintf(w, "budget:    %.2f a day, %d of %d sent today\n", s.Budget, s.SpentToday, int(s.Budget))
+	_, _ = fmt.Fprintf(w, "digest:    %s\n", digestState(s, paused, loc))
+	research := fmt.Sprintf("%d of %d today", s.ResearchToday, ResearchPerDay)
+	if s.ResearchRunning > 0 {
+		research += fmt.Sprintf(", %d running", s.ResearchRunning)
+	}
+	_, _ = fmt.Fprintf(w, "research:  %s\n", research)
+	alerts := fmt.Sprintf("%d of %d today", s.AlertsToday, s.AlertBudget)
+	if s.AlertsHeld > 0 {
+		alerts += fmt.Sprintf(", %d held", s.AlertsHeld)
+	}
+	_, _ = fmt.Fprintf(w, "alerts:    %s\n", alerts)
 	last := "never"
 	switch {
 	case !s.LastReflection.IsZero():
@@ -131,6 +143,20 @@ func writeStatus(ctx context.Context, w io.Writer, svc *Service) error {
 	}
 	_, _ = fmt.Fprintln(w)
 	return nil
+}
+
+// digestState says where today's digest stands. Paused wins over the rest.
+func digestState(s Status, paused bool, loc *time.Location) string {
+	switch {
+	case paused:
+		return "paused"
+	case !s.DigestSentAt.IsZero():
+		return "sent " + s.DigestSentAt.In(loc).Format("15:04")
+	case s.DigestDue:
+		return "due"
+	default:
+		return "none today"
+	}
 }
 
 // writeOutreach lists the last week's outreach, oldest first.

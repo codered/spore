@@ -162,3 +162,73 @@ func TestRunRejectsMalformedLines(t *testing.T) {
 		}
 	}
 }
+
+func TestStatusPrintsDigestResearchAlerts(t *testing.T) {
+	ctx := context.Background()
+	// 12:00 on 2026-10-17 in Los Angeles (PDT), so the day started at 00:00 PDT.
+	now := time.Date(2026, 10, 17, 19, 0, 0, 0, time.UTC)
+	today := "2026-10-17"
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, svc *companion.Service, st *store.Store)
+		want  []string
+	}{
+		{
+			name: "sent",
+			setup: func(t *testing.T, svc *companion.Service, st *store.Store) {
+				in, _ := st.TouchInterest(ctx, "stock:zs", "ZS")
+				_ = st.SetCompanionState(ctx, companion.StateLastDigestDay, today)
+				_, _ = st.AddOutreach(ctx, store.Outreach{Kind: store.OutreachDigest, Text: "morning",
+					SentAt: time.Date(2026, 10, 17, 15, 2, 0, 0, time.UTC)})
+				_, _ = st.AddCompanionRun(ctx, store.CompanionRun{InterestID: in.ID, Kind: store.RunResearch,
+					Question: "q1", Verdict: store.VerdictDone, StartedAt: now.Add(-3 * time.Hour)})
+				_, _ = st.AddCompanionRun(ctx, store.CompanionRun{InterestID: in.ID, Kind: store.RunResearch,
+					Question: "q2", Verdict: store.VerdictPending, StartedAt: now.Add(-time.Hour)})
+				_, _ = st.AddOutreach(ctx, store.Outreach{Kind: store.OutreachAlert, Text: "moved",
+					SentAt: now.Add(-2 * time.Hour)})
+				_, _ = st.AddCompanionRun(ctx, store.CompanionRun{InterestID: in.ID, Kind: store.RunWatch,
+					Question: "w", Verdict: store.VerdictAlert, StartedAt: now.Add(-time.Hour), FinishedAt: now.Add(-time.Hour)})
+			},
+			want: []string{
+				"digest:    sent 08:02\n",
+				"research:  2 of 6 today, 1 running\n",
+				"alerts:    1 of 3 today, 1 held\n",
+			},
+		},
+		{
+			name:  "due",
+			setup: func(t *testing.T, svc *companion.Service, st *store.Store) {},
+			want: []string{
+				"digest:    due\n",
+				"research:  0 of 6 today\n",
+				"alerts:    0 of 3 today\n",
+			},
+		},
+		{
+			name: "paused",
+			setup: func(t *testing.T, svc *companion.Service, st *store.Store) {
+				_ = st.SetCompanionState(ctx, companion.StateLastDigestDay, today)
+				_ = companion.SetPausedUntil(ctx, st, now.Add(time.Hour))
+			},
+			want: []string{
+				"digest:    paused\n",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, st := cmdFixture(t)
+			svc.Now = func() time.Time { return now }
+			tc.setup(t, svc, st)
+			out, err := runCmd(t, svc, "status")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("status missing %q:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
