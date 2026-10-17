@@ -177,6 +177,22 @@ func (s *Store) NudgeFor(ctx context.Context, id int64) (Outreach, bool, error) 
 	return o, true, nil
 }
 
+// LatestProposal returns the newest proposal sent about interestID, if there
+// is one. Newest means the highest id: a later proposal supersedes an earlier
+// one about the same interest.
+func (s *Store) LatestProposal(ctx context.Context, interestID int64) (Outreach, bool, error) {
+	o, err := scanOutreach(s.db.QueryRowContext(ctx,
+		`SELECT `+outreachColumns+` FROM outreach WHERE kind = ? AND interest_id = ? ORDER BY id DESC LIMIT 1`,
+		OutreachProposal, interestID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Outreach{}, false, nil
+	}
+	if err != nil {
+		return Outreach{}, false, fmt.Errorf("read latest proposal of interest %d: %w", interestID, err)
+	}
+	return o, true, nil
+}
+
 // ResolveOutreach moves an outreach to outcome `to` when its outcome is one
 // of from, and reports whether it moved. The from check makes a second,
 // racing resolution -- two button presses, a reply and a timeout -- a no-op.

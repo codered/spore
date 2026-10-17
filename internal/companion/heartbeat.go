@@ -23,7 +23,9 @@ const (
 	UnansweredAfter   = 12 * time.Hour
 	NudgeIgnoredAfter = 24 * time.Hour
 	// RepliedProposalReturn is how long a proposal answered in text may
-	// stay proposed before it goes back to candidate.
+	// stay proposed before it goes back to candidate. Replied rows are
+	// scanned on every tick, and only the interest's newest proposal counts:
+	// an older replied row never returns a re-proposed interest.
 	RepliedProposalReturn = 24 * time.Hour
 	// PendingDecisionMaxAge is how old a saved busy decision may be and
 	// still be applied.
@@ -302,11 +304,15 @@ func (h *Heartbeat) applySaved(ctx context.Context, v View, now time.Time) (stri
 		// Still busy: keep the decision for the next tick.
 		return "companion session busy", true, nil
 	case err != nil:
-		_ = h.clearDecision(ctx)
+		if cerr := h.clearDecision(ctx); cerr != nil {
+			slog.Warn("companion: could not clear a failed saved decision", "err", cerr)
+		}
 		return "", true, h.fail(ctx, now, err)
 	}
+	// The message is out. Clear the decision before anything else can fail:
+	// a surviving one would send the same message again on the next tick.
 	if err := h.clearDecision(ctx); err != nil {
-		return "", true, err
+		slog.Warn("companion: applied a saved decision but could not clear it; it may apply again", "err", err)
 	}
 	if err := h.Store.SetCompanionRunsSeen(ctx, runIDs(v.Runs), now); err != nil {
 		return "", true, h.fail(ctx, now, err)
@@ -408,13 +414,21 @@ func (h *Heartbeat) resolveStale(ctx context.Context, now time.Time) error {
 		}
 	}
 	// A proposal answered in text never resolves its interest. Once it has
-	// waited RepliedProposalReturn, it goes back to candidate.
+	// waited RepliedProposalReturn, it goes back to candidate. Only the
+	// interest's newest proposal may do this: a re-proposal is live.
 	replied, err := h.Store.OutreachByOutcome(ctx, store.OutcomeReplied)
 	if err != nil {
 		return err
 	}
 	for _, o := range replied {
 		if o.Kind != store.OutreachProposal || o.ResolvedAt.After(now.Add(-RepliedProposalReturn)) {
+			continue
+		}
+		latest, ok, err := h.Store.LatestProposal(ctx, o.InterestID)
+		if err != nil {
+			return err
+		}
+		if !ok || latest.ID != o.ID {
 			continue
 		}
 		if err := returnProposal(ctx, h.Store, o, now); err != nil {

@@ -1140,3 +1140,54 @@ func TestOperatorPromoteLeavesSavedDecisionAndReflects(t *testing.T) {
 		t.Fatal("forced check cleared the saved decision")
 	}
 }
+
+func TestReproposedInterestIsNotReturnedByAnOldReply(t *testing.T) {
+	ctx := context.Background()
+	fx := newHeartbeat(t)
+	fx.candidate(t, "stock:zs")
+	fx.refl.replies = []string{proposeZS}
+	if _, err := fx.h.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	first := fx.del.sent[0]
+	if moved, err := fx.st.ResolveOutreach(ctx, first.ID, []string{store.OutcomePending}, store.OutcomeReplied, "", fx.now); err != nil || !moved {
+		t.Fatalf("resolve replied = %v %v", moved, err)
+	}
+
+	// A day later the first proposal returns its interest to candidate.
+	fx.now = fx.now.Add(25 * time.Hour)
+	markDigestSent(t, fx)
+	if _, err := fx.h.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	in, _, _ := fx.st.InterestByKey(ctx, "stock:zs")
+	if in.State != store.InterestCandidate {
+		t.Fatalf("after 25h interest = %s, want candidate", in.State)
+	}
+
+	// The interest is proposed again, out of its cooldown.
+	if err := fx.st.SetInterestCooldown(ctx, in.ID, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	fx.refl.replies = []string{proposeZS}
+	if _, err := fx.h.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fx.del.sent) != 2 {
+		t.Fatalf("sent %d outreach, want the re-proposal too", len(fx.del.sent))
+	}
+	second := fx.del.sent[1]
+
+	// The old replied row must not bounce the live proposal.
+	fx.now = fx.now.Add(time.Hour)
+	markDigestSent(t, fx)
+	if _, err := fx.h.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := fx.st.InterestByKey(ctx, "stock:zs"); got.State != store.InterestProposed {
+		t.Fatalf("interest = %s, want proposed while the re-proposal is live", got.State)
+	}
+	if o := fx.outcome(t, second.ID); o.Outcome != store.OutcomePending {
+		t.Fatalf("re-proposal outcome = %s, want pending", o.Outcome)
+	}
+}

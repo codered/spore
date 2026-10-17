@@ -237,3 +237,40 @@ func TestOpenProposals(t *testing.T) {
 		t.Fatalf("open proposals = %v, want [%d %d]", ids, newer, older)
 	}
 }
+
+func TestLatestProposal(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+	at := time.Date(2026, 10, 12, 15, 0, 0, 0, time.UTC)
+	zs, err := st.TouchInterest(ctx, "stock:zs", "ZS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nvda, err := st.TouchInterest(ctx, "stock:nvda", "NVDA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := st.LatestProposal(ctx, zs.ID); err != nil || ok {
+		t.Fatalf("no proposal yet: ok=%v err=%v", ok, err)
+	}
+	first, err := st.AddOutreach(ctx, Outreach{InterestID: zs.ID, Kind: OutreachProposal, Text: "one", SentAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddOutreach(ctx, Outreach{InterestID: zs.ID, Kind: OutreachFinding, Text: "not a proposal", SentAt: at.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddOutreach(ctx, Outreach{InterestID: nvda.ID, Kind: OutreachProposal, Text: "other", SentAt: at.Add(2 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if o, ok, err := st.LatestProposal(ctx, zs.ID); err != nil || !ok || o.ID != first {
+		t.Fatalf("latest before re-proposal = %+v %v %v, want id %d", o, ok, err, first)
+	}
+	second, err := st.AddOutreach(ctx, Outreach{InterestID: zs.ID, Kind: OutreachProposal, Text: "two", SentAt: at.Add(3 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o, ok, err := st.LatestProposal(ctx, zs.ID); err != nil || !ok || o.ID != second {
+		t.Fatalf("latest = %+v %v %v, want id %d", o, ok, err, second)
+	}
+}
